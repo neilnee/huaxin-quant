@@ -2,7 +2,7 @@
 
 ## 项目概要
 
-量化实验室（quant_lab），多模型流水线的股票筛选系统。每个筛选模型对应 `instructions/` 下的一个指令文件，由 LLM 读取后自动执行。
+Huaxin Quant，多模型流水线的股票花期发现与跟踪系统。每个筛选模型对应 `instructions/` 下的一个指令文件，由 LLM 读取后自动执行。
 
 项目采用**双目录架构**：本地工作区负责日常运行（Claude Code 工作目录），云盘负责 Git 版本管理。指令卡、脚本、配置等源文件通过软链在本地编辑，Git 在云盘侧追踪实体文件；数据产出（缓存、筛选结果、报告）纯本地，不跟 Git。
 
@@ -13,10 +13,10 @@
 本地目录没有 `.git`，所有 Git 操作使用 `-C` 指向云盘仓库，避免反复触发授权：
 
 ```
-git -C /Users/neil/Library/CloudStorage/OneDrive-个人/quant status
-git -C /Users/neil/Library/CloudStorage/OneDrive-个人/quant diff
-git -C /Users/neil/Library/CloudStorage/OneDrive-个人/quant add <file>
-git -C /Users/neil/Library/CloudStorage/OneDrive-个人/quant commit -m "..."
+git -C /Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant status
+git -C /Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant diff
+git -C /Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant add <file>
+git -C /Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant commit -m "..."
 ```
 
 **禁止**在本地目录执行 `git` 命令（会因找不到 `.git` 而失败或触发额外授权）。
@@ -37,7 +37,7 @@ git -C /Users/neil/Library/CloudStorage/OneDrive-个人/quant commit -m "..."
 ## 目录架构
 
 ```
-quant_lab/（本地工作区 · Claude Code 运行目录）
+quant_lab/（本地工作区 · Huaxin Quant 运行实例）
 │
 ├── .claude/                        本地目录 · Claude Code 项目配置
 │   ├── settings.json          🔗→ 云盘 .project/settings.json（Git 版本管理）
@@ -72,7 +72,7 @@ quant_lab/（本地工作区 · Claude Code 运行目录）
     └── scripts/                     临时脚本，用完即删
 
 
-OneDrive/quant/（云盘 · Git 仓库）
+OneDrive/huaxin_quant/（云盘 · Huaxin Quant Git 仓库）
 │
 ├── .git/                           Git 仓库
 ├── .gitignore

@@ -1,5 +1,5 @@
 """
-quant_lab 共享工具模块
+Huaxin Quant 共享工具模块
 
 提供所有脚本共用的基础设施：
   - PROJECT_ROOT: 项目根路径（从本文件位置推导，消除硬编码）

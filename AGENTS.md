@@ -2,12 +2,12 @@
 
 ## 项目概要
 
-量化实验室（quant_lab），多模型流水线的股票筛选系统。Codex 在本项目中负责阅读指令卡、维护配套脚本、执行数据流水线、验证输出结果，并在需要时提交代码。
+Huaxin Quant，多模型流水线的股票花期发现与跟踪系统。Codex 在本项目中负责阅读指令卡、维护配套脚本、执行数据流水线、验证输出结果，并在需要时提交代码。
 
 项目采用双目录架构：
 
-- `/Users/neil/ai/quant_lab`：本地工作区，负责日常运行、缓存、输出、报告。
-- `/Users/neil/Library/CloudStorage/OneDrive-个人/quant`：云盘 Git 仓库，负责源代码、指令卡和开发文档版本管理。
+- `/Users/neil/ai/quant_lab`：本地工作区，作为 Huaxin Quant 的运行实例，负责日常运行、缓存、输出、报告。
+- `/Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant`：云盘 Git 仓库，负责 Huaxin Quant 源代码、指令卡和开发文档版本管理。
 
 `instructions/`、`scripts/`、`CLAUDE.md`、`dev_logs/` 在本地工作区中是指向云盘仓库的软链。缓存和输出目录只存在于本地工作区，默认不进 Git。
 
@@ -18,10 +18,10 @@
 本地工作区没有 `.git`。所有 Git 命令必须显式使用云盘仓库路径：
 
 ```bash
-git -C /Users/neil/Library/CloudStorage/OneDrive-个人/quant status
-git -C /Users/neil/Library/CloudStorage/OneDrive-个人/quant diff
-git -C /Users/neil/Library/CloudStorage/OneDrive-个人/quant add <file>
-git -C /Users/neil/Library/CloudStorage/OneDrive-个人/quant commit -m "..."
+git -C /Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant status
+git -C /Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant diff
+git -C /Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant add <file>
+git -C /Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant commit -m "..."
 ```
 
 禁止在 `/Users/neil/ai/quant_lab` 直接执行普通 `git status`、`git diff`、`git add`、`git commit`。
@@ -94,7 +94,7 @@ Codex 执行时优先用 `rg`、`sed`、`python3 -m py_compile`、项目脚本�
 ## 目录职责
 
 ```text
-quant_lab/
+quant_lab/  # Huaxin Quant 本地运行实例
 ├── instructions/      -> 云盘仓库，模型指令卡
 ├── scripts/           -> 云盘仓库，模型执行脚本
 ├── CLAUDE.md          -> 云盘仓库，Claude 工程规范
@@ -213,7 +213,7 @@ Codex 权限配置参考：
 trust_level = "trusted"
 writable_roots = [
   "/Users/neil/ai/quant_lab",
-  "/Users/neil/Library/CloudStorage/OneDrive-个人/quant",
+  "/Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant",
 ]
 ```
 
@@ -263,8 +263,8 @@ python3 scripts/quant_filter.py --code 300604 --name 长川科技
 提交前：
 
 ```bash
-git -C /Users/neil/Library/CloudStorage/OneDrive-个人/quant status --short
-git -C /Users/neil/Library/CloudStorage/OneDrive-个人/quant diff --stat
+git -C /Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant status --short
+git -C /Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant diff --stat
 ```
 
 确认只提交源文件、指令卡和必要文档，不提交本地数据产物或密钥。
@@ -281,7 +281,7 @@ chore: ...
 提交后再检查工作区是否干净：
 
 ```bash
-git -C /Users/neil/Library/CloudStorage/OneDrive-个人/quant status --short
+git -C /Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant status --short
 ```
 
 ## 与用户沟通

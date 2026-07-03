@@ -4,11 +4,41 @@
 
 量化实验室（quant_lab），多模型流水线的股票筛选系统。每个筛选模型对应 `instructions/` 下的一个指令文件，由 LLM 读取后自动执行。
 
+## 本地 vs 云盘 架构
+
+项目采用**双目录架构**：本地工作区负责日常运行，云盘负责 Git 版本管理。
+
+```
+quant_lab/（本地工作区）              OneDrive/quant/（Git 仓库）
+─────────────────────────────        ─────────────────────────
+.claude/                 本地目录     .project/settings.json  ← Git 管理
+  settings.json    🔗──→ 云盘         .git/                   ← Git 仓库
+  settings.local.json    本地         .gitignore
+instructions/      🔗──→ 云盘         CLAUDE.md
+scripts/           🔗──→ 云盘         instructions/
+CLAUDE.md          🔗──→ 云盘         scripts/
+dev_logs/          🔗──→ 云盘         dev_logs/
+cache/             本地数据           .obsidian/
+pool/              本地数据
+quant/             本地数据
+reports/           本地数据
+signals/           本地数据
+refer/             本地数据
+```
+
+- **云盘侧（Git 管理）**：指令卡、脚本、配置、开发日志 → 通过软链在本地编辑，Git 在云盘侧追踪实体文件
+- **本地侧（运行时产出）**：缓存、筛选结果、报告、信号 → 不跟 Git，不在云盘
+- **`.claude/`**：本地目录。`settings.json` 软链到云盘 `.project/` 由 Git 版本管理；`settings.local.json` 纯本地，已在 `.gitignore` 排除
+- **Git 操作**：在云盘目录执行 `git -C /Users/neil/Library/CloudStorage/OneDrive-个人/quant <command>`，不在本地执行
+
 ## 目录约定
 
 ```
-instructions/       - 各模型的执行指令（markdown，LLM 可直接执行；历史由 Git 管理）
-scripts/            - 辅助 Python 脚本（数据处理、格式转换等），统一放此处
+.claude/            - Claude Code 项目配置（本地目录）
+  settings.json       🔗→ 云盘 .project/settings.json（Git 版本管理）
+  settings.local.json   本地机特定配置（不跟 Git）
+instructions/       - 各模型的执行指令（markdown，LLM 可直接执行；🔗→ 云盘，Git 管理）
+scripts/            - 辅助 Python 脚本（数据处理、格式转换等）；🔗→ 云盘，Git 管理
 pool/               - 模型一（海选初筛）输出
 quant/              - 模型二（量价精筛）输出
 reports/            - 模型三（深度估值）报告 + _index.csv + _ranking.csv
@@ -23,7 +53,7 @@ cache/              - 所有缓存数据，脚本自动管理
   research/         - mx-search 研报搜索结果缓存，保留供 LLM 引用
   zixuan/           - 自选股同步本地缓存（zixuan.csv），记录系统管理的自选股列表
 refer/              - 参考资料（策略文档、研究 PDF、截图等），非执行文件
-dev_logs/           - 开发复盘日志
+dev_logs/           - 开发复盘日志（🔗→ 云盘，Git 管理）
 SIGNALS.md          - 最新信号报告的根目录快捷副本，与 signals/ 中最新报告保持同步，方便快速打开
 tmp_*/              - 其他临时目录，用完即删
 ```

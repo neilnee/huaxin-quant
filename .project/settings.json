@@ -1,42 +1,17 @@
 {
   "permissions": {
+    "defaultMode": "acceptEdits",
     "allow": [
-      "Edit",
-      "Write",
-      "Read",
-      "NotebookEdit",
-      "Agent",
-      "WebSearch",
-      "WebFetch",
-      "Skill(mx-data)",
-      "Skill(mx-xuangu)",
-      "Skill(mx-search)",
-      "Skill(mx-zixuan)",
-      "Skill(mx-moni)",
-      "Skill(update-config)",
-      "Skill(verify)",
-      "Skill(simplify)",
-      "Skill(loop)",
-      "Skill(run)",
-      "Bash(ls *)",
-      "Bash(find *)",
-      "Bash(grep *)",
-      "Bash(head *)",
-      "Bash(tail *)",
-      "Bash(wc *)",
-      "Bash(diff *)",
-      "Bash(readlink *)",
-      "Bash(echo *)",
-      "Bash(mkdir *)",
-      "Bash(rm *)",
-      "Bash(cp *)",
-      "Bash(mv *)",
-      "Bash(python3 scripts/*.py *)",
-      "Bash(python3 << *)"
+      "Read(tmp_*/**)"
     ],
-    "additionalDirectories": [
-      "/Users/neil/ai/quant_lab",
-      "/Users/neil/Library/CloudStorage/OneDrive-个人/quant"
+    "deny": [
+      "Read(.env)",
+      "Write(.env)",
+      "Edit(.env)"
+    ],
+    "ask": [
+      "Bash(rm -rf *)",
+      "Bash(git push *)"
     ]
   }
 }

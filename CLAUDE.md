@@ -21,18 +21,18 @@ git -C /Users/neil/Library/CloudStorage/OneDrive-个人/quant commit -m "..."
 
 **禁止**在本地目录执行 `git` 命令（会因找不到 `.git` 而失败或触发额外授权）。
 
-### 规则二：临时脚本写到 `tmp_*/` 目录
+### 规则二：临时脚本统一写到 `tmp/` 目录
 
-需要写一次性 Python/Shell 脚本时，写到 `tmp_*/` 前缀的临时目录（如 `tmp_adhoc/`），该目录已在 `settings.json` 中预授权读写编辑，不会触发授权弹窗。
+`tmp/` 目录已在 `settings.json` 中预授权读写编辑（`Read/Write/Edit(tmp/**)`），写入和执行不会触发授权弹窗。脚本放 `tmp/scripts/` 子目录下：
 
 ```
-✅ Write(tmp_adhoc/calc.py)  →  Bash(python3 tmp_adhoc/calc.py)
-❌ Write(calc.py)            →  Bash(python3 calc.py)           ← 触发授权
-❌ Bash(python3 -c "...")    →  单行 python3 -c 无法预授权       ← 触发授权
-❌ Bash(python3 << *)        →  多行 heredoc 匹配不了            ← 反复弹授权
+✅ Write(tmp/scripts/calc.py)  →  Bash(python3 tmp/scripts/calc.py)
+❌ Write(calc.py)              →  Bash(python3 calc.py)           ← 触发授权
+❌ Bash(python3 -c "...")      →  单行 python3 -c 无法预授权       ← 触发授权
+❌ Bash(python3 << *)          →  多行 heredoc 匹配不了            ← 反复弹授权
 ```
 
-用完清理：`rm -rf tmp_adhoc/`。
+用完清理：`rm -rf tmp/scripts/`（保留 `tmp/` 目录本身）。
 
 ## 目录架构
 
@@ -68,7 +68,8 @@ quant_lab/（本地工作区 · Claude Code 运行目录）
 ├── SIGNALS.md                      本地 · 最新信号报告快捷副本
 ├── TODO.md                         本地 · 项目待办
 ├── .env                            本地 · 环境变量（settings.json deny 保护）
-└── tmp_*/                          临时目录 · 用完即删（settings.json 预授权）
+└── tmp/                            临时目录（settings.json 预授权读写编辑）
+    └── scripts/                     临时脚本，用完即删
 
 
 OneDrive/quant/（云盘 · Git 仓库）
@@ -92,7 +93,7 @@ OneDrive/quant/（云盘 · Git 仓库）
 - **分支开发**：较大改动在 Git feature 分支上直接修改活跃文件；稳定后 commit/merge 保留历史，不靠复制文件发版
 - **收尾更新**：每次完成一组规则变更后，更新 `TODO.md` 勾掉已完成项
 - **数据口径统一**：模型一和模型三使用相同报告期数据，避免跨模型数据口径不一致
-- **Agent 执行后清理**：mx-search 等 skill 并行执行后可能遗留临时目录，每次批量估值或搜索完成后清理
+- **Agent 执行后清理**：mx-search 等 skill 并行执行后可能遗留 `tmp_*/` 目录，每次批量估值或搜索完成后清理
 
 ## 缓存策略
 

@@ -2,7 +2,9 @@
   "permissions": {
     "defaultMode": "acceptEdits",
     "allow": [
-      "Read(tmp_*/**)"
+      "Read(tmp_*/**)",
+      "Write(tmp_*/**)",
+      "Edit(tmp_*/**)"
     ],
     "deny": [
       "Read(.env)",

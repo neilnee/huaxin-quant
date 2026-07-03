@@ -18,7 +18,7 @@ import json
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -111,6 +111,34 @@ def rolling_slope_pct(series, window):
 def latest_file(directory, pattern):
     files = sorted(Path(directory).glob(pattern))
     return files[-1] if files else None
+
+
+def expected_trade_date(run_date=None):
+    """Expected latest A-share trade date using weekday fallback.
+
+    This intentionally avoids a heavyweight calendar dependency. Weekend runs
+    expect Friday's data; exchange holidays can still be overridden by reruns
+    after data is available.
+    """
+    if run_date is None:
+        cur = datetime.now().date()
+    elif isinstance(run_date, str):
+        cur = datetime.strptime(run_date, "%Y-%m-%d").date()
+    else:
+        cur = run_date
+    while cur.weekday() >= 5:
+        cur -= timedelta(days=1)
+    return cur.strftime("%Y-%m-%d")
+
+
+def cache_is_fresh(df, expected_date):
+    if df is None or df.empty:
+        return False
+    try:
+        last_date = str(df.iloc[-1]["date"])[:10]
+    except Exception:
+        return False
+    return last_date >= expected_date
 
 
 def load_local_env():
@@ -257,9 +285,10 @@ def _select_history_table(tables, required_fields):
 
 def fetch_daily(code, name, datestr, use_cache=True):
     """拉取近 200 个交易日日线。返回 (DataFrame, source) 或 (None, error)。"""
+    expected_date = expected_trade_date()
     if use_cache:
         cached = cache.load(code, datestr)
-        if cached is not None:
+        if cached is not None and cache_is_fresh(cached, expected_date):
             return cached, "cache"
 
     api_key = os.environ.get("MX_APIKEY")

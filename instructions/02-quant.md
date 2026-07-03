@@ -203,44 +203,143 @@ chg_60
 
 ## 五、确定性规则
 
-### P1：VCP 结构
+### P1：VCP 过程监控
 
 基础条件：
 
 ```text
-有效交易日 >= 60
+有效交易日 >= 80
 close > MA60 或 MA20 >= MA60
 MA60_slope >= -0.03%/日
-近 60 日最大回撤不超过 35%
+近 120 日最大回撤不超过 35%
 ```
 
-收敛条件，满足至少 3 项：
+P1 不再使用 `range_10/range_20/range_60` 等截面指标做 `6选3` 判定。VCP 的主判定改为识别形成过程：
 
 ```text
-range_10 < range_20
-range_20 < range_60
-volume_dry_up < 0.85
-vol_ma20 < vol_ma60
-近 20 日低点高于近 60 日低点
-距离 60 日高点不低于 -15%
+右侧修复或上涨后
+→ 出现第 1 轮收缩
+→ 出现第 2 轮更小的收缩
+→ 出现第 3 轮更小的收缩
+→ 量能逐轮下降或最后一轮明显缩量
+→ 股价靠近 pivot / 前高附近窄幅整理
 ```
 
-P1 状态：
+### 1.1 收缩轮次识别
+
+在最近 80-120 个交易日中识别局部高点和后续局部低点。一轮 contraction 定义为：
+
+```text
+从局部高点回撤到后续局部低点
+回撤幅度 >= 4%
+持续时间 3-45 个交易日
+低点后有一定修复，不能是单边下跌未止
+```
+
+每轮 contraction 记录：
+
+```text
+start_date / end_date
+high_price / low_price
+pullback_pct
+duration_days
+avg_volume
+recovery_pct
+```
+
+### 1.2 收缩递减
+
+核心条件：
+
+```text
+abs(C2.pullback) <= abs(C1.pullback) * 0.90   # 明显递减
+abs(C3.pullback) <= abs(C2.pullback) * 0.90
+```
+
+允许轻微容差：
+
+```text
+abs(Cn.pullback) <= abs(Cn-1.pullback) * 1.05
+```
+
+满足容差但未明显递减时，不剔除，但降低阶段和评分。
+
+### 1.3 当前有效性
+
+P1 只识别**当前正在形成**的 VCP，不追认已经走完或已经被大幅突破的历史结构。收缩轮次必须组成一个当前有效的 contraction group。
+
+对每个候选 contraction group 计算：
+
+```text
+structure_pivot = group 内 high_price 最大值
+market_pivot = 最近 60 日高点
+structure_age_days = 当前交易日距离最后一轮 contraction end 的交易日数
+post_structure_gain = 最后一轮低点后最高价 / structure_pivot - 1
+post_structure_drawdown = 当前价 / 最后一轮低点后最高价 - 1
+```
+
+当前有效性规则：
+
+```text
+structure_age_days <= 45
+当前价距离 structure_pivot 不低于 -18%
+market_pivot <= structure_pivot * 1.10
+post_structure_gain <= 25%
+post_structure_drawdown >= -18%
+```
+
+若不满足，说明该结构已经过期、已经突破完成，或突破后又进入重建阶段，不再作为 P1。
+
+失效原因：
+
+| invalid_reason | 说明 |
+|----------------|------|
+| structure_too_old | 最后一轮收缩距当前太久 |
+| far_below_structure_pivot | 当前价距离结构 pivot 过远 |
+| old_structure_broken_out | 后续市场高点显著超过结构 pivot |
+| post_structure_extended | 结构后涨幅过大，旧 VCP 已完成 |
+| post_structure_drawdown | 结构后再度深回撤，需要重新形成 |
+
+### 1.4 量能确认
+
+量能作为质量分，不作为唯一硬门槛：
+
+```text
+C2.avg_volume < C1.avg_volume
+C3.avg_volume < C2.avg_volume
+最后一轮 volume_dry_up < 0.85
+vol_ma20 < vol_ma60
+```
+
+量能状态：
+
+| volume_pattern | 说明 |
+|----------------|------|
+| decreasing | contraction 期间均量逐轮下降 |
+| drying | 最后一轮或近期明显缩量 |
+| mixed | 量能不稳定 |
+| failed | 回撤放量，质量差 |
+
+### 1.5 P1 阶段
 
 | state | 说明 |
 |-------|------|
-| P1_FORMING | VCP 形成中 |
-| P1_TIGHT | 收敛明显，接近突破区 |
-| P1_HIGH | 强趋势偏高，等待回踩或收敛 |
+| P1_EARLY | 识别到 1 轮有效收缩，VCP 刚开始形成 |
+| P1_FORMING | 至少 2 轮收缩，后一轮小于或接近前一轮 |
+| P1_MATURE | 至少 3 轮收缩，幅度明显递减 |
+| P1_TIGHT | P1_MATURE 且最后一轮收缩较窄，价格接近 pivot |
+| TREND_WATCH | 趋势强但未形成有效收缩轮次，不归入 VCP |
+| POST_BREAKOUT | 历史 VCP 已明显突破，不再作为 P1 |
+| TREND_REBUILD | 历史结构突破后深回撤，需要重新形成 |
 
 ### P2：结构内缩量回踩
 
-必须先有 P1。
+必须先有 `P1_FORMING`、`P1_MATURE` 或 `P1_TIGHT`，`P1_EARLY` 只观察，不触发 P2。
 
 ```text
 volume_dry_up < 0.80
 distance_ma20 在 [-4%, +3%]，或 distance_ma60 在 [-5%, +5%]
-close > 近 20 日最低价 × 1.03
+close > 最近一轮 contraction low × 1.02
 MA20_slope >= -0.03%/日
 近 5 日涨幅 < 12%
 无放量长阴
@@ -289,7 +388,7 @@ setup_score = structure_score
 买点优先级：
 
 ```text
-P3_RETEST > P2_PULLBACK > P1_TIGHT > P1_FORMING > P1_HIGH > REJECT
+P3_RETEST > P2_PULLBACK > P1_TIGHT > P1_MATURE > P1_FORMING > P1_EARLY > TREND_WATCH > REJECT
 ```
 
 ---
@@ -311,6 +410,23 @@ suggested_position
 support_price
 invalid_price
 breakout_level
+vcp_stage
+contraction_count
+contraction_pcts
+contraction_days
+volume_pattern
+pivot_price
+structure_pivot
+market_pivot
+pivot_distance
+last_contraction_low
+structure_age_days
+structure_valid
+structure_invalid_reason
+post_structure_gain
+post_structure_drawdown
+vcp_quality
+watch_priority
 close
 MA20 / MA60 / MA120
 MA20_slope / MA60_slope

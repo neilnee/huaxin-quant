@@ -1,6 +1,6 @@
 # 模型四：择时跟踪参考手册
 
-> 执行指令见 `04-tracker-dev.md`。本文件为按需查阅的参考内容，**不在每次执行时加载**。
+> 执行指令见 `04-tracker.md`。本文件为按需查阅的参考内容，**不在每次执行时加载**。
 > 以下规格足以从零重建 `scripts/tracker.py` 和 `scripts/generate_report.py`。
 
 ---

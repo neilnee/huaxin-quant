@@ -1,10 +1,10 @@
 # 模型三：深度估值模型（自执行指令）
 
-- **版本**: v1.6
-- **日期**: 2026-05-22
-- **核心逻辑**: 三层估值 — Layer 1 共识锚定（充分定价）+ Layer 2 分歧挖掘（部分定价）+ Layer 3 预期差（未定价）。**脚本做计算，LLM 做判断。**
+- **版本管理**: 由 Git 分支与提交历史管理，文件名不再携带版本号
+- **最近更新**: 2026-05-22
+- **核心哲学**: 脚本做计算，LLM 做判断。
 - **输入**: `quant/quant_<YYMMDD>.csv` | **输出**: `reports/<code>_<name>.md` + `_index.csv` + `_ranking.csv`
-- **配套脚本**: `scripts/valuate.py`（阶段零）+ `scripts/calc_valuation.py`（估值计算引擎）| 参考手册: `03-valuation-ref-dev.md`
+- **配套脚本**: `scripts/valuate.py`（阶段零）+ `scripts/calc_valuation.py`（估值计算引擎）| 参考手册: `03-valuation-ref.md`
 
 ---
 
@@ -30,6 +30,8 @@ python3 scripts/valuate.py --no-cache         # 强制刷新
 ```
 
 脚本自动完成：财务数据拉取 → 指标计算 → 决策树五信号判定 → 漏斗信号 → 简报册输出 `cache/briefing/<code>_<YYMMDD>.json`。LLM 直接引用简报册数据，不手工拉数。
+
+**数据口径**：valuate.py 取 mx-data 返回的最新可用数据，与模型一 process_pool.py 的 LATEST 口径一致。模型一和三使用同一报告期，避免出现"Q1 盈利但年报亏损"被过滤后又重新估值的不一致。
 
 ### 决策树五信号速查
 
@@ -268,4 +270,4 @@ python3 scripts/calc_valuation.py cache/calc_params/<code>_<YYMMDD>.json
 
 ---
 
-> 待优化项见 `TODO.md`。引擎常量 / 参数 schema / 函数签名 / 重建脚本所需规格 见参考手册 `03-valuation-ref-dev.md`。版本历史见 `dev_logs/`。
+> 待优化项见 `TODO.md`。引擎常量 / 参数 schema / 函数签名 / 重建脚本所需规格见参考手册 `03-valuation-ref.md`。版本历史由 Git 追溯，复盘记录见 `dev_logs/`。

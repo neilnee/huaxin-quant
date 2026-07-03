@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 valuate.py — 模型三估值分析 阶段零 数据准备脚本
-对应指令卡: instructions/03-valuation-dev.md
+对应指令卡: instructions/03-valuation.md
 
 功能:
   0.1 进度检查 — 读取 _index.csv，判断首次覆盖/持续跟踪/跳过

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 calc_valuation.py — 模型三估值计算引擎
-对应指令卡: instructions/03-valuation-dev.md
+对应指令卡: instructions/03-valuation.md
 
 职责：接收 LLM 提供的结构化参数，执行确定性估值计算。
 LLM 做判断（提供参数），脚本做计算（输出数字）。
@@ -180,7 +180,9 @@ def parse_params(raw: dict) -> dict:
             "net_assets": p.get("net_assets"),      # 净资产（亿元）
             "roe_pillar": p.get("roe"),               # 该支柱 ROE
             # 路线 E 用
-            "revenue": p.get("revenue"),              # 营收（亿元）
+            "revenue": p.get("revenue"),              # 营收（亿元），兼容旧参数
+            "revenue_2026e": p.get("revenue_2026e"),
+            "revenue_2027e": p.get("revenue_2027e"),
             "gross_margin": p.get("gross_margin"),    # 毛利率(%)
         }
         pillars.append(pillar)
@@ -488,7 +490,10 @@ def calc_route_e_valuation(pillar, params, total_shares, year="2026e"):
     合理PS = 可比PS中值 × (公司毛利率 / 可比毛利率)
     市值 = 营收 × 合理PS × 折扣系数
     """
-    revenue = pillar.get("revenue")
+    year_key = "revenue_2027e" if year == "2027e" else "revenue_2026e"
+    revenue = pillar.get(year_key)
+    if revenue is None:
+        revenue = pillar.get("revenue")
     gross_margin = pillar.get("gross_margin")
 
     ps_median = params.get("comparable_ps_median")
@@ -496,7 +501,7 @@ def calc_route_e_valuation(pillar, params, total_shares, year="2026e"):
     ps_upper = params.get("comparable_ps_upper") or ps_median
 
     if revenue is None:
-        return {"error": "路线E缺少 revenue（营收 亿元）"}
+        return {"error": f"路线E缺少 {year_key} 或 revenue（营收 亿元）"}
 
     # 毛利率调整
     comp_gm = params.get("comparable_gross_margin", gross_margin or 30)
@@ -530,7 +535,7 @@ def calc_route_e_valuation(pillar, params, total_shares, year="2026e"):
         "layer2": {"pessimistic": 0, "base": 0, "optimistic": 0},
         "layer3": {"pessimistic": 0, "base": 0, "optimistic": 0},
         "details": (
-            f"路线E (PS+PEG):\n"
+            f"路线E (PS+PEG, {year.upper()}):\n"
             f"  合理PS = {ps_median} × ({gross_margin}/{comp_gm}) = {reasonable_ps:.2f}x\n"
             f"  基准: {revenue}亿 × {reasonable_ps:.2f}x × {discount} = {base_value:.0f}亿"
         ),

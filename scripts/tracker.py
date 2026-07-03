@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 tracker.py — 模型四 择时跟踪 配套脚本
-对应指令: instructions/04-tracker-dev.md (v1.0-dev)
+对应指令: instructions/04-tracker.md
 
 职责（脚本管数值，LLM 管判断）:
   1. 读取 core_pool.csv / positions.csv / _ranking.csv

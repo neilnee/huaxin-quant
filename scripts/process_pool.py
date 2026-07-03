@@ -30,6 +30,22 @@ SEMICONDUCTOR_KW = "半导体"
 SEMI_RELAX_GM = 15          # gross margin floor (pct)
 SEMI_RELAX_REV_GROWTH = 25  # revenue growth gate (pct)
 NORMAL_GM_FLOOR = 20        # gross margin floor for non-semiconductors
+MIN_MARKET_CAP = 5_000_000_000      # 50亿硬门槛
+SMALL_CAP_TAG_CEILING = 10_000_000_000
+
+TAG_PENALTIES = {
+    "LOW_ROE": 15,
+    "WEAK_ROE": 8,
+    "WEAK_CASHFLOW": 15,
+    "HIGH_DEBT_EDGE": 10,
+    "HIGH_VALUATION": 8,
+    "NEGATIVE_PE_TTM": 12,
+    "LOW_BASE_REBOUND": 12,
+    "MID_SMALL_CAP_50_100": 5,
+    "SEMI_CASHFLOW_RELAX": 5,
+    "DATA_PERIOD_QUARTERLY": 5,
+    "MISSING_KEY_DATA": 8,
+}
 
 # ── Helpers ──────────────────────────────────────────────
 
@@ -114,6 +130,51 @@ def fmt(v) -> str:
     if v is None: return ""
     if isinstance(v, float): return f"{v:.2f}"
     return str(v)
+
+def build_soft_tags(
+    *,
+    mcap=None, pe=None, pb=None, roe=None, ocf_np_ratio=None,
+    np_val=None, np_growth=None, debt=None, period="unknown",
+    semi_relax=False,
+) -> tuple[list[str], int]:
+    """Build non-blocking risk/quality labels for manual review."""
+    tags = []
+
+    if mcap is None or np_val is None:
+        tags.append("MISSING_KEY_DATA")
+    elif mcap < SMALL_CAP_TAG_CEILING:
+        tags.append("MID_SMALL_CAP_50_100")
+
+    if period in {"Q1", "H1", "Q3"}:
+        tags.append("DATA_PERIOD_QUARTERLY")
+
+    if roe is not None:
+        if roe < 5:
+            tags.append("LOW_ROE")
+        elif roe < 10:
+            tags.append("WEAK_ROE")
+
+    if ocf_np_ratio is not None and ocf_np_ratio < 0.5:
+        tags.append("WEAK_CASHFLOW")
+
+    if debt is not None and 60 <= debt < 70:
+        tags.append("HIGH_DEBT_EDGE")
+
+    if pe is not None and pe <= 0:
+        tags.append("NEGATIVE_PE_TTM")
+    elif (pe is not None and pe > 100) or (pb is not None and pb > 10):
+        tags.append("HIGH_VALUATION")
+
+    if np_growth is not None and np_growth > 100 and (roe is None or roe < 5 or (np_val is not None and np_val < NP_MIN_ANNUAL)):
+        tags.append("LOW_BASE_REBOUND")
+
+    if semi_relax:
+        tags.append("SEMI_CASHFLOW_RELAX")
+
+    # De-duplicate while preserving order.
+    tags = list(dict.fromkeys(tags))
+    score = max(0, 100 - sum(TAG_PENALTIES.get(tag, 0) for tag in tags))
+    return tags, score
 
 def find_key(row: dict, *patterns, require_all=True) -> Optional[str]:
     """Fuzzy match field key. If require_all, ALL patterns must match."""
@@ -253,7 +314,7 @@ KEY_REVENUE_ANNUAL = find_key_annual_fallback(sample, "OPERATEREVE", ANNUAL_PERI
 KEY_REV_GROWTH = find_key(sample, "营业收入最新同比增长率")
 KEY_NP_GROWTH = find_key(sample, "归属母公司股东的净利润最新同比增长率")
 KEY_GM = find_key(sample, "XSMLL")
-KEY_RD = find_key(sample, "RDRATIO")
+KEY_RD = find_key(sample, "RDRATIO") or find_key(sample, "RSEXPENSE_RATIO")
 KEY_EPS = find_key_annual_fallback(sample, "EPSJB", ANNUAL_PERIOD, "每股收益") or find_key_annual_fallback(sample, "BASICEPS", ANNUAL_PERIOD, "每股收益(BASIC)")
 
 # Print key map
@@ -277,9 +338,14 @@ key_map = {
 for name, k in key_map.items():
     print(f"  {'✅' if k else '❌'} {name}: {k}")
 
+if not KEY_MCAP:
+    print("  ❌ 缺少总市值字段，无法执行 50 亿市值硬门槛")
+    exit(1)
+
 # Apply filters
 passed = {}
 rejected = {
+    "总市值<50亿": 0, "总市值缺失": 0,
     "OCF/NP比率≤阈值": 0,
     "负债率≥70%": 0, "归母净利<阈值": 0,
     "上市不足1年": 0, "净利≤0": 0,
@@ -292,11 +358,20 @@ for code, row in all_stocks.items():
     is_semi = SEMICONDUCTOR_KW in industry_raw
 
     # Parse financials
+    mcap = parse_num(row.get(KEY_MCAP)) if KEY_MCAP else None
     rev_growth = parse_pct(row.get(KEY_REV_GROWTH)) if KEY_REV_GROWTH else None
     gm = parse_pct(row.get(KEY_GM)) if KEY_GM else None
 
     # Check if eligible for semiconductor relaxation
     semi_relax = is_semi and rev_growth is not None and rev_growth > SEMI_RELAX_REV_GROWTH
+
+    # Condition 0: Market cap >= 50亿
+    if mcap is None:
+        rejected["总市值缺失"] += 1
+        continue
+    if mcap < MIN_MARKET_CAP:
+        rejected["总市值<50亿"] += 1
+        continue
 
     # Condition A: Listed >= 1 year
     list_date = parse_date(row.get(KEY_LIST_DATE) if KEY_LIST_DATE else None)
@@ -399,7 +474,8 @@ fieldnames = [
     "营业收入_元","营收同比增速_pct","归母净利润_元",
     "净利润同比增速_pct","经营现金流_元",
     "经营现金流_净利比","毛利率_pct","研发费用占比_pct",
-    "资产负债率_pct","每股收益_元"
+    "资产负债率_pct","每股收益_元",
+    "质量评分","风险标签","数据周期","半导体现金流豁免"
 ]
 
 rows_out = []
@@ -417,22 +493,39 @@ for code in sorted(final):
     revenue = parse_num(row.get(KEY_REVENUE_ANNUAL)) if KEY_REVENUE_ANNUAL else None
     rev_g = parse_pct(row.get(KEY_REV_GROWTH)) if KEY_REV_GROWTH else None
     np_val = parse_num(row.get(KEY_NP)) if KEY_NP else None
+    np_raw = str(row.get(KEY_NP, "")) if KEY_NP else ""
+    period = detect_period(np_raw)
     np_g = parse_pct(row.get(KEY_NP_GROWTH)) if KEY_NP_GROWTH else None
     ocf = parse_num(row.get(KEY_OCF)) if KEY_OCF else None
     gm = parse_pct(row.get(KEY_GM)) if KEY_GM else None
     rd = parse_pct(row.get(KEY_RD)) if KEY_RD else None
     debt = parse_pct(row.get(KEY_DEBT)) if KEY_DEBT else None
     eps = parse_pct(row.get(KEY_EPS)) if KEY_EPS else None
+    industry = str(row.get(industry_key, "")) if industry_key else ""
+    is_semi = SEMICONDUCTOR_KW in industry
+    semi_relax = is_semi and rev_g is not None and rev_g > SEMI_RELAX_REV_GROWTH
 
     # Calculate OCF/NP ratio
     ocf_np_ratio = None
     if ocf is not None and np_val is not None and np_val > 0:
         ocf_np_ratio = ocf / np_val
+    tags, quality_score = build_soft_tags(
+        mcap=mcap,
+        pe=pe,
+        pb=pb,
+        roe=roe,
+        ocf_np_ratio=ocf_np_ratio,
+        np_val=np_val,
+        np_growth=np_g,
+        debt=debt,
+        period=period,
+        semi_relax=semi_relax,
+    )
 
     rows_out.append({
         "股票代码": f'="{code}"',
         "股票名称": row.get("SECURITY_SHORT_NAME", ""),
-        "所属行业": str(row.get(industry_key, "")) if industry_key else "",
+        "所属行业": industry,
         "上市天数": str(list_days) if list_days else "",
         "总市值_元": fmt(mcap),
         "市盈率_倍": fmt(pe),
@@ -448,6 +541,10 @@ for code in sorted(final):
         "研发费用占比_pct": fmt(rd),
         "资产负债率_pct": fmt(debt),
         "每股收益_元": fmt(eps),
+        "质量评分": str(quality_score),
+        "风险标签": ";".join(tags),
+        "数据周期": period,
+        "半导体现金流豁免": "Y" if semi_relax else "N",
     })
 
 with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
@@ -482,17 +579,41 @@ print(f"\n  行业分布 (Top 10):")
 for ind, cnt in ind_dist.most_common(10):
     print(f"    {ind}: {cnt}")
 
+def collect_float(col):
+    values = []
+    for r in rows_out:
+        raw = r.get(col, "")
+        if raw == "":
+            continue
+        try:
+            values.append(float(raw))
+        except ValueError:
+            continue
+    return values
+
 # Core metrics
-gms, rgs, rds, roes = [], [], [], []
+gms = collect_float("毛利率_pct")
+rgs = collect_float("营收同比增速_pct")
+rds = collect_float("研发费用占比_pct")
+roes = collect_float("ROE_pct")
+quality_scores = collect_float("质量评分")
+risk_counter = Counter()
 for r in rows_out:
-    for val, lst in [(gm, gms), (rev_g, rgs), (rd, rds), (roe, roes)]:
-        if val is not None: lst.append(val)
+    for tag in r.get("风险标签", "").split(";"):
+        if tag:
+            risk_counter[tag] += 1
 
 print(f"\n  核心指标均值:")
 if gms: print(f"    毛利率_pct 均值: {sum(gms)/len(gms):.2f}")
 if rgs: print(f"    营收同比增速_pct 均值: {sum(rgs)/len(rgs):.2f}")
 if rds: print(f"    研发费用占比_pct 均值: {sum(rds)/len(rds):.2f}")
 if roes: print(f"    ROE_pct 均值: {sum(roes)/len(roes):.2f}")
+if quality_scores: print(f"    质量评分均值: {sum(quality_scores)/len(quality_scores):.2f}")
+
+if risk_counter:
+    print(f"\n  软标签分布 (Top 10):")
+    for tag, cnt in risk_counter.most_common(10):
+        print(f"    {tag}: {cnt}")
 
 # Check for truncation
 truncated = [s for s in segment_counts if s[1] >= 200]

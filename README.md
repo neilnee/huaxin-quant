@@ -67,6 +67,12 @@ cp .env.example .env
 
 Then fill in the values required by your local data provider.
 
+Prepare local runtime directories:
+
+```bash
+python3 scripts/init_runtime.py
+```
+
 ## Environment
 
 Common variables:
@@ -120,4 +126,3 @@ See `WORKFLOW.md` for the daily operating sequence.
 Do not commit `.env` or runtime outputs. The repository only stores source code, rule cards, and project documentation.
 
 Before publishing or sharing a fork, scan for local paths, credentials, runtime CSV/JSON files, and private research notes.
-

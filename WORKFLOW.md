@@ -23,6 +23,15 @@
 
 当前优先级是前四步：`Pool -> Quant -> Bloom -> Daily Review`。
 
+## 首次初始化
+
+```bash
+cp .env.example .env
+python3 scripts/init_runtime.py
+```
+
+`.env` 由使用者填写；运行目录和可选空表由初始化脚本创建。
+
 ## 每日执行
 
 ### 1. 生成股票池

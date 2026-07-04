@@ -63,8 +63,11 @@ quant_lab/（本地工作区 · Huaxin Quant 运行实例）
 ├── quant/                          本地 · 模型二（量价精筛）输出
 ├── bloom/                          本地 · 模型二后的花期观察状态层
 │                                    bloom_events.jsonl + bloom_state.csv
-├── reports/                        本地 · 模型三（深度估值）报告 + 每日复盘报告
-│                                    当前保留 _index.csv + _ranking.csv；daily/ 放花期复盘
+├── reports/                        本地 · 人类可读报告
+│   ├── valuation/                  模型三个股估值报告
+│   ├── indexes/                    valuation_index.csv + valuation_ranking.csv
+│   ├── daily/                      Huaxin Daily Review
+│   └── archive/valuation/          估值报告历史归档
 ├── signals/                        本地 · 模型四（择时跟踪）工作区
 │                                    每日信号报告 + core_pool.csv + positions.csv
 │                                    + batches.csv + trade_log.csv

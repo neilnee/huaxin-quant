@@ -105,7 +105,7 @@ quant_lab/  # Huaxin Quant 本地运行实例
 ├── pool/              模型一输出
 ├── quant/             模型二输出
 ├── bloom/             模型二后花期观察状态
-├── reports/           模型三报告
+├── reports/           人类可读报告（valuation/indexes/daily/archive）
 ├── signals/           模型四信号跟踪
 ├── refer/             本地参考资料
 ├── tmp/               临时脚本和临时文件

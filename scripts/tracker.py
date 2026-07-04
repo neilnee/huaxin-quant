@@ -4,7 +4,7 @@ tracker.py — 模型四 择时跟踪 配套脚本
 对应指令: instructions/04-tracker.md
 
 职责（脚本管数值，LLM 管判断）:
-  1. 读取 core_pool.csv / positions.csv / _ranking.csv
+  1. 读取 core_pool.csv / positions.csv / valuation_ranking.csv
   2. 拉取核心池所有标的的日线数据（复用 cache/daily/ 缓存层）
   3. 计算扩展技术指标（MA5/10/20、MA20斜率、箱体检测、20日高低点等）
   4. 逐条预检 B1/B2/S0-S5/W1-W3 信号条件
@@ -24,7 +24,7 @@ import pandas as pd
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from scripts.shared import RateLimiter, DailyCache, PROJECT_ROOT
+from scripts.shared import RateLimiter, DailyCache, PROJECT_ROOT, VALUATION_RANKING_PATH
 
 # ===================== 配置 =====================
 
@@ -34,12 +34,11 @@ if not API_KEY:
     sys.exit(1)
 
 BASE_URL = "https://mkapi2.dfcfs.com/finskillshub/api/claw/query"
-REPORTS_DIR = os.path.join(PROJECT_ROOT, "reports")
 SIGNALS_DIR = os.path.join(PROJECT_ROOT, "signals")
 CORE_POOL_PATH = os.path.join(SIGNALS_DIR, "core_pool.csv")
 POSITIONS_PATH = os.path.join(SIGNALS_DIR, "positions.csv")
 BATCHES_PATH = os.path.join(SIGNALS_DIR, "batches.csv")
-RANKING_PATH = os.path.join(REPORTS_DIR, "_ranking.csv")
+RANKING_PATH = VALUATION_RANKING_PATH
 cache = DailyCache()
 
 _rate_limiter = RateLimiter()
@@ -113,7 +112,7 @@ def read_batches():
 
 
 def read_ranking():
-    """读取 _ranking.csv，返回 {code: {valuation fields}}"""
+    """读取 valuation_ranking.csv，返回 {code: {valuation fields}}"""
     if not os.path.exists(RANKING_PATH):
         return {}
     rankings = {}
@@ -337,7 +336,7 @@ def check_signals(code, name, df, pos_info, val_info, entry_pattern="", entry_ma
     """
     逐条检查信号条件，返回 dict。
     pos_info: positions.csv 该标的的行，或 None
-    val_info: _ranking.csv 该标的的行，或 None
+    val_info: valuation_ranking.csv 该标的的行，或 None
     entry_pattern: 模型二买入形态 (A/B/C)，影响 S0/S2/S3 参数
     entry_ma: A类形态的支撑均线 (MA20/MA60)
     batches: 该标的的活跃加仓批次列表 [{batch_id, entry_logic, entry_ma, shares, cost_price, ...}]

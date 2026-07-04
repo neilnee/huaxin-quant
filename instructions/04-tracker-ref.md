@@ -69,7 +69,7 @@
 |------|------|
 | W1-价格预警 | 距S0支撑<2%, 或 近5日涨幅>15%+量比>2.0 |
 | W2-量价预警 | 缩量程度<0.5, 或 近3日量比均值<0.6 |
-| W3-催化预警 | 催化事件在未来2天内(需_ranking.csv含催化字段) |
+| W3-催化预警 | 催化事件在未来2天内（需 valuation_ranking.csv 含催化字段） |
 
 ---
 
@@ -291,7 +291,7 @@ trade_id,code,name,entry_date,entry_logic,shares,entry_price,exit_date,exit_pric
 - 批次买入→卖出闭环后从 batches.csv 删除，写一条到此
 - 只增不删，不参与信号计算
 
-### `_ranking.csv`（模型三输出 → 模型四读取）
+### `reports/indexes/valuation_ranking.csv`（模型三输出 → 模型四读取）
 ```
 股票代码,股票名称,当前股价_元,下行风险价_元,悲观估值_元,基准估值_元,乐观估值_元,安全边际折扣率,隐含PE_基准_倍,主估值方法,报告日期
 ```

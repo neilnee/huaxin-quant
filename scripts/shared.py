@@ -18,6 +18,12 @@ from datetime import datetime
 # ===================== 项目根路径 =====================
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPORTS_DIR = os.path.join(PROJECT_ROOT, "reports")
+VALUATION_REPORTS_DIR = os.path.join(REPORTS_DIR, "valuation")
+REPORT_INDEXES_DIR = os.path.join(REPORTS_DIR, "indexes")
+DAILY_REPORTS_DIR = os.path.join(REPORTS_DIR, "daily")
+VALUATION_INDEX_PATH = os.path.join(REPORT_INDEXES_DIR, "valuation_index.csv")
+VALUATION_RANKING_PATH = os.path.join(REPORT_INDEXES_DIR, "valuation_ranking.csv")
 
 # ===================== 年号工具 =====================
 

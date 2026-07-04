@@ -6,8 +6,8 @@
 - **核心哲学**: 价格到位 + 技术共振 = 交易信号。盘后复盘 + 前瞻预警 = 为明天做好准备。支撑止损保护本金，均线止盈保护利润。估值模型可能有盲区，价格偏离时触发复核而非盲从。
 - **输入**:
   - `quant/` 目录下最新日期的 `quant_<YYMMDD>.csv`（模型二精选池，取文件名日期最新的那份）
-  - `reports/_ranking.csv`（模型三估值锚点数据）
-  - `reports/_index.csv`（模型三研究状态追踪）
+  - `reports/indexes/valuation_ranking.csv`（模型三估值锚点数据）
+  - `reports/indexes/valuation_index.csv`（模型三研究状态追踪）
   - `core_pool.csv`（核心跟踪池，不存在则初始化）
   - `positions.csv`（持仓记录，不存在则创建空模板）
 - **输出**:
@@ -16,7 +16,7 @@
   - `positions.csv`（更新后的持仓记录，如有变动）
 - **配套脚本**:
   - `scripts/tracker.py` — 数据拉取、缓存管理、技术指标计算、信号条件预检、**池子维护**，输出 `signals_<YYMMDD>.json`
-  - `scripts/generate_report.py` — 读取 JSON + `_ranking.csv`，自动生成 `signals_<YYMMDD>.md` 报告
+  - `scripts/generate_report.py` — 读取 JSON + `valuation_ranking.csv`，自动生成 `signals_<YYMMDD>.md` 报告
   - LLM 职责：阶段零交互确认、阶段二信号解读与操作建议措辞、阶段四估值复核提醒（报告格式化由脚本完成，LLM 不做排版）
 - **参考手册**: `04-tracker-ref.md`（信号常量、指标公式、函数规格，足以重建脚本；执行时不加载）
 
@@ -220,9 +220,9 @@ python3 scripts/tracker.py --no-cache                # 强制跳过缓存，重�
 
 **1.4 估值锚点加载**
 
-`tracker.py` 和 `generate_report.py` 均从 `reports/_ranking.csv` 读取以下字段：
+`tracker.py` 和 `generate_report.py` 均从 `reports/indexes/valuation_ranking.csv` 读取以下字段：
 
-| _ranking.csv 字段 | 模型四用途 |
+| valuation_ranking.csv 字段 | 模型四用途 |
 |-------------------|-----------|
 | 下行风险价_元 | S0 支撑位底线 |
 | 悲观估值_元 | B1/B2 价格区间下沿（⚠️ 字段名是"悲观"不是"保守"） |
@@ -391,7 +391,7 @@ B0 不是交易信号，是"值得关注但先别动"的提示。
 | 异常类型 | 判断条件 | 提醒内容 |
 |----------|----------|----------|
 | 价格严重偏离 | 当前股价 < 悲观估值×0.7，或 > 乐观估值×1.3 | 估值可能失真，建议人工复核 |
-| 报告过期 | `_index.csv` 中"数据截至报告期"距今超过 6 个月 | 估值可能过时，建议重新生成 |
+| 报告过期 | `valuation_index.csv` 中"数据截至报告期"距今超过 6 个月 | 估值可能过时，建议重新生成 |
 | 一致预期修正 | 最新一致预期与估值报告中偏差 > 30%（当前需手动比对） | 市场预期已重大变化，建议重新估值 |
 
 **S1 触发时的专项复核**：当 S1-估值卖点触发时，附加详细提醒：
@@ -437,7 +437,7 @@ python3 scripts/generate_report.py <YYMMDD>
 ```
 
 脚本自动完成：
-- 读取 `signals_<YYMMDD>.json` + `_ranking.csv` + `positions.csv` + `batches.csv`
+- 读取 `signals_<YYMMDD>.json` + `valuation_ranking.csv` + `positions.csv` + `batches.csv`
 - 生成总览表（持仓/未持仓分表，按 B1→B0→无信号排序）
 - 生成 B1 聚焦表（排名、缩量、均线、T0、建议）
 - 生成 B0 清单（有估值/缺估值分类）
@@ -469,6 +469,6 @@ python3 scripts/generate_report.py <YYMMDD>
 
 **上游（模型二）**：读取 `quant/` 下最新日期的 CSV，文件名日期距今 > 5 天时打印提醒。
 
-**上游（模型三）**：读取 `reports/_ranking.csv` 获取估值锚点。
+**上游（模型三）**：读取 `reports/indexes/valuation_ranking.csv` 获取估值锚点。
 
 **下游**：输出 `signals/` 目录下的每日信号报告，供次日盘前审阅。不自动触发任何上游模型。

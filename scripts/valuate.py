@@ -4,7 +4,7 @@ valuate.py — 模型三估值分析 阶段零 数据准备脚本
 对应指令卡: instructions/03-valuation.md
 
 功能:
-  0.1 进度检查 — 读取 _index.csv，判断首次覆盖/持续跟踪/跳过
+  0.1 进度检查 — 读取 valuation_index.csv，判断首次覆盖/持续跟踪/跳过
   0.2 财务数据解析 — 从 cache/financial/ 读取 mx-data 原始 JSON
   0.3 指标计算 — OCF/NP、固定资产/总资产、毛利率波动、非经常性占比等
   0.4 决策树信号 — Q1/Q1b/Q2/Q3/Q_IRREG 自动判定
@@ -12,7 +12,7 @@ valuate.py — 模型三估值分析 阶段零 数据准备脚本
   0.6 简报册输出 — cache/briefing/<code>_<YYMMDD>.json
 
 用法:
-  python3 scripts/valuate.py                      # 处理 _index.csv 中所有待处理标的
+  python3 scripts/valuate.py                      # 处理 valuation_index.csv 中所有待处理标的
   python3 scripts/valuate.py --code 300442         # 单只标的
   python3 scripts/valuate.py --test                # 只跑前 2 只
   python3 scripts/valuate.py --phase 0             # 只刷新缓存
@@ -29,13 +29,13 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 from collections import defaultdict
+from scripts.shared import VALUATION_INDEX_PATH
 
 # ── 项目根目录（脚本在 scripts/ 下） ─────────────────────────
 PROJECT_ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CACHE_FINANCIAL = PROJECT_ROOT / "cache" / "financial"
 CACHE_BRIEFING = PROJECT_ROOT / "cache" / "briefing"
 CACHE_RESEARCH = PROJECT_ROOT / "cache" / "research"
-REPORTS_DIR = PROJECT_ROOT / "reports"
 QUANT_DIR = PROJECT_ROOT / "quant"
 
 # ── 字段中文名 → 候选关键词（用于 nameMap 模糊匹配） ──────────
@@ -555,8 +555,8 @@ def build_briefing(code, name, indicators, signals, funnel, data_date="2025-12-3
 # ── 进度管理 ──────────────────────────────────────────
 
 def read_index():
-    """读取 _index.csv"""
-    index_path = REPORTS_DIR / "_index.csv"
+    """读取 valuation_index.csv"""
+    index_path = Path(VALUATION_INDEX_PATH)
     if not index_path.exists():
         return []
     rows = []
@@ -591,7 +591,7 @@ def read_quant_pool(date_str=None):
 
 
 def get_stock_name_from_index(code):
-    """从 _index.csv 获取股票名称"""
+    """从 valuation_index.csv 获取股票名称"""
     rows = read_index()
     for row in rows:
         idx_code = row.get("股票代码", "").replace('="', "").replace('"', "")
@@ -701,7 +701,7 @@ def main():
     if args.code:
         stocks = [{"code": args.code, "name": get_stock_name_from_index(args.code)}]
     else:
-        # 从 _index.csv 读取
+        # 从 valuation_index.csv 读取
         index_rows = read_index()
         if index_rows:
             stocks = []

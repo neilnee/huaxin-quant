@@ -3,7 +3,7 @@
 - **版本管理**: 由 Git 分支与提交历史管理，文件名不再携带版本号
 - **最近更新**: 2026-05-22
 - **核心哲学**: 脚本做计算，LLM 做判断。
-- **输入**: `quant/quant_<YYMMDD>.csv` | **输出**: `reports/<code>_<name>.md` + `_index.csv` + `_ranking.csv`
+- **输入**: `quant/quant_<YYMMDD>.csv` | **输出**: `reports/valuation/<code>_<name>.md` + `reports/indexes/valuation_index.csv` + `reports/indexes/valuation_ranking.csv`
 - **配套脚本**: `scripts/valuate.py`（阶段零）+ `scripts/calc_valuation.py`（估值计算引擎）| 参考手册: `03-valuation-ref.md`
 
 ---
@@ -170,7 +170,7 @@ python3 scripts/calc_valuation.py cache/calc_params/<code>_<YYMMDD>.json
 - 2027E 参数迁移：PE 不下调、概率上调、折扣收窄
 - 三层矩阵汇总：支柱 × Layer 矩阵 + 按层合并
 - 反向检查触发
-- `_ranking.csv` 自动更新
+- `reports/indexes/valuation_ranking.csv` 自动更新
 
 引擎输出 `cache/calc_results/<code>_<YYMMDD>.json`，含 PE 计算细节、每支柱估值、三层矩阵、报告数字片段。**直接引用引擎输出的数字写入报告，不手工重算。**
 
@@ -265,8 +265,8 @@ python3 scripts/calc_valuation.py cache/calc_params/<code>_<YYMMDD>.json
 
 ### 5.3 进度管理
 
-- `_index.csv`：每标的一行，记录各阶段状态（done/failed/pending）和日期。每完成一个阶段立即写回。
-- `_ranking.csv`：**引擎自动更新**（运行 `calc_valuation.py` 时自动追加/替换行，按安全边际折扣率升序排列）。不需要手工写 CSV。
+- `reports/indexes/valuation_index.csv`：每标的一行，记录各阶段状态（done/failed/pending）和日期。每完成一个阶段立即写回。
+- `reports/indexes/valuation_ranking.csv`：**引擎自动更新**（运行 `calc_valuation.py` 时自动追加/替换行，按安全边际折扣率升序排列）。不需要手工写 CSV。
 
 ---
 

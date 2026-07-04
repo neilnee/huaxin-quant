@@ -26,7 +26,7 @@ import pandas as pd
 import requests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from scripts.shared import DailyCache, PROJECT_ROOT, RateLimiter
+from scripts.shared import DailyCache, PROJECT_ROOT, RateLimiter, VALUATION_INDEX_PATH
 
 
 # ===================== 配置 =====================
@@ -34,7 +34,6 @@ from scripts.shared import DailyCache, PROJECT_ROOT, RateLimiter
 BASE_URL = "https://mkapi2.dfcfs.com/finskillshub/api/claw/query"
 POOL_DIR = os.path.join(PROJECT_ROOT, "pool")
 QUANT_DIR = os.path.join(PROJECT_ROOT, "quant")
-REPORTS_DIR = os.path.join(PROJECT_ROOT, "reports")
 QUANT_RUNS_DIR = os.path.join(PROJECT_ROOT, "cache", "quant_runs")
 cache = DailyCache()
 _rate_limiter = RateLimiter()
@@ -197,7 +196,7 @@ def load_known_names():
     for pattern_dir, pattern in [(POOL_DIR, "pool_*.csv"), (QUANT_DIR, "quant_*.csv")]:
         for path in sorted(Path(pattern_dir).glob(pattern)):
             names.update(read_code_name_csv(path))
-    names.update(read_code_name_csv(os.path.join(REPORTS_DIR, "_index.csv")))
+    names.update(read_code_name_csv(VALUATION_INDEX_PATH))
     return names
 
 

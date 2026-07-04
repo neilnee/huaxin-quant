@@ -19,13 +19,15 @@ import csv
 from datetime import datetime
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from scripts.shared import VALUATION_RANKING_PATH
+
 # ── 项目路径 ──────────────────────────────────────────
 PROJECT_ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CACHE_BRIEFING = PROJECT_ROOT / "cache" / "briefing"
 CACHE_CALC_PARAMS = PROJECT_ROOT / "cache" / "calc_params"
 CACHE_CALC_RESULTS = PROJECT_ROOT / "cache" / "calc_results"
-REPORTS_DIR = PROJECT_ROOT / "reports"
-RANKING_PATH = REPORTS_DIR / "_ranking.csv"
+RANKING_PATH = Path(VALUATION_RANKING_PATH)
 
 # ══════════════════════════════════════════════════════
 # 常量表（与指令卡 §2.5 / 参考手册 同步）
@@ -956,7 +958,7 @@ def reverse_check(current_price, pessimistic_ps, base_ps, optimistic_ps,
 
 def generate_ranking_row(code, name, current_price, pessimistic_ps, base_ps,
                           optimistic_ps, implied_pe_base, valuation_method):
-    """生成 _ranking.csv 的一行数据。
+    """生成 valuation_ranking.csv 的一行数据。
 
     Returns:
         dict: 字段名→值，已格式化为字符串
@@ -980,7 +982,7 @@ def generate_ranking_row(code, name, current_price, pessimistic_ps, base_ps,
 
 
 def update_ranking_csv(ranking_row, ranking_path=None):
-    """更新 _ranking.csv：如果代码已存在则替换，否则追加。
+    """更新 valuation_ranking.csv：如果代码已存在则替换，否则追加。
 
     写入后按安全边际折扣率升序排序。
     """
@@ -1238,7 +1240,7 @@ def run_valuation(params):
         growth_quality, params["market_position"]
     )
 
-    # ── 步骤 7: 生成 _ranking.csv 行 ──
+    # ── 步骤 7: 生成 valuation_ranking.csv 行 ──
     # 取第一个支柱的主路线作为整体估值方法
     primary_route = pillars[0].get("route", "B") if pillars else "B"
     route_names = {
@@ -1327,11 +1329,11 @@ def main():
     with open(result_path, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
 
-    # 更新 _ranking.csv
+    # 更新 valuation_ranking.csv
     ranking_row = result.get("ranking_row", {})
     if ranking_row:
         n = update_ranking_csv(ranking_row)
-        print(f"✅ _ranking.csv 已更新 ({n} 行)")
+        print(f"✅ valuation_ranking.csv 已更新 ({n} 行)")
 
     print(f"✅ 估值结果: {result_path}")
 

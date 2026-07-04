@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """
-generate_report.py — 从 tracker JSON + _ranking.csv 自动生成每日信号报告 markdown
-用法: python3 scripts/generate_report.py [--date 260521]
+generate_report.py — 从 tracker JSON + valuation_ranking.csv 自动生成每日信号报告 markdown
+用法: python3 scripts/generate_report.py [260521]
 """
 
 import json, csv, os, sys
 from datetime import datetime
 
 PROJECT_ROOT = "/Users/neil/ai/quant_lab"
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from scripts.shared import VALUATION_RANKING_PATH
+
 SIGNALS_DIR = f"{PROJECT_ROOT}/signals"
-RANKING_PATH = f"{PROJECT_ROOT}/reports/_ranking.csv"
+RANKING_PATH = VALUATION_RANKING_PATH
 
 
 def load_data(datestr):

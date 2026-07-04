@@ -40,7 +40,7 @@ git -C /Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant commit -m "
 quant_lab/（本地工作区 · Huaxin Quant 运行实例）
 │
 ├── .claude/                        本地目录 · Claude Code 项目配置
-│   ├── settings.json          🔗→ 云盘 .project/settings.json（Git 版本管理）
+│   ├── settings.json          🔗→ 云盘 .claude/settings.json（Git 版本管理）
 │   └── settings.local.json        本地机特定权限（不入 Git）
 │
 ├── instructions/              🔗→ 云盘 · 模型执行指令卡（Git 管理）
@@ -80,7 +80,7 @@ OneDrive/huaxin_quant/（云盘 · Huaxin Quant Git 仓库）
 │
 ├── .git/                           Git 仓库
 ├── .gitignore
-├── .project/
+├── .claude/
 │   └── settings.json               Claude Code 共享权限策略（Git 管理）
 ├── .obsidian/
 ├── CLAUDE.md

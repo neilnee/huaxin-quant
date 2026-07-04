@@ -19,29 +19,19 @@ tracker.py — 模型四 择时跟踪 配套脚本
 
 import os, json, time, csv, sys, argparse
 from datetime import datetime
-import requests
 import pandas as pd
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from scripts.shared import RateLimiter, DailyCache, PROJECT_ROOT, VALUATION_RANKING_PATH
+from scripts.shared import DailyCache, PROJECT_ROOT, VALUATION_RANKING_PATH, fetch_daily
 
 # ===================== 配置 =====================
 
-API_KEY = os.environ.get("MX_APIKEY")
-if not API_KEY:
-    print("❌ 环境变量 MX_APIKEY 未设置")
-    sys.exit(1)
-
-BASE_URL = "https://mkapi2.dfcfs.com/finskillshub/api/claw/query"
 SIGNALS_DIR = os.path.join(PROJECT_ROOT, "signals")
 CORE_POOL_PATH = os.path.join(SIGNALS_DIR, "core_pool.csv")
 POSITIONS_PATH = os.path.join(SIGNALS_DIR, "positions.csv")
 BATCHES_PATH = os.path.join(SIGNALS_DIR, "batches.csv")
 RANKING_PATH = VALUATION_RANKING_PATH
-cache = DailyCache()
-
-_rate_limiter = RateLimiter()
 
 # ===================== 数据读取 =====================
 
@@ -130,131 +120,6 @@ def read_ranking():
                 "valuation_method": row.get("主估值方法", ""),
             }
     return rankings
-
-# ===================== 数据拉取 =====================
-
-def fetch_daily(code, name, datestr, use_cache=True):
-    """拉取近200个交易日日线，返回 (DataFrame, source) 或 (None, err_msg)"""
-    if use_cache:
-        cached = cache.load(code, datestr)
-        if cached is not None:
-            return cached, "cache"
-
-    query = f"{code}近200个交易日每日开盘价、最高价、最低价、收盘价、成交量、换手率"
-    headers = {"Content-Type": "application/json", "apikey": API_KEY}
-    payload = {"toolQuery": query, "toolType": "query_tool"}
-
-    for attempt in range(3):  # 最多 3 次尝试
-        try:
-            resp = requests.post(BASE_URL, headers=headers, json=payload, timeout=30)
-            resp.raise_for_status()
-            result = resp.json()
-        except requests.exceptions.Timeout:
-            if attempt < 1:
-                _rate_limiter.wait(is_fail=True)
-                continue
-            return None, "网络超时"
-        except requests.exceptions.ConnectionError:
-            if attempt < 1:
-                _rate_limiter.wait(is_fail=True)
-                continue
-            return None, "连接错误"
-        except Exception as e:
-            return None, f"网络异常: {e}"
-
-        code_val = result.get("code", -1)
-        if code_val == 0:
-            _rate_limiter.reset_fails()
-            break
-        if code_val in (112,):
-            if attempt < 2:  # code=112 重试最多 2 次（共 3 次尝试）
-                _rate_limiter.wait(is_fail=True)
-                time.sleep(5)  # 额外冷却
-                continue
-            return None, "code=112(频率限制, 重试3次仍失败)"
-        if code_val == 113:
-            return None, "FATAL:API调用次数达上限(113)"
-        if code_val == 114:
-            return None, "FATAL:API Key失效(114)"
-        if code_val == 115:
-            return None, "无查询结果"
-        if attempt == 0:
-            _rate_limiter.wait(is_fail=True)
-            continue
-        return None, f"API返回code={code_val}"
-
-    try:
-        tables = result["data"]["data"]["searchDataResultDTO"]["dataTableDTOList"]
-        # 优先取 Table 1（历史数据），如果只有一张表则取 Table 0
-        hist = tables[1] if len(tables) >= 2 else tables[0]
-        raw = hist["rawTable"]
-        nm = hist["nameMap"]
-    except (KeyError, IndexError, TypeError):
-        return None, "数据结构异常"
-
-    ind_map = {v: k for k, v in nm.items() if k != "headNameSub"}
-
-    # 容错：某些标的（如ETF）的字段名可能不同，尝试模糊匹配
-    def find_field(patterns):
-        """从 ind_map 的 keys 中按 patterns 列表顺序查找匹配的字段"""
-        for pat in patterns:
-            for field_name in ind_map:
-                if pat in field_name:
-                    return field_name
-        return None
-
-    # 扩展匹配：ETF 字段名可能与个股不同
-    field_close = find_field(["收盘价", "收盘", "当日收盘价", "最新价"])
-    field_open = find_field(["开盘价", "开盘", "当日开盘价"])
-    field_high = find_field(["最高价", "最高", "当日最高价"])
-    field_low = find_field(["最低价", "最低", "当日最低价"])
-    field_vol = find_field(["成交量"])
-    field_turn = find_field(["换手率"])
-
-    if not all([field_close, field_open, field_high, field_low, field_vol, field_turn]):
-        missing = []
-        if not field_close: missing.append("收盘价")
-        if not field_open: missing.append("开盘价")
-        if not field_high: missing.append("最高价")
-        if not field_low: missing.append("最低价")
-        if not field_vol: missing.append("成交量")
-        if not field_turn: missing.append("换手率")
-        return None, f"缺少必要字段: {', '.join(missing)} (可用: {list(ind_map.keys())[:10]})"
-
-    dates = raw["headName"]
-
-    rows = []
-    for i, d in enumerate(dates):
-        vol_str = raw[ind_map[field_vol]][i]
-        turn_str = raw[ind_map[field_turn]][i]
-        open_str = raw[ind_map[field_open]][i]
-        high_str = raw[ind_map[field_high]][i]
-        low_str = raw[ind_map[field_low]][i]
-        close_str = raw[ind_map[field_close]][i]
-        # 停牌日任一字段为 '-' 则跳过
-        if "-" in (vol_str, turn_str, open_str, high_str, low_str, close_str):
-            continue
-        rows.append({
-            "date": d,
-            "open": float(open_str),
-            "high": float(high_str),
-            "low": float(low_str),
-            "close": float(close_str),
-            "volume": float(vol_str),
-            "turnover": float(turn_str),
-        })
-
-    if not rows:
-        return None, "无有效交易日数据"
-
-    df = pd.DataFrame(rows)
-    df = df.sort_values("date").reset_index(drop=True)
-
-    # 写入缓存（始终写，--no-cache 只跳读不跳写）
-    cache.save(code, datestr, df)
-
-    _rate_limiter.wait(is_fail=False)
-    return df, "api"
 
 # ===================== 指标计算 =====================
 
@@ -1163,7 +1028,8 @@ def main():
     datestr = args.date if args.date else datetime.now().strftime("%y%m%d")
 
     # 清理旧缓存
-    cleaned = cache.cleanup_old(keep_days=5)
+    cleanup_cache = DailyCache()
+    cleaned = cleanup_cache.cleanup_old(keep_days=5)
     if cleaned:
         print(f"🧹 清理旧缓存: {cleaned} 个文件")
 
@@ -1217,7 +1083,7 @@ def main():
                 api_fails += 1
             continue
 
-        if source == "cache":
+        if source.startswith("cache"):
             cache_hits += 1
         else:
             api_calls += 1

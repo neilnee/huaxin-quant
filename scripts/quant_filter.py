@@ -18,7 +18,7 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -26,17 +26,14 @@ import pandas as pd
 import requests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from scripts.shared import DailyCache, PROJECT_ROOT, RateLimiter, VALUATION_INDEX_PATH
+from scripts.shared import DailyCache, PROJECT_ROOT, VALUATION_INDEX_PATH, fetch_daily
 
 
 # ===================== 配置 =====================
 
-BASE_URL = "https://mkapi2.dfcfs.com/finskillshub/api/claw/query"
 POOL_DIR = os.path.join(PROJECT_ROOT, "pool")
 QUANT_DIR = os.path.join(PROJECT_ROOT, "quant")
 QUANT_RUNS_DIR = os.path.join(PROJECT_ROOT, "cache", "quant_runs")
-cache = DailyCache()
-_rate_limiter = RateLimiter()
 
 TEST_CODES = [
     "688256", "301329", "300394", "300308", "002028",
@@ -44,15 +41,6 @@ TEST_CODES = [
     "688235", "920946", "688295", "002054", "601777",
     "603409", "600176", "301526", "300442",
 ]
-
-FIELD_ALIASES = {
-    "成交量": ["成交量", "成交数量", "成交股数"],
-    "换手率": ["换手率", "换手"],
-    "开盘价": ["开盘价", "开盘"],
-    "最高价": ["最高价", "最高"],
-    "最低价": ["最低价", "最低"],
-    "收盘价": ["收盘价", "收盘"],
-}
 
 VCP_LOOKBACK = 120
 VCP_SWING_WINDOW = 3
@@ -110,34 +98,6 @@ def rolling_slope_pct(series, window):
 def latest_file(directory, pattern):
     files = sorted(Path(directory).glob(pattern))
     return files[-1] if files else None
-
-
-def expected_trade_date(run_date=None):
-    """Expected latest A-share trade date using weekday fallback.
-
-    This intentionally avoids a heavyweight calendar dependency. Weekend runs
-    expect Friday's data; exchange holidays can still be overridden by reruns
-    after data is available.
-    """
-    if run_date is None:
-        cur = datetime.now().date()
-    elif isinstance(run_date, str):
-        cur = datetime.strptime(run_date, "%Y-%m-%d").date()
-    else:
-        cur = run_date
-    while cur.weekday() >= 5:
-        cur -= timedelta(days=1)
-    return cur.strftime("%Y-%m-%d")
-
-
-def cache_is_fresh(df, expected_date):
-    if df is None or df.empty:
-        return False
-    try:
-        last_date = str(df.iloc[-1]["date"])[:10]
-    except Exception:
-        return False
-    return last_date >= expected_date
 
 
 def load_local_env():
@@ -231,151 +191,6 @@ def resolve_input_codes(args, today_yy):
     if not os.path.exists(pool_path):
         raise FileNotFoundError(f"池文件不存在: {pool_path}")
     return load_pool_codes(pool_path), "全量"
-
-
-# ===================== 数据拉取 =====================
-
-def _find_field(ind_map, field_key):
-    aliases = FIELD_ALIASES.get(field_key, [field_key])
-    for alias in aliases:
-        if alias in ind_map:
-            return ind_map[alias]
-    return None
-
-
-def _resolve_fields(ind_map, required_fields):
-    resolved = {}
-    for field in required_fields:
-        idx = _find_field(ind_map, field)
-        if idx is None:
-            return None, f"nameMap缺少字段'{field}'(可用: {list(ind_map.keys())})"
-        resolved[field] = idx
-    return resolved, None
-
-
-def _select_history_table(tables, required_fields):
-    """Select the table that contains OHLCV history fields.
-
-    The MX query API can return multiple tables. Some stocks put the full
-    historical table at index 0 while others put it at index 1, so fixed index
-    access is brittle.
-    """
-    errors = []
-    for idx, table in enumerate(tables or []):
-        try:
-            raw = table["rawTable"]
-            name_map = table["nameMap"]
-        except (KeyError, TypeError):
-            errors.append(f"table[{idx}]缺rawTable/nameMap")
-            continue
-
-        ind_map = {v: k for k, v in name_map.items() if k != "headNameSub"}
-        fields, err = _resolve_fields(ind_map, required_fields)
-        if err:
-            errors.append(f"table[{idx}]: {err}")
-            continue
-        if not raw.get("headName"):
-            errors.append(f"table[{idx}]缺headName")
-            continue
-        return raw, fields, None
-
-    return None, None, "未找到完整历史行情表(" + "；".join(errors[:3]) + ")"
-
-
-def fetch_daily(code, name, datestr, use_cache=True):
-    """拉取近 200 个交易日日线。返回 (DataFrame, source) 或 (None, error)。"""
-    expected_date = expected_trade_date()
-    if use_cache:
-        cached = cache.load(code, datestr)
-        if cached is not None and cache_is_fresh(cached, expected_date):
-            return cached, "cache"
-
-    api_key = os.environ.get("MX_APIKEY")
-    if not api_key:
-        return None, "FATAL:环境变量 MX_APIKEY 未设置，且未命中缓存"
-
-    query = f"{name}近200个交易日每日开盘价、最高价、最低价、收盘价、成交量、换手率"
-    headers = {"Content-Type": "application/json", "apikey": api_key}
-    payload = {"toolQuery": query, "toolType": "query_tool"}
-
-    for attempt in range(3):
-        try:
-            resp = requests.post(BASE_URL, headers=headers, json=payload, timeout=30)
-            resp.raise_for_status()
-            result = resp.json()
-        except requests.exceptions.Timeout:
-            if attempt < 1:
-                _rate_limiter.wait(is_fail=True)
-                continue
-            return None, "网络超时(重试仍失败)"
-        except requests.exceptions.ConnectionError:
-            if attempt < 1:
-                _rate_limiter.wait(is_fail=True)
-                continue
-            return None, "连接错误(重试仍失败)"
-        except Exception as exc:
-            return None, f"网络异常: {exc}"
-
-        code_val = result.get("code", -1)
-        if code_val == 0:
-            _rate_limiter.reset_fails()
-            break
-        if code_val == 112:
-            if attempt < 2:
-                _rate_limiter.wait(is_fail=True)
-                time.sleep(5)
-                continue
-            return None, "code=112(频率限制，重试3次仍失败)"
-        if code_val == 113:
-            return None, "FATAL:API调用次数达上限(113)，请次日再跑"
-        if code_val == 114:
-            return None, "FATAL:API Key失效(114)"
-        if code_val == 115:
-            return None, "code=115(查询无结果)"
-        if attempt == 0:
-            _rate_limiter.wait(is_fail=True)
-            continue
-        return None, f"API返回code={code_val}"
-
-    required_fields = ["成交量", "换手率", "开盘价", "最高价", "最低价", "收盘价"]
-    try:
-        tables = result["data"]["data"]["searchDataResultDTO"]["dataTableDTOList"]
-    except (KeyError, TypeError):
-        return None, "数据结构异常(缺dataTableDTOList)"
-
-    raw, fields, err = _select_history_table(tables, required_fields)
-    if err:
-        return None, err
-
-    rows = []
-    for i, d in enumerate(raw["headName"]):
-        values = {
-            "volume": raw[fields["成交量"]][i],
-            "turnover": raw[fields["换手率"]][i],
-            "open": raw[fields["开盘价"]][i],
-            "high": raw[fields["最高价"]][i],
-            "low": raw[fields["最低价"]][i],
-            "close": raw[fields["收盘价"]][i],
-        }
-        if "-" in tuple(values.values()):
-            continue
-        rows.append({
-            "date": d,
-            "open": float(values["open"]),
-            "high": float(values["high"]),
-            "low": float(values["low"]),
-            "close": float(values["close"]),
-            "volume": float(values["volume"]),
-            "turnover": float(values["turnover"]),
-        })
-
-    if not rows:
-        return None, "无有效交易日数据(可能长期停牌)"
-
-    df = pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
-    cache.save(code, datestr, df)
-    _rate_limiter.wait(is_fail=False)
-    return df, "api"
 
 
 # ===================== 指标计算 =====================
@@ -1387,7 +1202,7 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True):
                     fatal_stop = True
             continue
 
-        stats["cache_hits" if source == "cache" else "api_calls"] += 1
+        stats["cache_hits" if source.startswith("cache") else "api_calls"] += 1
         if len(df) < 20:
             print(f"跳过: 数据不足({len(df)}天)")
             stats["data_insufficient"] += 1
@@ -1445,14 +1260,15 @@ def main():
     print("=" * 70)
     print("模型二：VCP/P2/P3 量价精筛")
     print(f"模式: {mode} | 标的: {len(codes)} 只 | CSV: {quant_path}")
-    print(f"缓存: {'关闭' if args.no_cache else '开启'} | 目录: {cache.cache_dir}")
+    cleanup_cache = DailyCache()
+    print(f"缓存: {'关闭' if args.no_cache else '开启'} | 目录: {cleanup_cache.cache_dir}")
     print("=" * 70)
 
-    cleaned = cache.cleanup_old(keep_days=5)
+    cleaned = cleanup_cache.cleanup_old(keep_days=5)
     if cleaned:
         print(f"已清理 {cleaned} 个超过5天的旧缓存文件")
     if args.refresh:
-        cleared = cache.clear_today(today_yy)
+        cleared = cleanup_cache.clear_today(today_yy)
         print(f"已清除今日缓存 {cleared} 个文件")
 
     results, stats = process_codes(codes, today_yy, run_date, use_cache=use_cache)

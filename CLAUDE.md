@@ -56,11 +56,15 @@ quant_lab/（本地工作区 · Huaxin Quant 运行实例）
 │   ├── calc_params/                模型三估值引擎输入参数 JSON
 │   ├── calc_results/               模型三估值引擎输出结果 JSON
 │   ├── research/                   mx-search 研报搜索结果
+│   ├── reviews/                    LLM 每日复盘输入包（可重建）
 │   └── zixuan/                     自选股同步本地缓存（zixuan.csv）
 │
 ├── pool/                           本地 · 模型一（海选初筛）输出
 ├── quant/                          本地 · 模型二（量价精筛）输出
-├── reports/                        本地 · 模型三（深度估值）报告 + _index.csv + _ranking.csv
+├── bloom/                          本地 · 模型二后的花期观察状态层
+│                                    bloom_events.jsonl + bloom_state.csv
+├── reports/                        本地 · 模型三（深度估值）报告 + 每日复盘报告
+│                                    当前保留 _index.csv + _ranking.csv；daily/ 放花期复盘
 ├── signals/                        本地 · 模型四（择时跟踪）工作区
 │                                    每日信号报告 + core_pool.csv + positions.csv
 │                                    + batches.csv + trade_log.csv

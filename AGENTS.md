@@ -42,6 +42,7 @@ git -C /Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant commit -m "
 - `cache/`
 - `pool/`
 - `quant/`
+- `bloom/`
 - `reports/`
 - `signals/`
 - `refer/`
@@ -103,6 +104,7 @@ quant_lab/  # Huaxin Quant 本地运行实例
 ├── cache/             本地缓存
 ├── pool/              模型一输出
 ├── quant/             模型二输出
+├── bloom/             模型二后花期观察状态
 ├── reports/           模型三报告
 ├── signals/           模型四信号跟踪
 ├── refer/             本地参考资料

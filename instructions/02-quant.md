@@ -494,7 +494,83 @@ llm_status = failed
 
 ---
 
-## 九、验收标准
+## 九、每日花期复盘层
+
+模型一、模型二完成后，运行每日复盘层，把脚本结果沉淀为 Huaxin Quant 的花期观察数据层和人类可读复盘。
+
+入口：
+
+```bash
+python3 scripts/daily_review.py
+python3 scripts/daily_review.py --date 260703
+python3 scripts/daily_review.py --date 260703 --with-llm
+```
+
+输入：
+
+```text
+pool/pool_<YYMMDD>.csv
+quant/quant_<YYMMDD>.csv
+cache/quant_runs/quant_<YYMMDD>.json
+bloom/bloom_state.csv（如存在，用于状态延续）
+bloom/bloom_events.jsonl（如存在，用于去重追加）
+```
+
+输出：
+
+```text
+bloom/bloom_events.jsonl
+bloom/bloom_state.csv
+cache/reviews/review_input_<YYMMDD>.json
+reports/daily/review_<YYMMDD>.md
+```
+
+职责边界：
+
+| 模块 | 职责 |
+|------|------|
+| `daily_review.py` | 确定性汇总、状态 diff、事件追加、当前状态表更新、生成 LLM 输入包和基础 Markdown |
+| LLM | 可选解释、复盘措辞、重点样本点评，不改变模型一/二判定 |
+
+`bloom/` 是模型二之后、模型三/四之前的花期观察数据层：
+
+- `bloom_events.jsonl`：追加式事件流水。重复跑同一天时先删除同日事件再重写，保持幂等。
+- `bloom_state.csv`：当前观察状态表。每天全量模式运行后覆盖更新。
+
+状态映射：
+
+| 脚本状态 | bloom 状态 | 含义 |
+|----------|------------|------|
+| `P1_EARLY` | `early` | 早期花蕾，刚出现收缩过程 |
+| `P1_FORMING` | `forming` | 花期形成中，重点观察 |
+| `P1_TIGHT` / `P1_HIGH` / `P1_MATURE` | `mature` | 结构更完整或更紧致 |
+| `P3_RETEST` | `retest` | 突破后回踩确认 |
+| `POST_BREAKOUT` | `breakout` | 历史结构已走完，不再算当前形成期 |
+| `TREND_REBUILD` | `invalid` | 历史结构失效，等待重建 |
+| `DATA_INSUFFICIENT` / API 缺失 | `data_issue` | 数据不足或接口异常 |
+| 其他 `REJECT` | `rejected` | 当前不进入观察 |
+
+事件类型：
+
+```text
+new_entry   昨日不存在/非观察 → 今日 early/forming/mature/retest
+upgrade     观察状态升级，例如 early → forming
+downgrade   观察状态降级，例如 forming → early
+invalidated 观察状态 → rejected/invalid/breakout/data_issue
+continued   观察状态延续
+data_issue  今日数据不足或缺失
+```
+
+LLM 解释层不得：
+
+- 推翻脚本的 `state` / `vcp_stage` / `pool_type`
+- 自造价格、成交量、财务数据
+- 把 `REJECT` 改成观察或买点
+- 替代模型三估值或模型四交易信号
+
+---
+
+## 十、验收标准
 
 - 长川科技这类强基本面但技术偏高的标的，应识别为 `P1_HIGH` 或观察状态，而不是 P2/P3。
 - P2 必须依赖 P1，不能变成下跌趋势抄底。

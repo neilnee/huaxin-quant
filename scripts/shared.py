@@ -5,15 +5,17 @@ Huaxin Quant 共享工具模块
   - PROJECT_ROOT: 项目根路径（从本文件位置推导，消除硬编码）
   - RateLimiter: API 请求限流（基础间隔 + 随机抖动 + 指数退避 + 批次歇息）
   - DailyCache: 日线数据本地缓存层（load/save/cleanup）
+  - fetch_daily: 统一日线数据获取入口（缓存 → 妙想 API）
   - find_key / find_field: 字段名模糊匹配
   - get_latest_annual_period: 推断最新可用年报报告期
+  - expected_trade_date / cache_is_fresh: 缓存新鲜度检查
 """
 
 import os
 import time
 import pickle
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # ===================== 项目根路径 =====================
 
@@ -40,6 +42,34 @@ def get_latest_annual_period():
     else:
         year = now.year - 2
     return f"{year}-12-31"
+
+
+def expected_trade_date(run_date=None):
+    """预期最近的 A 股交易日，周末回退到周五。
+
+    主动避免引入假日日历依赖。周末运行以周五数据为准；
+    交易所假日可通过回测日参数覆盖。
+    """
+    if run_date is None:
+        cur = datetime.now().date()
+    elif isinstance(run_date, str):
+        cur = datetime.strptime(run_date, "%Y-%m-%d").date()
+    else:
+        cur = run_date
+    while cur.weekday() >= 5:
+        cur -= timedelta(days=1)
+    return cur.strftime("%Y-%m-%d")
+
+
+def cache_is_fresh(df, expected_date):
+    """检查缓存的 DataFrame 最新日期是否不早于预期交易日。"""
+    if df is None or df.empty:
+        return False
+    try:
+        last_date = str(df.iloc[-1]["date"])[:10]
+    except Exception:
+        return False
+    return last_date >= expected_date
 
 
 # ===================== 限流器 =====================
@@ -199,3 +229,73 @@ def find_field_by_alias(field_map, aliases):
             if alias in field_name:
                 return field_name
     return None
+
+
+# ===================== 统一日线数据获取 =====================
+
+# 模块级延迟单例
+_daily_cache = None
+_mx_source = None
+
+
+def _ensure_cache():
+    global _daily_cache
+    if _daily_cache is None:
+        _daily_cache = DailyCache()
+    return _daily_cache
+
+
+def _ensure_mx_source():
+    global _mx_source
+    if _mx_source is None:
+        # 延迟导入，避免 data_sources 未就绪
+        from scripts.data_sources import MiaoxiangSource
+        _mx_source = MiaoxiangSource()
+    return _mx_source
+
+
+def fetch_daily(code, name, datestr, use_cache=True):
+    """统一日线数据获取入口（替代 quant_filter / tracker 各自的 fetch_daily）。
+
+    链路: 缓存 → 妙想 API
+
+    返回:
+        (DataFrame, source_label) — source_label 为 "cache" / "cache(YYMMDD)" / "api"
+        或 (None, error_message) — 获取失败时 DataFrame 为 None
+
+    DataFrame 列: date, open, high, low, close, volume, turnover
+    """
+    cache = _ensure_cache()
+    expected_date = expected_trade_date()
+
+    # ── 第 1 步：缓存查找 ──
+    if use_cache:
+        cached = cache.load(code, datestr)
+        if cached is not None and cache_is_fresh(cached, expected_date):
+            return cached, "cache"
+        # 当天缓存未命中时，回退到该股票最近日期的缓存
+        cached, cache_date = cache.load_latest(code)
+        if cached is not None and cache_is_fresh(cached, expected_date):
+            return cached, f"cache({cache_date})"
+
+    # ── 第 2 步：妙想 API ──
+    mx = _ensure_mx_source()
+
+    api_key = os.environ.get("MX_APIKEY")
+    if not api_key:
+        return None, "FATAL:环境变量 MX_APIKEY 未设置，且未命中缓存"
+
+    try:
+        df = mx.fetch_bars(code, name)
+    except Exception as exc:
+        return None, f"数据源异常: {exc}"
+
+    if df is None:
+        return None, "妙想API返回空数据"
+
+    if df.empty:
+        return None, "无有效交易日数据(可能长期停牌)"
+
+    df = df.sort_values("date").reset_index(drop=True)
+    cache.save(code, datestr, df)
+    return df, "api"

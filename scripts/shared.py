@@ -101,6 +101,33 @@ class DailyCache:
                 os.remove(path)
         return None
 
+    def load_latest(self, code):
+        """当天缓存不存在时，回退到该股票最近日期的缓存文件。
+
+        返回 (DataFrame, datestr)，无可用缓存时返回 (None, None)。
+        文件名格式: <code>_<YYMMDD>.pkl，按 YYMMDD 降序取最新。
+        """
+        if not os.path.isdir(self.cache_dir):
+            return None, None
+        prefix = f"{code}_"
+        suffix = ".pkl"
+        candidates = []
+        for f in os.listdir(self.cache_dir):
+            if f.startswith(prefix) and f.endswith(suffix):
+                datestr = f[len(prefix):-len(suffix)]
+                if len(datestr) == 6 and datestr.isdigit():
+                    candidates.append((datestr, os.path.join(self.cache_dir, f)))
+        if not candidates:
+            return None, None
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        for datestr, path in candidates:
+            try:
+                return pd_read_pickle(path), datestr
+            except (pickle.UnpicklingError, EOFError, OSError):
+                os.remove(path)
+                continue
+        return None, None
+
     def save(self, code, datestr, df):
         os.makedirs(self.cache_dir, exist_ok=True)
         df.to_pickle(self._path(code, datestr))

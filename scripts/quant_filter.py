@@ -289,6 +289,10 @@ def fetch_daily(code, name, datestr, use_cache=True):
         cached = cache.load(code, datestr)
         if cached is not None and cache_is_fresh(cached, expected_date):
             return cached, "cache"
+        # 当天缓存未命中时，回退到该股票最近日期的缓存
+        cached, cache_date = cache.load_latest(code)
+        if cached is not None and cache_is_fresh(cached, expected_date):
+            return cached, f"cache({cache_date})"
 
     api_key = os.environ.get("MX_APIKEY")
     if not api_key:

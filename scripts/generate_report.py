@@ -7,9 +7,8 @@ generate_report.py — 从 tracker JSON + valuation_ranking.csv 自动生成每�
 import json, csv, os, sys
 from datetime import datetime
 
-PROJECT_ROOT = "/Users/neil/ai/quant_lab"
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from scripts.shared import VALUATION_RANKING_PATH
+from scripts.shared import PROJECT_ROOT, VALUATION_RANKING_PATH
 
 SIGNALS_DIR = f"{PROJECT_ROOT}/signals"
 RANKING_PATH = VALUATION_RANKING_PATH

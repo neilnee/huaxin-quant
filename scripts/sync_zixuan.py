@@ -17,12 +17,14 @@ import os, sys, csv, json, time, random, argparse
 from datetime import datetime
 import requests
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from scripts.shared import PROJECT_ROOT
+
 API_KEY = os.environ.get("MX_APIKEY")
 if not API_KEY:
     print("❌ 环境变量 MX_APIKEY 未设置")
     sys.exit(1)
 
-PROJECT_ROOT = "/Users/neil/ai/quant_lab"
 SIGNALS_DIR = f"{PROJECT_ROOT}/signals"
 CORE_POOL_PATH = f"{SIGNALS_DIR}/core_pool.csv"
 ZIXUAN_PATH = f"{SIGNALS_DIR}/zixuan.csv"

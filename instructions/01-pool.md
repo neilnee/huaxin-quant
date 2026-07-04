@@ -81,9 +81,9 @@
    python3 scripts/run_pool.py
    ```
 1. `run_pool.py` 对每个分段先检查 `cache/xuangu/` 目录下是否已有未过期且查询条件完全一致的 `*_raw.json` 文件。命中缓存则跳过 API 调用；需要强制刷新时使用 `--force-refresh`。
-2. 缓存缺失时，脚本自动拼接完整查询字符串，并调用 mx-xuangu 本地脚本：
+2. 缓存缺失时，脚本自动拼接完整查询字符串，并调用 mx-xuangu 本地脚本。脚本路径通过 `HUAXIN_XUANGU_SCRIPT` 或 `--xuangu-script` 指定：
    ```bash
-   python3 /Users/neil/.codex/skills/mx-xuangu/mx_xuangu.py --output-dir cache/xuangu --query "{查询字符串}"
+   python3 scripts/run_pool.py --xuangu-script /path/to/mx_xuangu.py
    ```
 3. 检查返回数据中的 `total` 字段：
    - `total < 200`：本段全覆盖，提取 `dataList` 全部记录

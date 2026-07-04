@@ -26,4 +26,8 @@ bloom/
 reports/
 signals/
 refer/
+tmp/
 tmp_*/
+
+# Local development notes are not part of the public core release
+dev_logs/

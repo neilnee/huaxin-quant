@@ -100,7 +100,7 @@ Q1=false:
 mx-search 强制拉取研报（每只至少一次，不能仅依赖简报册。简报册 consensus 仅 `quality=verified` 时参考）。
 
 ```bash
-cd /Users/neil/.claude/skills/mx-search && python3 ./mx_search.py --output-dir /Users/neil/ai/quant_lab/cache/research "<公司名称> 研报 盈利预测 2026 2027"
+python3 /path/to/mx_search.py --output-dir cache/research "<公司名称> 研报 盈利预测 2026 2027"
 ```
 
 提取 ≥3 家机构的结构化数据，**同时拉取 2026E 和 2027E**：

@@ -18,7 +18,7 @@ from scripts.shared import get_latest_annual_period
 PROJECT_ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SEGMENT_DIR = PROJECT_ROOT / "cache" / "xuangu"
 PROCESS_POOL_SCRIPT = PROJECT_ROOT / "scripts" / "process_pool.py"
-DEFAULT_XUANGU_SCRIPT = Path("/Users/neil/.codex/skills/mx-xuangu/mx_xuangu.py")
+DEFAULT_XUANGU_SCRIPT = os.environ.get("HUAXIN_XUANGU_SCRIPT", "mx_xuangu.py")
 
 
 @dataclass(frozen=True)
@@ -189,7 +189,7 @@ def fetch_segments(args: argparse.Namespace) -> list[Path]:
         raise RuntimeError("缺少 MX_APIKEY 环境变量，无法调用 mx-xuangu")
 
     xuangu_script = Path(args.xuangu_script).expanduser()
-    if not xuangu_script.exists():
+    if not args.dry_run and not xuangu_script.exists():
         raise RuntimeError(f"mx-xuangu 脚本不存在: {xuangu_script}")
 
     SEGMENT_DIR.mkdir(parents=True, exist_ok=True)
@@ -248,7 +248,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="只打印将执行的查询和命令，不发起网络请求")
     parser.add_argument("--cache-days", type=int, default=5, help="阶段一缓存有效天数，默认 5")
     parser.add_argument("--delay", type=float, default=1.5, help="分段调用间隔秒数，默认 1.5")
-    parser.add_argument("--xuangu-script", default=str(DEFAULT_XUANGU_SCRIPT), help="mx_xuangu.py 路径")
+    parser.add_argument(
+        "--xuangu-script",
+        default=DEFAULT_XUANGU_SCRIPT,
+        help="mx_xuangu.py 路径，也可通过 HUAXIN_XUANGU_SCRIPT 设置",
+    )
     return parser.parse_args()
 
 

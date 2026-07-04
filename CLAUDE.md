@@ -4,7 +4,7 @@
 
 Huaxin Quant，多模型流水线的股票花期发现与跟踪系统。每个筛选模型对应 `instructions/` 下的一个指令文件，由 LLM 读取后自动执行。
 
-项目采用**双目录架构**：本地工作区负责日常运行（Claude Code 工作目录），云盘负责 Git 版本管理。指令卡、脚本、配置等源文件通过软链在本地编辑，Git 在云盘侧追踪实体文件；数据产出（缓存、筛选结果、报告）纯本地，不跟 Git。
+项目采用**双目录架构**：本地工作区负责日常运行（Claude Code 工作目录），源码仓库负责 Git 版本管理。指令卡、脚本、配置等源文件可以通过软链在本地编辑，Git 在源码仓库侧追踪实体文件；数据产出（缓存、筛选结果、报告）和本地开发日志不跟 Git。
 
 ## ⚠️ 核心规则
 
@@ -13,10 +13,10 @@ Huaxin Quant，多模型流水线的股票花期发现与跟踪系统。每个�
 本地目录没有 `.git`，所有 Git 操作使用 `-C` 指向云盘仓库，避免反复触发授权：
 
 ```
-git -C /Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant status
-git -C /Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant diff
-git -C /Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant add <file>
-git -C /Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant commit -m "..."
+git -C <source-repo> status
+git -C <source-repo> diff
+git -C <source-repo> add <file>
+git -C <source-repo> commit -m "..."
 ```
 
 **禁止**在本地目录执行 `git` 命令（会因找不到 `.git` 而失败或触发额外授权）。
@@ -46,7 +46,7 @@ quant_lab/（本地工作区 · Huaxin Quant 运行实例）
 ├── instructions/              🔗→ 云盘 · 模型执行指令卡（Git 管理）
 ├── scripts/                   🔗→ 云盘 · 辅助 Python 脚本（Git 管理）
 ├── CLAUDE.md                  🔗→ 云盘 · 本文件（Git 管理）
-├── dev_logs/                  🔗→ 云盘 · 开发复盘日志（Git 管理）
+├── dev_logs/                      本地 · 开发复盘日志（不纳入公开核心仓库）
 │
 ├── cache/                         本地 · 所有缓存数据，脚本自动管理
 │   ├── daily/                      模型二+四共享日线缓存（<code>_<YYMMDD>.pkl）
@@ -79,17 +79,16 @@ quant_lab/（本地工作区 · Huaxin Quant 运行实例）
     └── scripts/                     临时脚本，用完即删
 
 
-OneDrive/huaxin_quant/（云盘 · Huaxin Quant Git 仓库）
+source repo/（云盘 · Huaxin Quant Git 仓库）
 │
 ├── .git/                           Git 仓库
 ├── .gitignore
 ├── .claude/
 │   └── settings.json               Claude Code 共享权限策略（Git 管理）
-├── .obsidian/
 ├── CLAUDE.md
 ├── instructions/                   各模型指令卡
 ├── scripts/                        辅助 Python 脚本
-└── dev_logs/                       开发复盘日志
+└── WORKFLOW.md                     日常执行工作流
 ```
 
 ## 开发约定

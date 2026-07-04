@@ -6,10 +6,10 @@ Huaxin Quant，多模型流水线的股票花期发现与跟踪系统。Codex �
 
 项目采用双目录架构：
 
-- `/Users/neil/ai/quant_lab`：本地工作区，作为 Huaxin Quant 的运行实例，负责日常运行、缓存、输出、报告。
-- `/Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant`：云盘 Git 仓库，负责 Huaxin Quant 源代码、指令卡和开发文档版本管理。
+- `<runtime-workspace>`：本地工作区，作为 Huaxin Quant 的运行实例，负责日常运行、缓存、输出、报告。
+- `<source-repo>`：云盘 Git 仓库，负责 Huaxin Quant 源代码、指令卡和开发文档版本管理。
 
-`instructions/`、`scripts/`、`CLAUDE.md`、`dev_logs/` 在本地工作区中是指向云盘仓库的软链。缓存和输出目录只存在于本地工作区，默认不进 Git。
+`instructions/`、`scripts/`、`CLAUDE.md` 在本地工作区中可以是指向源码仓库的软链。缓存、输出目录和本地开发日志默认不进 Git。
 
 ## 核心规则
 
@@ -18,13 +18,13 @@ Huaxin Quant，多模型流水线的股票花期发现与跟踪系统。Codex �
 本地工作区没有 `.git`。所有 Git 命令必须显式使用云盘仓库路径：
 
 ```bash
-git -C /Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant status
-git -C /Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant diff
-git -C /Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant add <file>
-git -C /Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant commit -m "..."
+git -C <source-repo> status
+git -C <source-repo> diff
+git -C <source-repo> add <file>
+git -C <source-repo> commit -m "..."
 ```
 
-禁止在 `/Users/neil/ai/quant_lab` 直接执行普通 `git status`、`git diff`、`git add`、`git commit`。
+禁止在 `<runtime-workspace>` 直接执行普通 `git status`、`git diff`、`git add`、`git commit`。
 
 ### 2. 源文件走 Git，数据产物不提交
 
@@ -34,7 +34,6 @@ git -C /Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant commit -m "
 - `AGENTS.md`
 - `instructions/*.md`
 - `scripts/*.py`
-- `dev_logs/`
 - 必要的项目配置和开发文档
 
 默认不纳入 Git 的内容：
@@ -46,6 +45,7 @@ git -C /Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant commit -m "
 - `reports/`
 - `signals/`
 - `refer/`
+- `dev_logs/`
 - `.env`
 - `tmp/`
 
@@ -100,7 +100,7 @@ quant_lab/  # Huaxin Quant 本地运行实例
 ├── scripts/           -> 云盘仓库，模型执行脚本
 ├── CLAUDE.md          -> 云盘仓库，Claude 工程规范
 ├── AGENTS.md          -> Codex 工程规范
-├── dev_logs/          -> 云盘仓库，开发复盘日志
+├── dev_logs/          本地开发复盘日志（不纳入公开核心仓库）
 ├── cache/             本地缓存
 ├── pool/              模型一输出
 ├── quant/             模型二输出
@@ -205,17 +205,17 @@ Claude 权限配置参考：
 Codex 权限配置参考：
 
 ```text
-/Users/neil/.codex/config.toml
+~/.codex/config.toml
 ```
 
 当前 Codex 项目配置应保持：
 
 ```toml
-[projects."/Users/neil/ai/quant_lab"]
+[projects."<runtime-workspace>"]
 trust_level = "trusted"
 writable_roots = [
-  "/Users/neil/ai/quant_lab",
-  "/Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant",
+  "<runtime-workspace>",
+  "<source-repo>",
 ]
 ```
 
@@ -265,8 +265,8 @@ python3 scripts/quant_filter.py --code 300604 --name 长川科技
 提交前：
 
 ```bash
-git -C /Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant status --short
-git -C /Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant diff --stat
+git -C <source-repo> status --short
+git -C <source-repo> diff --stat
 ```
 
 确认只提交源文件、指令卡和必要文档，不提交本地数据产物或密钥。
@@ -283,7 +283,7 @@ chore: ...
 提交后再检查工作区是否干净：
 
 ```bash
-git -C /Users/neil/Library/CloudStorage/OneDrive-个人/huaxin_quant status --short
+git -C <source-repo> status --short
 ```
 
 ## 与用户沟通

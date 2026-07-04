@@ -247,3 +247,61 @@ class MiaoxiangSource(DataSource):
             return None
 
         return pd.DataFrame(rows)
+
+
+# ===================== 通达信数据源（mootdx） =====================
+
+class TDXSource(DataSource):
+    """通达信数据源，基于 mootdx 库连接公共行情服务器。
+
+    作为妙想 API 限流时的备用数据源，免费、无额度限制。
+    依赖: pip install 'mootdx[all]'
+    """
+
+    display_name = "tdx"
+
+    def __init__(self):
+        self._client = None
+
+    def _get_client(self):
+        """延迟初始化 mootdx 客户端，避免 import 时自动连接。"""
+        if self._client is None:
+            from mootdx.quotes import Quotes
+            self._client = Quotes.factory(market='std')
+        return self._client
+
+    def fetch_bars(self, code: str, name: str) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+        """通过 mootdx 获取日线数据。
+
+        mootdx 自动根据 code 前缀识别沪深市场（6→SH, 0/2/3→SZ）。
+        """
+        try:
+            client = self._get_client()
+            raw = client.bars(symbol=code, frequency=4, offset=200)
+        except ImportError:
+            return None, "mootdx 未安装，运行: pip install 'mootdx[all]'"
+        except Exception as exc:
+            return None, f"TDX 连接失败: {exc}"
+
+        if raw is None or raw.empty:
+            return None, "TDX 返回空数据"
+
+        # 过滤停牌日（volume=0，量价均为 0 的无交易行）
+        normal = raw[raw["volume"] > 0].copy()
+        if normal.empty:
+            return None, "TDX 无有效交易日（可能长期停牌）"
+
+        # 标准化为统一的 OHLCV DataFrame
+        result = pd.DataFrame({
+            "date":     normal["datetime"].astype(str).str[:10],
+            "open":     normal["open"].astype(float),
+            "high":     normal["high"].astype(float),
+            "low":      normal["low"].astype(float),
+            "close":    normal["close"].astype(float),
+            "volume":   normal["volume"].astype(float),
+            "turnover": 0.0,   # 通达信不提供换手率，两个模型均未使用此字段
+        })
+
+        # mootdx 返回最新在前，转为升序
+        result = result.sort_values("date").reset_index(drop=True)
+        return result, None

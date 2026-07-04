@@ -236,6 +236,7 @@ def find_field_by_alias(field_map, aliases):
 # 模块级延迟单例
 _daily_cache = None
 _mx_source = None
+_tdx_source = None
 
 
 def _ensure_cache():
@@ -254,13 +255,21 @@ def _ensure_mx_source():
     return _mx_source
 
 
+def _ensure_tdx_source():
+    global _tdx_source
+    if _tdx_source is None:
+        from scripts.data_sources import TDXSource
+        _tdx_source = TDXSource()
+    return _tdx_source
+
+
 def fetch_daily(code, name, datestr, use_cache=True):
     """统一日线数据获取入口（替代 quant_filter / tracker 各自的 fetch_daily）。
 
-    链路: 缓存 → 妙想 API
+    链路: 缓存 → 妙想 API → 通达信 mootdx
 
     返回:
-        (DataFrame, source_label) — source_label 为 "cache" / "cache(YYMMDD)" / "api"
+        (DataFrame, source_label) — source_label 为 "cache" / "cache(YYMMDD)" / "api" / "tdx"
         或 (None, error_message) — 获取失败时 DataFrame 为 None
 
     DataFrame 列: date, open, high, low, close, volume, turnover
@@ -291,7 +300,18 @@ def fetch_daily(code, name, datestr, use_cache=True):
         return None, f"数据源异常: {exc}"
 
     if df is None:
-        return None, err_msg or "妙想API返回空数据"
+        mx_error = err_msg or "妙想API返回空数据"
+        # ── 第 3 步：通达信回退 ──
+        try:
+            tdx = _ensure_tdx_source()
+            df, tdx_msg = tdx.fetch_bars(code, name)
+            if df is not None and not df.empty:
+                df = df.sort_values("date").reset_index(drop=True)
+                cache.save(code, datestr, df)
+                return df, "tdx"
+        except Exception:
+            pass
+        return None, mx_error
 
     if df.empty:
         return None, "无有效交易日数据(可能长期停牌)"

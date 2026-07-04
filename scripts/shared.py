@@ -286,12 +286,12 @@ def fetch_daily(code, name, datestr, use_cache=True):
         return None, "FATAL:环境变量 MX_APIKEY 未设置，且未命中缓存"
 
     try:
-        df = mx.fetch_bars(code, name)
+        df, err_msg = mx.fetch_bars(code, name)
     except Exception as exc:
         return None, f"数据源异常: {exc}"
 
     if df is None:
-        return None, "妙想API返回空数据"
+        return None, err_msg or "妙想API返回空数据"
 
     if df.empty:
         return None, "无有效交易日数据(可能长期停牌)"

@@ -15,7 +15,7 @@
 import abc
 import os
 import time
-from typing import Optional
+from typing import Optional, Tuple
 
 import pandas as pd
 import requests
@@ -44,12 +44,11 @@ FIELD_GROUPS = [
 class DataSource(abc.ABC):
     """日线数据源抽象基类。
 
-    子类只需实现 fetch_bars() 和 display_name，
-    返回标准化的 OHLCV DataFrame 或 None。
+    子类只需实现 fetch_bars() 和 display_name。
     """
 
     @abc.abstractmethod
-    def fetch_bars(self, code: str, name: str) -> Optional[pd.DataFrame]:
+    def fetch_bars(self, code: str, name: str) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
         """拉取近约 200 个交易日日线数据。
 
         Args:
@@ -57,8 +56,8 @@ class DataSource(abc.ABC):
             name: 股票名称，如 '长川科技'
 
         Returns:
-            标准化 DataFrame，列: date, open, high, low, close, volume, turnover
-            无法获取时返回 None
+            (DataFrame, None) — 成功，DataFrame 列: date, open, high, low, close, volume, turnover
+            (None, error_message) — 失败，error_message 为人类可读的错误原因
         """
         ...
 
@@ -87,11 +86,11 @@ class MiaoxiangSource(DataSource):
 
     # ── 公共接口 ──
 
-    def fetch_bars(self, code: str, name: str) -> Optional[pd.DataFrame]:
-        """通过妙想 API 获取日线数据。"""
+    def fetch_bars(self, code: str, name: str) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+        """通过妙想 API 获取日线数据。返回 (DataFrame, None) 或 (None, error_msg)。"""
         api_key = os.environ.get("MX_APIKEY")
         if not api_key:
-            return None
+            return None, "MX_APIKEY 未设置"
 
         query = f"{name}近200个交易日每日开盘价、最高价、最低价、收盘价、成交量、换手率"
         headers = {"Content-Type": "application/json", "apikey": api_key}
@@ -99,18 +98,34 @@ class MiaoxiangSource(DataSource):
 
         result = self._do_request(headers, payload)
         if result is None:
-            return None
+            return None, "网络请求失败(重试3次仍失败)"
+
+        # 提取 API 内层 message（code=0 时也可能有限流等提示）
+        try:
+            inner_msg = result.get("data", {}).get("data", {}).get("message", "")
+        except (KeyError, TypeError, AttributeError):
+            inner_msg = ""
+
+        # 检查是否为周限额/调用上限（code=0 但 dataTableDTOList 为空）
+        if inner_msg and ("上限" in str(inner_msg) or "额度" in str(inner_msg)):
+            return None, str(inner_msg)
 
         try:
             tables = result["data"]["data"]["searchDataResultDTO"]["dataTableDTOList"]
         except (KeyError, TypeError):
-            return None
+            return None, "数据结构异常(缺 dataTableDTOList)"
 
         raw, resolved = self._select_table(tables)
         if raw is None:
-            return None
+            if inner_msg:
+                return None, str(inner_msg)
+            return None, "未找到完整历史行情表(字段缺失或结构异常)"
 
-        return self._parse_rows(raw, resolved)
+        df = self._parse_rows(raw, resolved)
+        if df is None:
+            return None, "无有效交易日数据(可能长期停牌)"
+
+        return df, None
 
     # ── HTTP 请求 + 重试 ──
 

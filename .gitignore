@@ -1,0 +1,33 @@
+# macOS / editor local state
+.DS_Store
+**/.DS_Store
+.obsidian/
+
+# Claude local approvals and machine-specific state
+.claude/settings.local.json
+
+# Python runtime artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environments
+.env
+.venv/
+venv/
+
+# Runtime outputs kept in quant_lab, not in this source repo
+cache/
+pool/
+quant/
+bloom/
+reports/
+signals/
+refer/
+tmp/
+tmp_*/
+
+# Local development notes are not part of the public core release
+dev_logs/

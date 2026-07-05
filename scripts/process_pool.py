@@ -1,51 +1,38 @@
 #!/usr/bin/env python3
 """Process pool screening: phases 2-5."""
-import json, csv, os, re, sys
+import csv, os, sys
 from datetime import datetime, date
 from pathlib import Path
 from collections import Counter
-from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from scripts.data.pool_data import PoolSegmentCache, find_key, parse_date, parse_num, parse_pct
 from scripts.shared import get_latest_annual_period
+from scripts.strategy_config import load_strategy_config
 
 PROJECT_ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SEGMENT_DIR = PROJECT_ROOT / "cache" / "xuangu"
 OUTPUT_DIR = PROJECT_ROOT / "pool"
 TODAY = date.today()
 ANNUAL_PERIOD = get_latest_annual_period()
+POOL_STRATEGY_FILE = "01-pool.json"
+POOL_STRATEGY, POOL_STRATEGY_PATH = load_strategy_config(POOL_STRATEGY_FILE)
+STRATEGY_VERSION = POOL_STRATEGY["strategy_version"]
+RUNTIME_CFG = POOL_STRATEGY["runtime"]
+HARD_FILTER_CFG = POOL_STRATEGY["hard_filters"]
+INDUSTRY_CFG = POOL_STRATEGY["industry"]
+SOFT_TAG_CFG = POOL_STRATEGY["soft_tags"]
 
-INDUSTRY_EXCLUDE = [
-    "银行","保险","证券","多元金融",
-    "白酒","食品饮料","服装家纺","家用电器","旅游零售","农林牧渔","商业物业经营",
-    "房地产开发","房地产服务","水泥","建筑装饰",
-    "煤炭","钢铁","石油石化","航运港口","航空机场",
-    "燃气","水务","环保",
-    "医药生物",
-]
-
-SEMICONDUCTOR_KW = "半导体"
+INDUSTRY_EXCLUDE = INDUSTRY_CFG["exclude_keywords"]
+SEMICONDUCTOR_KW = INDUSTRY_CFG["semiconductor_keyword"]
 
 # Relaxed thresholds for semiconductor stocks with high revenue growth
-SEMI_RELAX_GM = 15          # gross margin floor (pct)
-SEMI_RELAX_REV_GROWTH = 25  # revenue growth gate (pct)
-NORMAL_GM_FLOOR = 20        # gross margin floor for non-semiconductors
-MIN_MARKET_CAP = 5_000_000_000      # 50亿硬门槛
-SMALL_CAP_TAG_CEILING = 10_000_000_000
-
-TAG_PENALTIES = {
-    "LOW_ROE": 15,
-    "WEAK_ROE": 8,
-    "WEAK_CASHFLOW": 15,
-    "HIGH_DEBT_EDGE": 10,
-    "HIGH_VALUATION": 8,
-    "NEGATIVE_PE_TTM": 12,
-    "LOW_BASE_REBOUND": 12,
-    "MID_SMALL_CAP_50_100": 5,
-    "SEMI_CASHFLOW_RELAX": 5,
-    "DATA_PERIOD_QUARTERLY": 5,
-    "MISSING_KEY_DATA": 8,
-}
+SEMI_RELAX_GM = HARD_FILTER_CFG["semiconductor_gross_margin_floor_pct"]
+SEMI_RELAX_REV_GROWTH = HARD_FILTER_CFG["semiconductor_revenue_growth_gate_pct"]
+NORMAL_GM_FLOOR = HARD_FILTER_CFG["normal_gross_margin_floor_pct"]
+MIN_MARKET_CAP = HARD_FILTER_CFG["min_market_cap"]
+SMALL_CAP_TAG_CEILING = SOFT_TAG_CFG["small_cap_tag_ceiling"]
+TAG_PENALTIES = SOFT_TAG_CFG["tag_penalties"]
 
 # ── Helpers ──────────────────────────────────────────────
 
@@ -60,70 +47,9 @@ def detect_period(v) -> str:
 
 # 周期感知阈值 — 非线性递增。年头刚起步（Q1回款未开始、利润薄），
 # 越靠年末越接近全年真实水平，阈值也越接近年报基准。
-NP_MIN_ANNUAL = 50_000_000  # 年报: 归母净利 ≥ 5000万
-OCF_NP_THRESHOLD = {
-    "Q1": 0.0,      # Q1 刚开始，只要 OCF 不为负即可
-    "H1": 0.10,     # 半年有部分回款
-    "Q3": 0.30,     # 接近全年
-    "annual": 0.50,
-    "unknown": 0.50,
-}
-NP_MIN_BY_PERIOD = {
-    "Q1": 5_000_000,        # Q1 利润薄，500万门槛
-    "H1": 20_000_000,       # 半年利润还未完全释放
-    "Q3": 35_000_000,       # 接近全年
-    "annual": NP_MIN_ANNUAL,
-    "unknown": NP_MIN_ANNUAL,
-}
-
-def pick_annual(v: str) -> str:
-    """从 '值1|周期1, 值2|周期2' 中取年报周期的值，无年报则取第一个。
-    例如 '13.78亿|2026一季报, 52.92亿|2025年报' → '52.92亿'"""
-    if v is None or v == "" or v == "-":
-        return ""
-    s = str(v)
-    if "|" not in s:
-        return s
-    parts = [p.strip() for p in s.split(",")]
-    # 优先年报
-    for p in parts:
-        if "年报" in p and "一季报" not in p and "三季报" not in p and "半年报" not in p:
-            return p.split("|")[0].strip()
-    # 其次中报
-    for p in parts:
-        if "半年报" in p or "中报" in p:
-            return p.split("|")[0].strip()
-    # 兜底取第一个
-    return parts[0].split("|")[0].strip()
-
-
-def parse_num(v) -> Optional[float]:
-    """'17.04亿' → 1704000000.0, '5000万' → 50000000.0"""
-    if v is None or v == "" or v == "-":
-        return None
-    s = pick_annual(v).strip().replace(",", "").replace("%", "")
-    try:
-        if "亿" in s: return float(s.replace("亿", "")) * 1e8
-        if "万" in s: return float(s.replace("万", "")) * 1e4
-        if "元" in s: return float(s.replace("元", ""))
-        return float(s)
-    except ValueError:
-        return None
-
-def parse_pct(v) -> Optional[float]:
-    """Parse percentage value."""
-    if v is None or v == "" or v == "-":
-        return None
-    s = pick_annual(v).strip().replace(",", "").replace("%", "")
-    try: return float(s)
-    except ValueError: return None
-
-def parse_date(v) -> Optional[datetime]:
-    """Parse listing date."""
-    if not v: return None
-    s = str(v).split("|")[0].strip()
-    try: return datetime.strptime(s, "%Y-%m-%d")
-    except ValueError: return None
+NP_MIN_ANNUAL = HARD_FILTER_CFG["np_min_annual"]
+OCF_NP_THRESHOLD = HARD_FILTER_CFG["ocf_np_threshold_by_period"]
+NP_MIN_BY_PERIOD = HARD_FILTER_CFG["np_min_by_period"]
 
 def fmt(v) -> str:
     """Format value for CSV output."""
@@ -149,23 +75,34 @@ def build_soft_tags(
         tags.append("DATA_PERIOD_QUARTERLY")
 
     if roe is not None:
-        if roe < 5:
+        if roe < SOFT_TAG_CFG["low_roe_pct"]:
             tags.append("LOW_ROE")
-        elif roe < 10:
+        elif roe < SOFT_TAG_CFG["weak_roe_pct"]:
             tags.append("WEAK_ROE")
 
-    if ocf_np_ratio is not None and ocf_np_ratio < 0.5:
+    if ocf_np_ratio is not None and ocf_np_ratio < SOFT_TAG_CFG["weak_cashflow_ocf_np"]:
         tags.append("WEAK_CASHFLOW")
 
-    if debt is not None and 60 <= debt < 70:
+    if (
+        debt is not None
+        and SOFT_TAG_CFG["high_debt_edge_min_pct"] <= debt < SOFT_TAG_CFG["high_debt_edge_max_pct"]
+    ):
         tags.append("HIGH_DEBT_EDGE")
 
     if pe is not None and pe <= 0:
         tags.append("NEGATIVE_PE_TTM")
-    elif (pe is not None and pe > 100) or (pb is not None and pb > 10):
+    elif (
+        pe is not None and pe > SOFT_TAG_CFG["high_pe_ttm"]
+    ) or (
+        pb is not None and pb > SOFT_TAG_CFG["high_pb"]
+    ):
         tags.append("HIGH_VALUATION")
 
-    if np_growth is not None and np_growth > 100 and (roe is None or roe < 5 or (np_val is not None and np_val < NP_MIN_ANNUAL)):
+    if (
+        np_growth is not None
+        and np_growth > SOFT_TAG_CFG["low_base_rebound_np_growth_pct"]
+        and (roe is None or roe < SOFT_TAG_CFG["low_roe_pct"] or (np_val is not None and np_val < NP_MIN_ANNUAL))
+    ):
         tags.append("LOW_BASE_REBOUND")
 
     if semi_relax:
@@ -173,60 +110,31 @@ def build_soft_tags(
 
     # De-duplicate while preserving order.
     tags = list(dict.fromkeys(tags))
-    score = max(0, 100 - sum(TAG_PENALTIES.get(tag, 0) for tag in tags))
+    score = max(
+        SOFT_TAG_CFG["min_quality_score"],
+        SOFT_TAG_CFG["base_quality_score"] - sum(TAG_PENALTIES.get(tag, 0) for tag in tags)
+    )
     return tags, score
-
-def find_key(row: dict, *patterns, require_all=True) -> Optional[str]:
-    """Fuzzy match field key. If require_all, ALL patterns must match."""
-    for k in row:
-        if require_all:
-            if all(p in k for p in patterns):
-                return k
-        else:
-            if any(p in k for p in patterns):
-                return k
-    return None
 
 # ── Phase 1 load & merge ─────────────────────────────────
 
 print("=" * 60)
 print("Phase 1: Load & merge segments")
 print("=" * 60)
+print(f"  strategy: {STRATEGY_VERSION} ({POOL_STRATEGY_FILE})")
 
 all_stocks: dict[str, dict] = {}
-segment_counts = []
-stale_files = []
-CACHE_MAX_AGE_DAYS = 5  # xuangu 数据以财报为主，5个交易日内有效
+CACHE_MAX_AGE_DAYS = RUNTIME_CFG["cache_max_age_days"]
+load_result = PoolSegmentCache(SEGMENT_DIR).load_recent_segments(TODAY, CACHE_MAX_AGE_DAYS)
+all_stocks = load_result.stocks
+segment_counts = load_result.segment_counts
+stale_files = load_result.stale_files
 
-# 按修改时间降序排列（新的在前），确保同一股票多文件时新数据覆盖旧数据
-raw_files = sorted(
-    SEGMENT_DIR.glob("*_raw.json"),
-    key=lambda f: f.stat().st_mtime,
-    reverse=True
-)
-
-for json_file in raw_files:
-    # 时效检查：超过 5 天的缓存标记为过期
-    mtime = datetime.fromtimestamp(json_file.stat().st_mtime).date()
+for filename, rows, total in segment_counts:
+    mtime = datetime.fromtimestamp((SEGMENT_DIR / filename).stat().st_mtime).date()
     age = (TODAY - mtime).days
-    if age > CACHE_MAX_AGE_DAYS:
-        stale_files.append((json_file.name, age))
-        continue
-
-    with open(json_file) as f:
-        data = json.load(f)
-    result = data["data"]["data"]["allResults"]["result"]
-    rows = result.get("dataList", [])
-    total = result.get("total", 0)
-    segment_counts.append((json_file.name, len(rows), total))
-
-    for row in rows:
-        code = row.get("SECURITY_CODE", "").strip().zfill(6)
-        if code and len(code) == 6:
-            all_stocks[code] = row
-
     age_tag = f"({age}天前)" if age > 0 else ""
-    print(f"  {json_file.name[-40:]}: {len(rows)} rows / {total} total {age_tag}")
+    print(f"  {filename[-40:]}: {rows} rows / {total} total {age_tag}")
 
 if stale_files:
     print(f"\n  ⚠️ 跳过 {len(stale_files)} 个过期缓存（>{CACHE_MAX_AGE_DAYS}天）:")
@@ -280,7 +188,7 @@ KEY_NP, KEY_OCF = resolve_ocf_np_keys(sample, ANNUAL_PERIOD)
 # 检测实际数据周期，确定 OCF/NP 阈值
 _sample_np_raw = str(sample.get(KEY_NP, "")) if KEY_NP else ""
 _detected_period = detect_period(_sample_np_raw)
-_ocf_threshold = OCF_NP_THRESHOLD.get(_detected_period, 0.50)
+_ocf_threshold = OCF_NP_THRESHOLD.get(_detected_period, OCF_NP_THRESHOLD["unknown"])
 print(f"  📐 周期={_detected_period} | OCF/NP阈值={_ocf_threshold} | NP阈值={NP_MIN_BY_PERIOD.get(_detected_period, NP_MIN_ANNUAL)/1e4:.0f}万")
 
 def find_key_annual_fallback(sample, metric, period, label):
@@ -375,7 +283,7 @@ for code, row in all_stocks.items():
 
     # Condition A: Listed >= 1 year
     list_date = parse_date(row.get(KEY_LIST_DATE) if KEY_LIST_DATE else None)
-    if list_date and (TODAY - list_date.date()).days < 365:
+    if list_date and (TODAY - list_date.date()).days < HARD_FILTER_CFG["min_listing_days"]:
         rejected["上市不足1年"] += 1
         continue
 
@@ -393,7 +301,7 @@ for code, row in all_stocks.items():
 
     if not semi_relax:
         if ocf is not None and np_val is not None and np_val > 0:
-            threshold = OCF_NP_THRESHOLD.get(period, 0.50)
+            threshold = OCF_NP_THRESHOLD.get(period, OCF_NP_THRESHOLD["unknown"])
             if ocf / np_val <= threshold:
                 rejected["OCF/NP比率≤阈值"] += 1
                 continue
@@ -406,7 +314,7 @@ for code, row in all_stocks.items():
 
     # Condition D: Debt ratio < 70%
     debt = parse_pct(row.get(KEY_DEBT)) if KEY_DEBT else None
-    if debt is not None and debt >= 70:
+    if debt is not None and debt >= HARD_FILTER_CFG["max_debt_ratio_pct"]:
         rejected["负债率≥70%"] += 1
         continue
 
@@ -475,7 +383,8 @@ fieldnames = [
     "净利润同比增速_pct","经营现金流_元",
     "经营现金流_净利比","毛利率_pct","研发费用占比_pct",
     "资产负债率_pct","每股收益_元",
-    "质量评分","风险标签","数据周期","半导体现金流豁免"
+    "质量评分","风险标签","数据周期","半导体现金流豁免",
+    "strategy_version",
 ]
 
 rows_out = []
@@ -545,6 +454,7 @@ for code in sorted(final):
         "风险标签": ";".join(tags),
         "数据周期": period,
         "半导体现金流豁免": "Y" if semi_relax else "N",
+        "strategy_version": STRATEGY_VERSION,
     })
 
 with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
@@ -616,9 +526,10 @@ if risk_counter:
         print(f"    {tag}: {cnt}")
 
 # Check for truncation
-truncated = [s for s in segment_counts if s[1] >= 200]
+truncation_threshold = RUNTIME_CFG["truncation_threshold"]
+truncated = [s for s in segment_counts if s[1] >= truncation_threshold]
 if truncated:
-    print(f"\n  ⚠️ 截断警告：以下分段实际返回 >= 200，可能覆盖不全:")
+    print(f"\n  ⚠️ 截断警告：以下分段实际返回 >= {truncation_threshold}，可能覆盖不全:")
     for name, rows, total in truncated:
         print(f"    {name}: {rows}/{total}")
 

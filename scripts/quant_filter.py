@@ -1,5 +1,5 @@
 """
-模型二：量价精筛 — VCP/P2/P3 脚本驱动实现
+模型二：量价精筛 — VCP 结构与触发信号脚本驱动实现
 对应指令: instructions/02-quant.md
 
 用法:
@@ -10,7 +10,7 @@
   python3 scripts/quant_filter.py --code 300604 --with-llm
 
 核心原则:
-  脚本负责数据、指标、形态、评分、输出；LLM 只做可选解释，不参与 P1/P2/P3 判定。
+  脚本负责数据、指标、形态、评分、输出；LLM 只做可选解释，不参与结构阶段和触发信号判定。
 """
 import argparse
 import csv
@@ -27,6 +27,7 @@ import requests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.shared import DailyCache, PROJECT_ROOT, VALUATION_INDEX_PATH, fetch_daily
+from scripts.strategy_config import load_strategy_config
 
 
 # ===================== 配置 =====================
@@ -34,6 +35,18 @@ from scripts.shared import DailyCache, PROJECT_ROOT, VALUATION_INDEX_PATH, fetch
 POOL_DIR = os.path.join(PROJECT_ROOT, "pool")
 QUANT_DIR = os.path.join(PROJECT_ROOT, "quant")
 QUANT_RUNS_DIR = os.path.join(PROJECT_ROOT, "cache", "quant_runs")
+QUANT_STRATEGY_FILE = "02-quant.json"
+QUANT_STRATEGY, QUANT_STRATEGY_PATH = load_strategy_config(QUANT_STRATEGY_FILE)
+STRATEGY_VERSION = QUANT_STRATEGY["strategy_version"]
+
+VCP_CFG = QUANT_STRATEGY["vcp"]
+BASE_CFG = QUANT_STRATEGY["base_rules"]
+CONTRACTION_CFG = QUANT_STRATEGY["contraction_rules"]
+STAGE_CFG = QUANT_STRATEGY["stage_rules"]
+RISK_CFG = QUANT_STRATEGY["risk_rules"]
+SETUP_CFG = QUANT_STRATEGY["setup_rules"]
+SCORE_CFG = QUANT_STRATEGY["scores"]
+CLASSIFICATION_CFG = QUANT_STRATEGY["classification"]
 
 TEST_CODES = [
     "688256", "301329", "300394", "300308", "002028",
@@ -42,17 +55,17 @@ TEST_CODES = [
     "603409", "600176", "301526", "300442",
 ]
 
-VCP_LOOKBACK = 120
-VCP_SWING_WINDOW = 3
-VCP_MIN_PULLBACK_PCT = 4.0
-VCP_MAX_PULLBACK_PCT = 35.0
-VCP_MIN_PULLBACK_DAYS = 3
-VCP_MAX_PULLBACK_DAYS = 45
-VCP_MAX_STRUCTURE_AGE_DAYS = 45
-VCP_MIN_PIVOT_DISTANCE = -18.0
-VCP_MAX_MARKET_PIVOT_RATIO = 1.10
-VCP_MAX_POST_GAIN = 25.0
-VCP_MAX_POST_DRAWDOWN = -18.0
+VCP_LOOKBACK = VCP_CFG["lookback_days"]
+VCP_SWING_WINDOW = VCP_CFG["swing_window"]
+VCP_MIN_PULLBACK_PCT = VCP_CFG["min_pullback_pct"]
+VCP_MAX_PULLBACK_PCT = VCP_CFG["max_pullback_pct"]
+VCP_MIN_PULLBACK_DAYS = VCP_CFG["min_pullback_days"]
+VCP_MAX_PULLBACK_DAYS = VCP_CFG["max_pullback_days"]
+VCP_MAX_STRUCTURE_AGE_DAYS = VCP_CFG["max_structure_age_days"]
+VCP_MIN_PIVOT_DISTANCE = VCP_CFG["min_pivot_distance_pct"]
+VCP_MAX_MARKET_PIVOT_RATIO = VCP_CFG["max_market_pivot_ratio"]
+VCP_MAX_POST_GAIN = VCP_CFG["max_post_gain_pct"]
+VCP_MAX_POST_DRAWDOWN = VCP_CFG["max_post_drawdown_pct"]
 
 
 # ===================== 通用工具 =====================
@@ -259,7 +272,10 @@ def is_long_upper_shadow(row):
     if day_range <= 0:
         return False
     upper = row["high"] - max(row["open"], row["close"])
-    return upper / day_range > 0.45 and safe_float(row.get("量比"), 0) > 1.5
+    return (
+        upper / day_range > RISK_CFG["long_upper_shadow_ratio"]
+        and safe_float(row.get("量比"), 0) > RISK_CFG["long_upper_shadow_volume_ratio"]
+    )
 
 
 def detect_overheat(df):
@@ -267,43 +283,51 @@ def detect_overheat(df):
     flags = []
     risk_score = 0
 
-    if safe_float(latest.get("chg_5"), 0) > 20:
+    risk_scores = RISK_CFG["risk_scores"]
+    if safe_float(latest.get("chg_5"), 0) > RISK_CFG["overheat_chg5_pct"]:
         flags.append("OVERHEAT_CHG5")
-        risk_score += 25
-    if safe_float(latest.get("chg_20"), 0) > 50:
+        risk_score += risk_scores["OVERHEAT_CHG5"]
+    if safe_float(latest.get("chg_20"), 0) > RISK_CFG["overheat_chg20_pct"]:
         flags.append("OVERHEAT_CHG20")
-        risk_score += 25
-    if safe_float(latest.get("distance_ma20"), 0) > 15:
+        risk_score += risk_scores["OVERHEAT_CHG20"]
+    if safe_float(latest.get("distance_ma20"), 0) > RISK_CFG["far_above_ma20_pct"]:
         flags.append("FAR_ABOVE_MA20")
-        risk_score += 15
-    elif safe_float(latest.get("distance_ma20"), 0) > 10:
+        risk_score += risk_scores["FAR_ABOVE_MA20"]
+    elif safe_float(latest.get("distance_ma20"), 0) > RISK_CFG["extended_from_ma20_pct"]:
         flags.append("EXTENDED_FROM_MA20")
-        risk_score += 8
+        risk_score += risk_scores["EXTENDED_FROM_MA20"]
 
     if is_long_upper_shadow(latest):
         flags.append("LONG_UPPER_SHADOW")
-        risk_score += 18
+        risk_score += risk_scores["LONG_UPPER_SHADOW"]
 
     daily_body = pct(latest["close"] - latest["open"], latest["open"])
-    if safe_float(latest.get("量比"), 0) > 1.5 and daily_body is not np.nan and daily_body < 1:
+    if (
+        safe_float(latest.get("量比"), 0) > RISK_CFG["volume_stall_ratio"]
+        and daily_body is not np.nan
+        and daily_body < RISK_CFG["volume_stall_max_body_pct"]
+    ):
         flags.append("VOLUME_STALL")
-        risk_score += 15
+        risk_score += risk_scores["VOLUME_STALL"]
 
     if pd.notna(latest.get("MA20")) and pd.notna(latest.get("MA60")):
         if latest["MA20"] < latest["MA60"] and latest["close"] < latest["MA60"]:
             flags.append("DOWNTREND")
-            risk_score += 35
-    if safe_float(latest.get("MA20_slope"), 0) < -0.10:
+            risk_score += risk_scores["DOWNTREND"]
+    if safe_float(latest.get("MA20_slope"), 0) < RISK_CFG["ma20_decline_slope"]:
         flags.append("MA20_DECLINE")
-        risk_score += 15
-    if safe_float(latest.get("distance_high_60"), 0) < -30 and safe_float(latest.get("chg_20"), 0) < -15:
+        risk_score += risk_scores["MA20_DECLINE"]
+    if (
+        safe_float(latest.get("distance_high_60"), 0) < RISK_CFG["deep_fall_distance_high_60_pct"]
+        and safe_float(latest.get("chg_20"), 0) < RISK_CFG["deep_fall_chg20_pct"]
+    ):
         flags.append("DEEP_FALL")
-        risk_score += 35
+        risk_score += risk_scores["DEEP_FALL"]
 
     return {
         "risk_flags": flags,
-        "risk_score": min(risk_score, 100),
-        "hard_reject": any(f in flags for f in ["OVERHEAT_CHG5", "OVERHEAT_CHG20", "DOWNTREND", "DEEP_FALL"]),
+        "risk_score": min(risk_score, SCORE_CFG["max_score"]),
+        "hard_reject": any(f in flags for f in RISK_CFG["hard_reject_flags"]),
     }
 
 
@@ -366,7 +390,8 @@ def detect_contractions(df):
         recovery_slice = df.iloc[low["idx"] + 1:(next_high_idx + 1 if next_high_idx else len(df))]
         max_after = recovery_slice["high"].max() if not recovery_slice.empty else df.iloc[-1]["close"]
         recovery_pct = (max_after - low["price"]) / low["price"] * 100 if low["price"] else 0
-        if recovery_pct < min(3.0, abs_pullback * 0.25) and low["idx"] < len(df) - 5:
+        min_recovery = min(VCP_CFG["min_recovery_pct"], abs_pullback * VCP_CFG["min_recovery_pullback_ratio"])
+        if recovery_pct < min_recovery and low["idx"] < len(df) - VCP_CFG["recovery_grace_days"]:
             continue
 
         segment = df.iloc[high["idx"]:low["idx"] + 1]
@@ -388,15 +413,15 @@ def detect_contractions(df):
 def contraction_decrease_status(contractions):
     if len(contractions) < 2:
         return {"strict_pairs": 0, "near_pairs": 0, "is_strict": False, "is_near": False}
-    recent = contractions[-3:]
+    recent = contractions[-CONTRACTION_CFG["max_recent_contractions"]:]
     strict_pairs = 0
     near_pairs = 0
     for prev, cur in zip(recent, recent[1:]):
         prev_abs = abs(prev["pullback_pct"])
         cur_abs = abs(cur["pullback_pct"])
-        if cur_abs <= prev_abs * 0.90:
+        if cur_abs <= prev_abs * CONTRACTION_CFG["strict_decrease_ratio"]:
             strict_pairs += 1
-        if cur_abs <= prev_abs * 1.05:
+        if cur_abs <= prev_abs * CONTRACTION_CFG["near_decrease_ratio"]:
             near_pairs += 1
     needed = len(recent) - 1
     return {
@@ -408,13 +433,16 @@ def contraction_decrease_status(contractions):
 
 
 def volume_pattern_for_contractions(contractions, latest):
-    recent = contractions[-3:]
+    recent = contractions[-CONTRACTION_CFG["max_recent_contractions"]:]
     vols = [c["avg_volume"] for c in recent if c.get("avg_volume")]
-    if len(vols) >= 2 and all(cur < prev * 0.95 for prev, cur in zip(vols, vols[1:])):
+    if len(vols) >= 2 and all(cur < prev * CONTRACTION_CFG["volume_decrease_ratio"] for prev, cur in zip(vols, vols[1:])):
         return "decreasing"
-    if safe_float(latest.get("volume_dry_up"), 999) < 0.85 or safe_float(latest.get("vol_ma20"), 999) < safe_float(latest.get("vol_ma60"), -999):
+    if (
+        safe_float(latest.get("volume_dry_up"), 999) < CONTRACTION_CFG["volume_dry_up_threshold"]
+        or safe_float(latest.get("vol_ma20"), 999) < safe_float(latest.get("vol_ma60"), -999)
+    ):
         return "drying"
-    if len(vols) >= 2 and vols[-1] > vols[-2] * 1.20:
+    if len(vols) >= 2 and vols[-1] > vols[-2] * CONTRACTION_CFG["volume_failed_ratio"]:
         return "failed"
     return "mixed"
 
@@ -467,7 +495,7 @@ def select_current_vcp_group(df, contractions):
         return None, None
 
     best_invalid = None
-    max_size = min(3, len(contractions))
+    max_size = min(CONTRACTION_CFG["max_recent_contractions"], len(contractions))
     for size in range(max_size, 0, -1):
         for end in range(len(contractions), size - 1, -1):
             group = contractions[end - size:end]
@@ -489,7 +517,7 @@ def detect_vcp_structure(df):
         "has_structure": False,
         "state": "DATA_INSUFFICIENT",
         "conditions": [],
-        "misses": ["有效交易日<80"],
+        "misses": [f"有效交易日<{BASE_CFG['min_data_days']}"],
         "structure_count": 0,
         "contractions": [],
         "contraction_count": 0,
@@ -509,7 +537,7 @@ def detect_vcp_structure(df):
         "vcp_quality": "D",
         "watch_priority": "none",
     }
-    if n < 80:
+    if n < BASE_CFG["min_data_days"]:
         return empty
 
     close = latest["close"]
@@ -520,17 +548,17 @@ def detect_vcp_structure(df):
     if pd.isna(ma60) or not (close > ma60 or (pd.notna(ma20) and ma20 >= ma60)):
         base_ok = False
         misses.append("趋势基础不足")
-    if safe_float(latest.get("MA60_slope"), 0) < -0.03:
+    if safe_float(latest.get("MA60_slope"), 0) < BASE_CFG["min_ma60_slope"]:
         base_ok = False
         misses.append("MA60斜率偏弱")
-    if safe_float(latest.get("drawdown_high_120"), 0) < -35:
+    if safe_float(latest.get("drawdown_high_120"), 0) < BASE_CFG["max_drawdown_high_120_pct"]:
         base_ok = False
         misses.append("近120日回撤过深")
 
     contractions = detect_contractions(df)
     current, invalid_group = select_current_vcp_group(df, contractions)
     group = current["group"] if current else []
-    recent = group[-3:]
+    recent = group[-CONTRACTION_CFG["max_recent_contractions"]:]
     count = len(group)
     decrease = contraction_decrease_status(group)
     volume_pattern = volume_pattern_for_contractions(group, latest)
@@ -557,9 +585,9 @@ def detect_vcp_structure(df):
         post_structure_drawdown = invalid_group["post_structure_drawdown"]
 
     if contractions:
-        conditions.append(f"历史{min(len(contractions), 3)}轮收缩")
+        conditions.append(f"历史{min(len(contractions), CONTRACTION_CFG['max_recent_contractions'])}轮收缩")
     if count:
-        conditions.append(f"{min(count, 3)}轮有效收缩")
+        conditions.append(f"{min(count, CONTRACTION_CFG['max_recent_contractions'])}轮有效收缩")
     else:
         misses.append("未识别当前有效收缩轮次")
         if structure_invalid_reason:
@@ -574,34 +602,38 @@ def detect_vcp_structure(df):
         conditions.append(f"量能{volume_pattern}")
     else:
         misses.append(f"量能{volume_pattern}")
-    if pivot_distance is not None and pivot_distance >= -15:
+    if pivot_distance is not None and pivot_distance >= BASE_CFG["near_pivot_distance_pct"]:
         conditions.append("接近pivot")
     else:
         misses.append("距离pivot偏远")
-    if last_low is not None and close > last_low * 1.02:
+    if last_low is not None and close > last_low * (1 + BASE_CFG["last_low_buffer_pct"] / 100):
         conditions.append("最近收缩低点守住")
 
     state = "REJECT"
     has_structure = False
-    if base_ok and current and count >= 1:
+    if base_ok and current and count >= STAGE_CFG["early_min_contractions"]:
         has_structure = True
-        if count >= 3 and decrease["is_strict"]:
-            state = "P1_MATURE"
-        elif count >= 2 and decrease["is_near"]:
-            state = "P1_FORMING"
+        if count >= STAGE_CFG["mature_min_contractions"] and decrease["is_strict"]:
+            state = "VCP_MATURE"
+        elif count >= STAGE_CFG["forming_min_contractions"] and decrease["is_near"]:
+            state = "VCP_FORMING"
         else:
-            state = "P1_EARLY"
+            state = "VCP_EARLY"
 
         last_abs = abs(recent[-1]["pullback_pct"]) if recent else 99
         if (
-            state == "P1_MATURE"
-            and last_abs <= 10
+            state == "VCP_MATURE"
+            and last_abs <= STAGE_CFG["tight_max_last_pullback_pct"]
             and pivot_distance is not None
-            and pivot_distance >= -8
+            and pivot_distance >= STAGE_CFG["tight_min_pivot_distance_pct"]
             and volume_pattern in {"decreasing", "drying"}
         ):
-            state = "P1_TIGHT"
-    elif base_ok and safe_float(latest.get("distance_ma20"), 0) > 10 and safe_float(latest.get("distance_high_60"), -99) > -12:
+            state = "VCP_TIGHT"
+    elif (
+        base_ok
+        and safe_float(latest.get("distance_ma20"), 0) > BASE_CFG["trend_watch_min_distance_ma20_pct"]
+        and safe_float(latest.get("distance_high_60"), -99) > BASE_CFG["trend_watch_min_distance_high_60_pct"]
+    ):
         state = "TREND_WATCH"
         conditions.append("强趋势但未形成收缩轮次")
     elif base_ok and structure_invalid_reason:
@@ -611,17 +643,17 @@ def detect_vcp_structure(df):
             state = "TREND_REBUILD"
 
     quality_map = {
-        "P1_TIGHT": "A",
-        "P1_MATURE": "A" if volume_pattern in {"decreasing", "drying"} else "B",
-        "P1_FORMING": "B",
-        "P1_EARLY": "C",
+        "VCP_TIGHT": "A",
+        "VCP_MATURE": "A" if volume_pattern in {"decreasing", "drying"} else "B",
+        "VCP_FORMING": "B",
+        "VCP_EARLY": "C",
         "TREND_WATCH": "D",
     }
     priority_map = {
-        "P1_TIGHT": "high",
-        "P1_MATURE": "high",
-        "P1_FORMING": "medium",
-        "P1_EARLY": "low",
+        "VCP_TIGHT": "high",
+        "VCP_MATURE": "high",
+        "VCP_FORMING": "medium",
+        "VCP_EARLY": "low",
         "TREND_WATCH": "low",
     }
 
@@ -630,7 +662,7 @@ def detect_vcp_structure(df):
         "state": state,
         "conditions": conditions,
         "misses": misses,
-        "structure_count": min(count, 3),
+        "structure_count": min(count, CONTRACTION_CFG["max_recent_contractions"]),
         "contractions": contractions,
         "contraction_group": group,
         "contraction_count": count,
@@ -652,199 +684,200 @@ def detect_vcp_structure(df):
     }
 
 
-def detect_p2_pullback(df, structure, overheat):
+def detect_pullback_buy(df, structure, overheat):
     latest = df.iloc[-1]
-    if structure.get("state") not in {"P1_FORMING", "P1_MATURE", "P1_TIGHT"}:
-        return {"hit": False, "reason": "P1阶段不足"}
+    cfg = SETUP_CFG["pullback_buy"]
+    if structure.get("state") not in set(cfg["allowed_stages"]):
+        return {"hit": False, "reason": "VCP结构阶段不足"}
     if overheat["hard_reject"]:
         return {"hit": False, "reason": "风险硬排除"}
 
-    near_ma20 = pd.notna(latest.get("distance_ma20")) and -4 <= latest["distance_ma20"] <= 3
-    near_ma60 = pd.notna(latest.get("distance_ma60")) and -5 <= latest["distance_ma60"] <= 5
+    ma20_min, ma20_max = cfg["ma20_distance_range"]
+    ma60_min, ma60_max = cfg["ma60_distance_range"]
+    near_ma20 = pd.notna(latest.get("distance_ma20")) and ma20_min <= latest["distance_ma20"] <= ma20_max
+    near_ma60 = pd.notna(latest.get("distance_ma60")) and ma60_min <= latest["distance_ma60"] <= ma60_max
     low20 = latest.get("low_20")
     last_low = structure.get("last_contraction_low")
     conditions = [
-        safe_float(latest.get("volume_dry_up"), 999) < 0.80,
+        safe_float(latest.get("volume_dry_up"), 999) < cfg["volume_dry_up_lt"],
         near_ma20 or near_ma60,
-        last_low is not None and latest["close"] > last_low * 1.02,
-        safe_float(latest.get("MA20_slope"), 0) >= -0.03,
-        safe_float(latest.get("chg_5"), 0) < 12,
-        "LONG_UPPER_SHADOW" not in overheat["risk_flags"],
+        last_low is not None and latest["close"] > last_low * (1 + cfg["last_low_buffer_pct"] / 100),
+        safe_float(latest.get("MA20_slope"), 0) >= cfg["min_ma20_slope"],
+        safe_float(latest.get("chg_5"), 0) < cfg["max_chg_5_pct"],
+        not any(flag in overheat["risk_flags"] for flag in cfg["blocked_risk_flags"]),
     ]
     hit = all(conditions)
     anchor = "MA20" if near_ma20 else "MA60" if near_ma60 else ""
     support = safe_float(latest.get(anchor)) if anchor else safe_float(latest.get("MA20"))
     invalid = None
     if support:
-        invalid = min(support * 0.97, safe_float(low20, support) * 0.98)
+        invalid = min(support * cfg["invalid_support_ratio"], safe_float(low20, support) * cfg["invalid_low20_ratio"])
     return {
         "hit": hit,
         "anchor": anchor,
         "support_price": support,
         "invalid_price": invalid,
-        "reason": f"缩量回踩{anchor}" if hit else "P2条件不足",
+        "reason": f"缩量回踩{anchor}" if hit else "缩量回踩触发条件不足",
     }
 
 
-def find_recent_breakout(df, lookback=10):
+def find_recent_breakout(df, lookback=None):
+    cfg = SETUP_CFG["retest_buy"]
+    if lookback is None:
+        lookback = cfg["lookback_days"]
     n = len(df)
-    start = max(60, n - lookback - 1)
+    high_days = cfg["breakout_lookback_high_days"]
+    start = max(high_days, n - lookback - 1)
     end = n - 1
     for idx in range(start, end):
         prev = df.iloc[:idx]
-        if len(prev) < 60:
+        if len(prev) < high_days:
             continue
         row = df.iloc[idx]
-        level = prev["high"].tail(60).max()
+        level = prev["high"].tail(high_days).max()
         vol_ma20 = row.get("vol_ma20")
         if pd.isna(vol_ma20) or vol_ma20 <= 0:
             continue
-        if row["close"] > level * 1.01 and row["volume"] > vol_ma20 * 1.5 and not is_long_upper_shadow(row):
+        if (
+            row["close"] > level * cfg["breakout_close_buffer_ratio"]
+            and row["volume"] > vol_ma20 * cfg["breakout_volume_ratio"]
+            and not is_long_upper_shadow(row)
+        ):
             return {"idx": idx, "date": row["date"], "level": float(level)}
     return None
 
 
-def detect_p3_retest(df, structure, overheat):
+def detect_retest_buy(df, structure, overheat):
     latest = df.iloc[-1]
+    cfg = SETUP_CFG["retest_buy"]
     if overheat["hard_reject"]:
         return {"hit": False, "reason": "风险硬排除"}
-    breakout = find_recent_breakout(df, lookback=12)
+    breakout = find_recent_breakout(df, lookback=cfg["lookback_days"])
     if not breakout:
         return {"hit": False, "reason": "近期无有效突破"}
 
     days_after = len(df) - breakout["idx"] - 1
-    if days_after < 3 or days_after > 10:
-        return {"hit": False, "breakout_level": breakout["level"], "reason": "突破后天数不在3-10日"}
+    if days_after < cfg["min_days_after_breakout"] or days_after > cfg["max_days_after_breakout"]:
+        return {
+            "hit": False,
+            "breakout_level": breakout["level"],
+            "reason": f"突破后天数不在{cfg['min_days_after_breakout']}-{cfg['max_days_after_breakout']}日",
+        }
 
     post = df.iloc[breakout["idx"] + 1:]
     pullback_low = post["low"].min()
-    volume_ok = safe_float(post["volume"].tail(min(5, len(post))).mean(), 0) < safe_float(df.iloc[breakout["idx"]]["volume"], 0)
+    volume_days = min(cfg["volume_compare_days"], len(post))
+    volume_ok = safe_float(post["volume"].tail(volume_days).mean(), 0) < safe_float(df.iloc[breakout["idx"]]["volume"], 0)
     close_ok = latest["close"] >= breakout["level"] or (pd.notna(latest.get("MA10")) and latest["close"] >= latest["MA10"])
-    hit = pullback_low >= breakout["level"] * 0.97 and volume_ok and close_ok
+    hit = pullback_low >= breakout["level"] * cfg["max_pullback_below_breakout_ratio"] and volume_ok and close_ok
     return {
         "hit": hit,
         "breakout_level": breakout["level"],
         "support_price": breakout["level"],
-        "invalid_price": breakout["level"] * 0.97,
-        "reason": "突破后缩量回踩确认" if hit else "P3回踩确认不足",
+        "invalid_price": breakout["level"] * cfg["invalid_support_ratio"],
+        "reason": "突破后缩量回踩确认" if hit else "突破回踩确认条件不足",
     }
 
 
-def score_setup(df, structure, p2, p3, overheat):
+def score_setup(df, structure, pullback, retest, overheat):
     latest = df.iloc[-1]
-    score = 0
 
     stage = structure.get("state")
-    stage_scores = {
-        "P1_EARLY": 18,
-        "P1_FORMING": 32,
-        "P1_MATURE": 45,
-        "P1_TIGHT": 55,
-        "TREND_WATCH": 12,
-        "POST_BREAKOUT": 8,
-        "TREND_REBUILD": 8,
-    }
+    stage_scores = SCORE_CFG["stage"]
     structure_score = stage_scores.get(stage, 0)
 
     volume_score = 0
+    volume_cfg = SCORE_CFG["volume"]
     volume_pattern = structure.get("volume_pattern")
     if volume_pattern == "decreasing":
-        volume_score += 15
+        volume_score += volume_cfg["decreasing"]
     elif volume_pattern == "drying":
-        volume_score += 8
+        volume_score += volume_cfg["drying"]
     elif volume_pattern == "failed":
-        volume_score -= 10
-    if safe_float(latest.get("volume_dry_up"), 999) < 0.80:
-        volume_score += 10
+        volume_score += volume_cfg["failed"]
+    if safe_float(latest.get("volume_dry_up"), 999) < volume_cfg["dry_up_bonus_threshold"]:
+        volume_score += volume_cfg["dry_up_bonus"]
     if safe_float(latest.get("vol_ma20"), 999) < safe_float(latest.get("vol_ma60"), -999):
-        volume_score += 5
+        volume_score += volume_cfg["vol_ma20_below_ma60_bonus"]
 
     trend_score = 0
+    trend_cfg = SCORE_CFG["trend"]
     if pd.notna(latest.get("MA20")) and pd.notna(latest.get("MA60")) and latest["MA20"] >= latest["MA60"]:
-        trend_score += 7
-    if safe_float(latest.get("MA20_slope"), 0) >= 0:
-        trend_score += 4
-    if safe_float(latest.get("MA60_slope"), 0) >= -0.03:
-        trend_score += 4
+        trend_score += trend_cfg["ma20_above_ma60_bonus"]
+    if safe_float(latest.get("MA20_slope"), 0) >= trend_cfg["ma20_slope_min"]:
+        trend_score += trend_cfg["ma20_slope_bonus"]
+    if safe_float(latest.get("MA60_slope"), 0) >= trend_cfg["ma60_slope_min"]:
+        trend_score += trend_cfg["ma60_slope_bonus"]
 
     position_score = 0
+    position_cfg = SCORE_CFG["position"]
     dist20 = safe_float(latest.get("distance_ma20"), 999)
     pivot_distance = safe_float(structure.get("pivot_distance"), None)
-    if -4 <= dist20 <= 3:
-        position_score += 10
-    elif dist20 <= 10:
-        position_score += 5
+    ma20_min, ma20_max = position_cfg["ma20_near_range"]
+    if ma20_min <= dist20 <= ma20_max:
+        position_score += position_cfg["ma20_near_bonus"]
+    elif dist20 <= position_cfg["ma20_extended_max_pct"]:
+        position_score += position_cfg["ma20_extended_bonus"]
     if pivot_distance is not None:
-        if -8 <= pivot_distance <= 0:
-            position_score += 12
-        elif -15 <= pivot_distance <= 0:
-            position_score += 6
+        pivot_near_min, pivot_near_max = position_cfg["pivot_near_range"]
+        pivot_watch_min, pivot_watch_max = position_cfg["pivot_watch_range"]
+        if pivot_near_min <= pivot_distance <= pivot_near_max:
+            position_score += position_cfg["pivot_near_bonus"]
+        elif pivot_watch_min <= pivot_distance <= pivot_watch_max:
+            position_score += position_cfg["pivot_watch_bonus"]
 
-    buy_point_score = 0
-    if p3.get("hit"):
-        buy_point_score = 20
-    elif p2.get("hit"):
-        buy_point_score = 16
-    elif structure.get("state") == "P1_TIGHT":
-        buy_point_score = 10
-    elif structure.get("state") == "P1_MATURE":
-        buy_point_score = 8
-    elif structure.get("state") == "P1_FORMING":
-        buy_point_score = 6
-    elif structure.get("state") == "P1_EARLY":
-        buy_point_score = 2
-
-    score = structure_score + volume_score + trend_score + position_score + buy_point_score
-    score = max(0, min(100, score - overheat["risk_score"]))
+    score = structure_score + volume_score + trend_score + position_score
+    score = max(SCORE_CFG["min_score"], min(SCORE_CFG["max_score"], score))
 
     return {
-        "setup_score": round(score, 2),
-        "risk_score": overheat["risk_score"],
+        "structure_score": round(score, 2),
+        "structure_risk_score": overheat["risk_score"],
         "components": {
             "structure": structure_score,
             "volume": volume_score,
             "trend": trend_score,
             "position": position_score,
-            "buy_point": buy_point_score,
-            "risk_penalty": overheat["risk_score"],
         }
     }
 
 
-def classify_result(structure, p2, p3, score, overheat):
-    if overheat["hard_reject"] and not p3.get("hit"):
-        return "REJECT", "REJECT", "none", "0"
-    if p3.get("hit"):
-        return "VCP", "P3_RETEST", "standard_position", "60%-80%"
-    if p2.get("hit"):
-        return "VCP", "P2_PULLBACK", "light_position", "20%-30%"
-    state = structure.get("state")
-    if state in ["P1_TIGHT", "P1_MATURE", "P1_FORMING", "P1_EARLY"]:
-        return "VCP", state, "watch", "0"
-    if state == "TREND_WATCH" and score["setup_score"] >= 45:
-        return "TREND", state, "watch", "0"
-    return "NONE", "REJECT", "none", "0"
+def structure_stage_from_internal(state):
+    stage_map = {
+        "VCP_EARLY": "VCP_EARLY",
+        "VCP_FORMING": "VCP_FORMING",
+        "VCP_MATURE": "VCP_MATURE",
+        "VCP_TIGHT": "VCP_TIGHT",
+        "TREND_WATCH": "TREND_WATCH",
+        "POST_BREAKOUT": "POST_BREAKOUT",
+        "TREND_REBUILD": "TREND_REBUILD",
+        "DATA_INSUFFICIENT": "DATA_ISSUE",
+        "REJECT": "NONE",
+    }
+    return stage_map.get(state, "NONE")
 
 
-def pool_type_for_state(state, score):
-    if state in ["P2_PULLBACK", "P3_RETEST"] and score >= 65:
-        return "TRADE_CANDIDATE"
-    if state in ["P1_TIGHT", "P1_MATURE"] and score >= 55:
-        return "RESEARCH_WATCH"
-    if state == "P1_FORMING" and score >= 50:
-        return "RESEARCH_WATCH"
-    if state == "P1_EARLY" and score >= 45:
-        return "LOW_PRIORITY"
-    if state == "TREND_WATCH" and score >= 45:
-        return "LOW_PRIORITY"
-    return "REJECT"
+def classify_result(structure, pullback, retest, score, overheat):
+    internal_stage = structure.get("state")
+    if retest.get("hit"):
+        return "VCP", "RETEST_BUY", "BUY_STANDARD", CLASSIFICATION_CFG["retest_buy_position"]
+    if pullback.get("hit"):
+        return "VCP", "PULLBACK_BUY", "BUY_LIGHT", CLASSIFICATION_CFG["pullback_buy_position"]
+    if internal_stage in ["VCP_TIGHT", "VCP_MATURE", "VCP_FORMING", "VCP_EARLY"]:
+        return "VCP", "NONE", "AVOID_CHASE" if overheat["hard_reject"] else "WATCH", CLASSIFICATION_CFG["no_position"]
+    if internal_stage == "TREND_WATCH":
+        return "TREND", "NONE", "AVOID_CHASE" if overheat["hard_reject"] else "WATCH", CLASSIFICATION_CFG["no_position"]
+    if internal_stage == "POST_BREAKOUT":
+        return "VCP", "NONE", "AVOID_CHASE", CLASSIFICATION_CFG["no_position"]
+    if internal_stage == "TREND_REBUILD":
+        return "VCP", "NONE", "WAIT_REBUILD", CLASSIFICATION_CFG["no_position"]
+    return "NONE", "NONE", "REJECT", CLASSIFICATION_CFG["no_position"]
 
 
-def build_reason(structure, p2, p3, overheat):
-    if p3.get("hit"):
-        return p3["reason"]
-    if p2.get("hit"):
-        return p2["reason"]
+def build_reason(structure, pullback, retest, overheat):
+    if retest.get("hit"):
+        return retest["reason"]
+    if pullback.get("hit"):
+        return pullback["reason"]
     if structure.get("state") == "TREND_WATCH":
         return "趋势偏强但未形成有效收缩轮次"
     if structure.get("state") in {"POST_BREAKOUT", "TREND_REBUILD"}:
@@ -858,52 +891,76 @@ def build_reason(structure, p2, p3, overheat):
 
 
 def screen(df):
-    """确定性识别 P1/P2/P3，返回结构化结果。"""
+    """确定性识别 VCP 结构阶段和触发信号，返回结构化结果。"""
     latest = df.iloc[-1]
     if pd.isna(latest.get("MA20")):
         return {
-            "pattern": "NONE", "state": "DATA_INSUFFICIENT", "pool_type": "REJECT",
-            "setup_score": 0, "risk_score": 0, "action_hint": "none", "suggested_position": "0",
+            "structure_type": "DATA_ISSUE",
+            "structure_stage": "DATA_ISSUE",
+            "setup_signal": "NONE",
+            "action_hint": "DATA_SKIP",
+            "suggested_position": "0",
+            "model2_include": False,
+            "structure_score": 0,
+            "structure_risk_score": 0,
             "support_price": None, "invalid_price": None, "breakout_level": None,
-            "reason": f"MA20=NaN，仅{len(df)}个有效交易日", "risk_flags": [],
+            "reason": f"MA20=NaN，仅{len(df)}个有效交易日", "structure_risk_flags": [],
             "score_components": {},
+            "structure_conditions": [],
+            "structure_misses": ["数据不足"],
+            "contraction_count": 0,
+            "contraction_pcts": "",
+            "contraction_days": "",
+            "volume_pattern": "unknown",
+            "pivot_price": None,
+            "structure_pivot": None,
+            "market_pivot": None,
+            "pivot_distance": None,
+            "last_contraction_low": None,
+            "structure_age_days": None,
+            "structure_valid": False,
+            "structure_invalid_reason": "data_issue",
+            "post_structure_gain": None,
+            "post_structure_drawdown": None,
+            "vcp_quality": "D",
+            "contractions": [],
+            "contraction_group": [],
         }
 
     overheat = detect_overheat(df)
     structure = detect_vcp_structure(df)
-    p2 = detect_p2_pullback(df, structure, overheat)
-    p3 = detect_p3_retest(df, structure, overheat)
-    score = score_setup(df, structure, p2, p3, overheat)
-    pattern, state, action_hint, suggested_position = classify_result(structure, p2, p3, score, overheat)
-    pool_type = pool_type_for_state(state, score["setup_score"])
+    pullback = detect_pullback_buy(df, structure, overheat)
+    retest = detect_retest_buy(df, structure, overheat)
+    score = score_setup(df, structure, pullback, retest, overheat)
+    structure_type, setup_signal, action_hint, suggested_position = classify_result(structure, pullback, retest, score, overheat)
+    structure_stage = structure_stage_from_internal(structure.get("state"))
 
-    support = p3.get("support_price") or p2.get("support_price")
-    invalid = p3.get("invalid_price") or p2.get("invalid_price")
-    breakout = p3.get("breakout_level")
+    support = retest.get("support_price") or pullback.get("support_price")
+    invalid = retest.get("invalid_price") or pullback.get("invalid_price")
+    breakout = retest.get("breakout_level")
 
     final_quality = structure.get("vcp_quality", "D")
-    final_priority = structure.get("watch_priority", "none")
-    if state in {"P2_PULLBACK", "P3_RETEST"}:
+    if setup_signal in {"PULLBACK_BUY", "RETEST_BUY"}:
         final_quality = "A"
-        final_priority = "high"
+    model2_include = structure_type in {"VCP", "TREND"} and action_hint != "REJECT"
 
     return {
-        "pattern": pattern,
-        "state": state,
-        "pool_type": pool_type,
-        "setup_score": score["setup_score"],
-        "risk_score": score["risk_score"],
+        "structure_type": structure_type,
+        "structure_stage": structure_stage,
+        "setup_signal": setup_signal,
         "action_hint": action_hint,
         "suggested_position": suggested_position,
+        "model2_include": model2_include,
+        "structure_score": score["structure_score"],
+        "structure_risk_score": score["structure_risk_score"],
         "support_price": round_or_none(support),
         "invalid_price": round_or_none(invalid),
         "breakout_level": round_or_none(breakout),
-        "reason": build_reason(structure, p2, p3, overheat),
-        "risk_flags": overheat["risk_flags"],
+        "reason": build_reason(structure, pullback, retest, overheat),
+        "structure_risk_flags": overheat["risk_flags"],
         "score_components": score["components"],
         "structure_conditions": structure.get("conditions", []),
         "structure_misses": structure.get("misses", []),
-        "vcp_stage": state if state != "REJECT" else structure.get("state"),
         "contraction_count": structure.get("contraction_count", 0),
         "contraction_pcts": structure.get("contraction_pcts", ""),
         "contraction_days": structure.get("contraction_days", ""),
@@ -919,7 +976,6 @@ def screen(df):
         "post_structure_gain": round_or_none(structure.get("post_structure_gain")),
         "post_structure_drawdown": round_or_none(structure.get("post_structure_drawdown")),
         "vcp_quality": final_quality,
-        "watch_priority": final_priority,
         "contractions": structure.get("contractions", []),
         "contraction_group": structure.get("contraction_group", []),
     }
@@ -928,16 +984,17 @@ def screen(df):
 # ===================== 输出 =====================
 
 CSV_COLUMNS = [
-    "股票代码", "股票名称", "pattern", "state", "pool_type", "setup_score", "risk_score",
-    "action_hint", "suggested_position", "support_price", "invalid_price", "breakout_level",
-    "vcp_stage", "contraction_count", "contraction_pcts", "contraction_days", "volume_pattern",
+    "股票代码", "股票名称", "structure_type", "structure_stage", "setup_signal",
+    "action_hint", "suggested_position", "model2_include", "structure_score", "structure_risk_score",
+    "structure_risk_flags", "support_price", "invalid_price", "breakout_level",
+    "contraction_count", "contraction_pcts", "contraction_days", "volume_pattern",
     "pivot_price", "structure_pivot", "market_pivot", "pivot_distance", "last_contraction_low",
     "structure_age_days", "structure_valid", "structure_invalid_reason",
-    "post_structure_gain", "post_structure_drawdown", "vcp_quality", "watch_priority",
+    "post_structure_gain", "post_structure_drawdown", "vcp_quality",
     "close", "MA20", "MA60", "MA120", "MA20_slope", "MA60_slope",
     "range_10", "range_20", "range_60", "volume_dry_up",
     "distance_ma20", "distance_ma60", "distance_high_60",
-    "chg_5", "chg_20", "reason", "risk_flags", "run_date",
+    "chg_5", "chg_20", "reason", "run_date", "strategy_version",
 ]
 
 
@@ -948,6 +1005,7 @@ def result_from_df(code, name, df, run_date):
         "code": code,
         "name": name,
         "run_date": run_date,
+        "strategy_version": STRATEGY_VERSION,
         **decision,
         "close": round_or_none(latest.get("close")),
         "MA20": round_or_none(latest.get("MA20")),
@@ -973,7 +1031,7 @@ def result_from_df(code, name, df, run_date):
 def should_write_to_quant(result, include_reject=False):
     if include_reject:
         return True
-    return result["pool_type"] != "REJECT"
+    return bool(result.get("model2_include"))
 
 
 def write_csv(results, quant_path):
@@ -985,17 +1043,18 @@ def write_csv(results, quant_path):
             writer.writerow([
                 f'="{r["code"]}"',
                 r["name"],
-                r["pattern"],
-                r["state"],
-                r["pool_type"],
-                r["setup_score"],
-                r["risk_score"],
+                r["structure_type"],
+                r["structure_stage"],
+                r["setup_signal"],
                 r["action_hint"],
                 r["suggested_position"],
+                r["model2_include"],
+                r["structure_score"],
+                r["structure_risk_score"],
+                ";".join(r["structure_risk_flags"]),
                 r["support_price"] if r["support_price"] is not None else "",
                 r["invalid_price"] if r["invalid_price"] is not None else "",
                 r["breakout_level"] if r["breakout_level"] is not None else "",
-                r["vcp_stage"],
                 r["contraction_count"],
                 r["contraction_pcts"],
                 r["contraction_days"],
@@ -1011,7 +1070,6 @@ def write_csv(results, quant_path):
                 r["post_structure_gain"] if r["post_structure_gain"] is not None else "",
                 r["post_structure_drawdown"] if r["post_structure_drawdown"] is not None else "",
                 r["vcp_quality"],
-                r["watch_priority"],
                 r["close"] if r["close"] is not None else "",
                 r["MA20"] if r["MA20"] is not None else "",
                 r["MA60"] if r["MA60"] is not None else "",
@@ -1028,8 +1086,8 @@ def write_csv(results, quant_path):
                 r["chg_5"] if r["chg_5"] is not None else "",
                 r["chg_20"] if r["chg_20"] is not None else "",
                 r["reason"],
-                ";".join(r["risk_flags"]),
                 r["run_date"],
+                r["strategy_version"],
             ])
     print(f"\n精选池已输出: {quant_path}")
 
@@ -1046,19 +1104,20 @@ def print_single_summary(result):
     print("=" * 70)
     print(f"{result['name']} {result['code']} | {result['last_trade_date']}")
     print("=" * 70)
-    print(f"状态: {result['state']} | {result['pool_type']} | 分数 {result['setup_score']} / 风险 {result['risk_score']}")
+    print(f"结构: {result['structure_type']} | {result['structure_stage']} | 分数 {result['structure_score']} / 风险 {result['structure_risk_score']}")
+    print(f"触发: {result['setup_signal']} | model2_include={result['model2_include']}")
     print(f"动作: {result['action_hint']} | 建议仓位 {result['suggested_position']}")
-    print(f"VCP: {result['vcp_stage']} | 轮次 {result['contraction_count']} | 收缩 {result['contraction_pcts']} | 量能 {result['volume_pattern']}")
+    print(f"VCP: {result['structure_stage']} | 轮次 {result['contraction_count']} | 收缩 {result['contraction_pcts']} | 量能 {result['volume_pattern']}")
     print(f"Pivot: {result['pivot_price']} | 距pivot {result['pivot_distance']}% | 年龄 {result['structure_age_days']}天 | 有效 {result['structure_valid']}")
     if result["structure_invalid_reason"]:
         print(f"结构失效: {result['structure_invalid_reason']} | 结构后涨幅 {result['post_structure_gain']}% | 回撤 {result['post_structure_drawdown']}%")
-    print(f"质量 {result['vcp_quality']} | 优先级 {result['watch_priority']}")
+    print(f"质量 {result['vcp_quality']}")
     print(f"收盘: {result['close']} | MA20 {result['MA20']} | MA60 {result['MA60']}")
     print(f"距MA20: {result['distance_ma20']}% | 距MA60: {result['distance_ma60']}% | 距60日高点: {result['distance_high_60']}%")
     print(f"支撑: {result['support_price']} | 失效: {result['invalid_price']} | 突破位: {result['breakout_level']}")
     print(f"结论: {result['reason']}")
-    if result["risk_flags"]:
-        print(f"风险: {', '.join(result['risk_flags'])}")
+    if result["structure_risk_flags"]:
+        print(f"风险: {', '.join(result['structure_risk_flags'])}")
 
 
 def count_data_source(stats, source):
@@ -1073,35 +1132,35 @@ def count_data_source(stats, source):
 def print_summary(total, pull_ok, pull_fail, data_insufficient, results, cache_hits=0, api_calls=0, tdx_calls=0):
     print()
     print("=" * 70)
-    print("模型二执行摘要 — VCP/P2/P3 量价精筛")
+    print("模型二执行摘要 — VCP 结构与触发信号精筛")
     print("=" * 70)
     print(f"  输入标的: {total} 只")
     print(f"  数据来源: 缓存命中 {cache_hits} 只 + 妙想API {api_calls} 只 + 通达信 {tdx_calls} 只")
     print(f"  成功拉取行情: {pull_ok} 只（失败: {pull_fail} 只）")
     print(f"  数据不足跳过: {data_insufficient} 只")
 
-    by_state = {}
-    by_pool = {}
+    by_signal = {}
+    by_action = {}
     by_stage = {}
     by_quality = {}
     for r in results:
-        by_state[r["state"]] = by_state.get(r["state"], 0) + 1
-        by_pool[r["pool_type"]] = by_pool.get(r["pool_type"], 0) + 1
-        by_stage[r.get("vcp_stage", "unknown")] = by_stage.get(r.get("vcp_stage", "unknown"), 0) + 1
+        by_signal[r["setup_signal"]] = by_signal.get(r["setup_signal"], 0) + 1
+        by_action[r["action_hint"]] = by_action.get(r["action_hint"], 0) + 1
+        by_stage[r.get("structure_stage", "unknown")] = by_stage.get(r.get("structure_stage", "unknown"), 0) + 1
         by_quality[r.get("vcp_quality", "D")] = by_quality.get(r.get("vcp_quality", "D"), 0) + 1
     print(f"  输出结果: {len(results)} 只")
-    print(f"  池子分层: {by_pool}")
-    print(f"  状态分布: {by_state}")
-    print(f"  VCP阶段: {by_stage}")
+    print(f"  结构阶段: {by_stage}")
+    print(f"  交易触发: {by_signal}")
+    print(f"  动作提示: {by_action}")
     print(f"  VCP质量: {by_quality}")
 
-    top = sorted([r for r in results if r["pool_type"] != "REJECT"], key=lambda x: x["setup_score"], reverse=True)[:20]
+    top = sorted([r for r in results if r.get("model2_include")], key=lambda x: x["structure_score"], reverse=True)[:20]
     if top:
         print()
-        print(f"{'代码':<8} {'名称':<8} {'状态':<14} {'分数':>6} {'风险':>6} {'结论'}")
+        print(f"{'代码':<8} {'名称':<8} {'阶段':<16} {'触发':<14} {'分数':>6} {'风险':>6} {'结论'}")
         print("-" * 100)
         for r in top:
-            print(f"{r['code']:<8} {r['name']:<8} {r['state']:<14} {r['setup_score']:>6.1f} {r['risk_score']:>6.1f} {r['reason'][:36]}")
+            print(f"{r['code']:<8} {r['name']:<8} {r['structure_stage']:<16} {r['setup_signal']:<14} {r['structure_score']:>6.1f} {r['structure_risk_score']:>6.1f} {r['reason'][:36]}")
 
 
 # ===================== LLM 可选解释 =====================
@@ -1116,9 +1175,9 @@ def maybe_call_llm(results, top_n):
     if not api_key:
         return {"status": "skipped", "reason": "DEEPSEEK_API_KEY missing", "reviews": []}
 
-    selected = sorted(results, key=lambda x: x["setup_score"], reverse=True)[:top_n]
+    selected = sorted(results, key=lambda x: x["structure_score"], reverse=True)[:top_n]
     system_prompt = (
-        "你是量价形态复核助手。只解释脚本结果，不改变脚本对 P1/P2/P3 的判定。"
+        "你是量价形态复核助手。只解释脚本结果，不改变脚本对结构阶段和触发信号的判定。"
         "只能使用输入 JSON 中已有的指标和字段，不得引入脚本未提供的新指标或外部事实。"
         "必须输出合法 JSON 对象，格式为："
         '{"reviews":[{"code":"300604","pattern_review":"...","risk_notes":["..."],'
@@ -1219,7 +1278,7 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True):
             continue
 
         count_data_source(stats, source)
-        if len(df) < 20:
+        if len(df) < BASE_CFG["min_runtime_data_days"]:
             print(f"跳过: 数据不足({len(df)}天)")
             stats["data_insufficient"] += 1
             continue
@@ -1228,7 +1287,7 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True):
         df = calc_indicators(df)
         result = result_from_df(code, name, df, run_date)
         results.append(result)
-        print(f"{result['state']} | score={result['setup_score']} | {result['reason'][:48]}")
+        print(f"{result['structure_stage']} / {result['setup_signal']} | score={result['structure_score']} | {result['reason'][:48]}")
 
     if retry_queue:
         print(f"\n重试 {len(retry_queue)} 只频率限制失败标的...")
@@ -1244,7 +1303,7 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True):
 def main():
     load_local_env()
 
-    parser = argparse.ArgumentParser(description="模型二：VCP/P2/P3 量价精筛")
+    parser = argparse.ArgumentParser(description="模型二：VCP 结构与触发信号精筛")
     parser.add_argument("--pool", help="模型一池文件路径（默认取当天 pool/pool_YYMMDD.csv）")
     parser.add_argument("--code", help="单只股票代码")
     parser.add_argument("--codes", help="多只股票代码，逗号分隔")
@@ -1253,7 +1312,7 @@ def main():
     parser.add_argument("--quant", help="CSV 输出路径")
     parser.add_argument("--output-json", help="JSON 输出路径")
     parser.add_argument("--json", action="store_true", help="同时将结构化结果打印到 stdout")
-    parser.add_argument("--include-reject", action="store_true", help="CSV 中包含 REJECT 标的")
+    parser.add_argument("--include-reject", action="store_true", help="CSV 中包含未纳入 model2_include 的标的")
     parser.add_argument("--no-cache", action="store_true", help="跳过缓存，重新拉取行情")
     parser.add_argument("--refresh", action="store_true", help="清除今日缓存后重新拉取")
     parser.add_argument("--with-llm", action="store_true", help="可选调用 LLM 对 top 标的做解释")
@@ -1274,7 +1333,7 @@ def main():
     quant_path, json_path = build_output_paths(args, today_yy, mode, codes)
 
     print("=" * 70)
-    print("模型二：VCP/P2/P3 量价精筛")
+    print("模型二：VCP 结构与触发信号精筛")
     print(f"模式: {mode} | 标的: {len(codes)} 只 | CSV: {quant_path}")
     cleanup_cache = DailyCache()
     print(f"缓存: {'关闭' if args.no_cache else '开启'} | 目录: {cleanup_cache.cache_dir}")
@@ -1289,7 +1348,7 @@ def main():
 
     results, stats = process_codes(codes, today_yy, run_date, use_cache=use_cache)
     csv_results = [r for r in results if should_write_to_quant(r, include_reject=args.include_reject)]
-    csv_results.sort(key=lambda x: x["setup_score"], reverse=True)
+    csv_results.sort(key=lambda x: x["structure_score"], reverse=True)
 
     llm_payload = {"status": "skipped", "reason": "not_requested", "reviews": []}
     if args.with_llm:
@@ -1301,7 +1360,9 @@ def main():
             "mode": mode,
             "total": len(codes),
             "csv_path": quant_path,
-            "schema": "quant_vcp_process_p123",
+            "schema": "quant_vcp_structure_v2",
+            "strategy_version": STRATEGY_VERSION,
+            "strategy_file": f"strategies/{QUANT_STRATEGY_FILE}",
         },
         "stats": stats,
         "llm": llm_payload,
@@ -1314,7 +1375,7 @@ def main():
     if csv_results:
         write_csv(csv_results, quant_path)
     else:
-        print("\n无非 REJECT 标的，CSV 未写入。可用 --include-reject 输出完整结果。")
+        print("\n无 model2_include 标的，CSV 未写入。可用 --include-reject 输出完整结果。")
     write_json(payload, json_path)
 
     if mode == "单股" and results:

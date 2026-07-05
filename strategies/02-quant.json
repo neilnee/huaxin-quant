@@ -1,0 +1,164 @@
+{
+  "strategy_version": "model2_quant_v1",
+  "description": "Model 2 VCP structure and setup signal parameters. This file contains thresholds and weights only; algorithms stay in scripts/quant_filter.py.",
+  "vcp": {
+    "lookback_days": 120,
+    "swing_window": 3,
+    "min_pullback_pct": 4.0,
+    "max_pullback_pct": 35.0,
+    "min_pullback_days": 3,
+    "max_pullback_days": 45,
+    "max_structure_age_days": 45,
+    "min_pivot_distance_pct": -18.0,
+    "max_market_pivot_ratio": 1.1,
+    "max_post_gain_pct": 25.0,
+    "max_post_drawdown_pct": -18.0,
+    "min_recovery_pct": 3.0,
+    "min_recovery_pullback_ratio": 0.25,
+    "recovery_grace_days": 5
+  },
+  "base_rules": {
+    "min_data_days": 80,
+    "min_runtime_data_days": 20,
+    "min_ma60_slope": -0.03,
+    "max_drawdown_high_120_pct": -35.0,
+    "trend_watch_min_distance_ma20_pct": 10.0,
+    "trend_watch_min_distance_high_60_pct": -12.0,
+    "near_pivot_distance_pct": -15.0,
+    "last_low_buffer_pct": 2.0
+  },
+  "contraction_rules": {
+    "max_recent_contractions": 3,
+    "strict_decrease_ratio": 0.9,
+    "near_decrease_ratio": 1.05,
+    "volume_decrease_ratio": 0.95,
+    "volume_dry_up_threshold": 0.85,
+    "volume_failed_ratio": 1.2
+  },
+  "stage_rules": {
+    "early_min_contractions": 1,
+    "forming_min_contractions": 2,
+    "mature_min_contractions": 3,
+    "tight_max_last_pullback_pct": 10.0,
+    "tight_min_pivot_distance_pct": -8.0
+  },
+  "risk_rules": {
+    "long_upper_shadow_ratio": 0.45,
+    "long_upper_shadow_volume_ratio": 1.5,
+    "overheat_chg5_pct": 20.0,
+    "overheat_chg20_pct": 50.0,
+    "far_above_ma20_pct": 15.0,
+    "extended_from_ma20_pct": 10.0,
+    "volume_stall_ratio": 1.5,
+    "volume_stall_max_body_pct": 1.0,
+    "ma20_decline_slope": -0.1,
+    "deep_fall_distance_high_60_pct": -30.0,
+    "deep_fall_chg20_pct": -15.0,
+    "risk_scores": {
+      "OVERHEAT_CHG5": 25,
+      "OVERHEAT_CHG20": 25,
+      "FAR_ABOVE_MA20": 15,
+      "EXTENDED_FROM_MA20": 8,
+      "LONG_UPPER_SHADOW": 18,
+      "VOLUME_STALL": 15,
+      "DOWNTREND": 35,
+      "MA20_DECLINE": 15,
+      "DEEP_FALL": 35
+    },
+    "hard_reject_flags": [
+      "OVERHEAT_CHG5",
+      "OVERHEAT_CHG20",
+      "DOWNTREND",
+      "DEEP_FALL"
+    ]
+  },
+  "setup_rules": {
+    "pullback_buy": {
+      "allowed_stages": [
+        "VCP_FORMING",
+        "VCP_MATURE",
+        "VCP_TIGHT"
+      ],
+      "volume_dry_up_lt": 0.8,
+      "ma20_distance_range": [
+        -4.0,
+        3.0
+      ],
+      "ma60_distance_range": [
+        -5.0,
+        5.0
+      ],
+      "last_low_buffer_pct": 2.0,
+      "min_ma20_slope": -0.03,
+      "max_chg_5_pct": 12.0,
+      "invalid_support_ratio": 0.97,
+      "invalid_low20_ratio": 0.98,
+      "blocked_risk_flags": [
+        "LONG_UPPER_SHADOW"
+      ]
+    },
+    "retest_buy": {
+      "lookback_days": 12,
+      "min_days_after_breakout": 3,
+      "max_days_after_breakout": 10,
+      "breakout_lookback_high_days": 60,
+      "breakout_close_buffer_ratio": 1.01,
+      "breakout_volume_ratio": 1.5,
+      "max_pullback_below_breakout_ratio": 0.97,
+      "volume_compare_days": 5,
+      "invalid_support_ratio": 0.97
+    }
+  },
+  "scores": {
+    "min_score": 0,
+    "max_score": 100,
+    "stage": {
+      "VCP_EARLY": 18,
+      "VCP_FORMING": 32,
+      "VCP_MATURE": 45,
+      "VCP_TIGHT": 55,
+      "TREND_WATCH": 12,
+      "POST_BREAKOUT": 8,
+      "TREND_REBUILD": 8
+    },
+    "volume": {
+      "decreasing": 15,
+      "drying": 8,
+      "failed": -10,
+      "dry_up_bonus_threshold": 0.8,
+      "dry_up_bonus": 10,
+      "vol_ma20_below_ma60_bonus": 5
+    },
+    "trend": {
+      "ma20_above_ma60_bonus": 7,
+      "ma20_slope_min": 0.0,
+      "ma20_slope_bonus": 4,
+      "ma60_slope_min": -0.03,
+      "ma60_slope_bonus": 4
+    },
+    "position": {
+      "ma20_near_range": [
+        -4.0,
+        3.0
+      ],
+      "ma20_near_bonus": 10,
+      "ma20_extended_max_pct": 10.0,
+      "ma20_extended_bonus": 5,
+      "pivot_near_range": [
+        -8.0,
+        0.0
+      ],
+      "pivot_near_bonus": 12,
+      "pivot_watch_range": [
+        -15.0,
+        0.0
+      ],
+      "pivot_watch_bonus": 6
+    }
+  },
+  "classification": {
+    "pullback_buy_position": "20%-30%",
+    "retest_buy_position": "60%-80%",
+    "no_position": "0"
+  }
+}

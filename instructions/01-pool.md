@@ -1,11 +1,13 @@
 # 模型一：海选初筛模型（自执行指令）
 
 - **版本管理**: 由 Git 分支与提交历史管理，文件名不再携带版本号
-- **最近更新**: 2026-07-03
+- **最近更新**: 2026-07-05
 - **核心目标**: 从全市场筛选优质资产，建立候选观察池
 - **核心哲学**: 只看"已兑现"的资产历史质量，先让数据说话，再用行业标签做减法
 - **输入**: 全市场 A 股 | **输出**: `pool/pool_<YYMMDD>.csv`（候选池，供模型二使用）
 - **配套脚本**: `scripts/run_pool.py`（端到端入口） + `scripts/process_pool.py`（阶段二到五处理）
+- **数据层**: `scripts/data/pool_data.py`
+- **策略配置**: `strategies/01-pool.json`
 
 ---
 
@@ -23,7 +25,49 @@
 - 数据一次拉取，不在中间环节重复调 API
 - 市值分段互斥查询，解决 200 条上限；50 亿以下标的直接不进入候选池
 - 段数据文件本地缓存（`cache/xuangu/`），同一分段同日只拉一次，后续分析复用缓存
+- 策略阈值、分段、行业排除和软标签扣分统一来自 `strategies/01-pool.json`
 - 脚本与指令同提交更新，历史版本由 Git 追溯
+
+### 策略配置边界
+
+模型一策略参数统一放在：
+
+```text
+strategies/01-pool.json
+```
+
+配置文件必须包含：
+
+```text
+strategy_version
+runtime
+api_query
+market_cap_segments
+hard_filters
+industry
+soft_tags
+```
+
+策略配置只承载“可调参数”，包括：
+
+- xuangu API 查询过滤词和输出字段模板。
+- 市值分段、截断阈值、截断后的排序拆分方式。
+- 缓存有效天数和分段调用间隔默认值。
+- 市值、上市天数、OCF/NP、净利润、负债率、毛利率等硬过滤阈值。
+- 半导体高增长豁免阈值。
+- 行业排除关键词。
+- 软标签触发阈值和标签扣分。
+
+策略配置不承载：
+
+- 字段模糊匹配算法。
+- 原始 xuangu JSON 解析流程。
+- 数值单位解析函数。
+- xuangu raw 缓存匹配和数据源调用适配。
+- 去重、CSV 写入、摘要打印等流程编排。
+- 模型二/三/四的后续结构、估值和交易跟踪逻辑。
+
+每次调整模型一策略参数时，必须同步更新本指令卡说明，并递增或修改 `strategy_version`。模型一 CSV 必须写入 `strategy_version`，便于回溯候选池生成口径。
 
 ---
 
@@ -80,8 +124,8 @@
    ```bash
    python3 scripts/run_pool.py
    ```
-1. `run_pool.py` 对每个分段先检查 `cache/xuangu/` 目录下是否已有未过期且查询条件完全一致的 `*_raw.json` 文件。命中缓存则跳过 API 调用；需要强制刷新时使用 `--force-refresh`。
-2. 缓存缺失时，脚本自动拼接完整查询字符串，并调用 mx-xuangu 本地脚本。脚本路径通过 `HUAXIN_XUANGU_SCRIPT` 或 `--xuangu-script` 指定：
+1. `run_pool.py` 通过 `scripts/data/pool_data.py` 对每个分段先检查 `cache/xuangu/` 目录下是否已有未过期且查询条件完全一致的 `*_raw.json` 文件。命中缓存则跳过 API 调用；需要强制刷新时使用 `--force-refresh`。
+2. 缓存缺失时，脚本自动拼接完整查询字符串，并通过 `XuanguSource` 调用 mx-xuangu 本地脚本。脚本路径通过 `HUAXIN_XUANGU_SCRIPT` 或 `--xuangu-script` 指定：
    ```bash
    python3 scripts/run_pool.py --xuangu-script /path/to/mx_xuangu.py
    ```
@@ -89,7 +133,7 @@
    - `total < 200`：本段全覆盖，提取 `dataList` 全部记录
    - `total >= 200`：本段可能截断，自动追加 `按市盈率从小到大` / `按市盈率从大到小` 两个子查询
 4. 阶段一完成后，`run_pool.py` 自动调用 `process_pool.py` 进入阶段二到阶段五。
-5. `process_pool.py` 以 `SECURITY_CODE`（补零到 6 位）为 key 合并所有有效 raw 数据，去重后继续过滤和输出。
+5. `process_pool.py` 通过 `PoolSegmentCache` 以 `SECURITY_CODE`（补零到 6 位）为 key 合并所有有效 raw 数据，去重后继续过滤和输出。
 
 **调用约束**:
 - xuangu 调用串行执行，段间间隔 1-2s（避免触发限流）
@@ -340,7 +384,7 @@ if 字段缺失 → 保留
 - **编码**：UTF-8 with BOM
 - **分隔符**：逗号
 
-### CSV 列定义（共 22 列，顺序固定不可变）
+### CSV 列定义（共 23 列，顺序固定不可变）
 
 | # | 列名 | 来源 | 解析规则 | 示例值 |
 |---|------|------|---------|--------|
@@ -366,6 +410,7 @@ if 字段缺失 → 保留
 | 20 | `风险标签` | 阶段二软标签计算 | 多标签用英文分号分隔 | `HIGH_VALUATION;WEAK_ROE` |
 | 21 | `数据周期` | 归母净利润原始值 | `Q1/H1/Q3/annual/unknown` | `Q1` |
 | 22 | `半导体现金流豁免` | 阶段二计算 | `Y/N` | `Y` |
+| 23 | `strategy_version` | 策略配置 | `strategies/01-pool.json` 中的版本号 | `model1_pool_v1` |
 
 ### 股票代码写入规则（强制）
 

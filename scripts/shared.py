@@ -249,8 +249,8 @@ def _ensure_cache():
 def _ensure_mx_source():
     global _mx_source
     if _mx_source is None:
-        # 延迟导入，避免 data_sources 未就绪
-        from scripts.data_sources import MiaoxiangSource
+        # 延迟导入，避免数据源模块未就绪
+        from scripts.data.market_data import MiaoxiangSource
         _mx_source = MiaoxiangSource()
     return _mx_source
 
@@ -258,7 +258,7 @@ def _ensure_mx_source():
 def _ensure_tdx_source():
     global _tdx_source
     if _tdx_source is None:
-        from scripts.data_sources import TDXSource
+        from scripts.data.market_data import TDXSource
         _tdx_source = TDXSource()
     return _tdx_source
 

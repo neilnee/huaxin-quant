@@ -180,33 +180,64 @@ def as_list(value):
     return [str(value)]
 
 
-def classify_result(row):
-    state = row.get("state") or ""
-    stage = row.get("vcp_stage") or ""
-    pool_type = row.get("pool_type") or ""
+def quant_stage(row):
+    return row.get("structure_stage") or row.get("vcp_stage") or ""
 
-    if stage == "DATA_INSUFFICIENT" or state == "DATA_INSUFFICIENT":
+
+def quant_signal(row):
+    return row.get("setup_signal") or row.get("state") or ""
+
+
+def quant_action(row):
+    return row.get("action_hint") or ""
+
+
+def quant_score(row):
+    return row.get("structure_score", row.get("setup_score"))
+
+
+def quant_risk_score(row):
+    return row.get("structure_risk_score", row.get("risk_score"))
+
+
+def quant_risk_flags(row):
+    return as_list(row.get("structure_risk_flags", row.get("risk_flags")))
+
+
+def quant_model2_include(row):
+    value = row.get("model2_include", row.get("model2_pass"))
+    if isinstance(value, bool):
+        return value
+    if value in ("True", "true", "1", 1):
+        return True
+    if value in ("False", "false", "0", 0):
+        return False
+    return row.get("pool_type") != "REJECT"
+
+
+def classify_result(row):
+    signal = quant_signal(row)
+    stage = quant_stage(row)
+    action = quant_action(row)
+
+    if stage in {"DATA_ISSUE", "DATA_INSUFFICIENT"}:
         return "data_issue"
-    if pool_type == "REJECT":
-        if stage == "POST_BREAKOUT":
-            return "breakout"
-        if stage == "TREND_REBUILD" or row.get("structure_valid") is False:
-            return "invalid"
-        return "rejected"
-    if state == "P3_RETEST" or stage == "P3_RETEST":
-        return "retest"
-    if state in {"P1_TIGHT", "P1_HIGH", "P1_MATURE"} or stage in {"P1_TIGHT", "P1_HIGH", "P1_MATURE"}:
-        return "mature"
-    if state == "P1_FORMING" or stage == "P1_FORMING":
-        return "forming"
-    if state == "P1_EARLY" or stage == "P1_EARLY":
-        return "early"
     if stage == "POST_BREAKOUT":
         return "breakout"
-    if stage == "TREND_REBUILD" or row.get("structure_valid") is False:
+    if stage in {"TREND_REBUILD", "STRUCTURE_INVALID"} or row.get("structure_valid") is False:
         return "invalid"
-    if state == "REJECT":
+    if not quant_model2_include(row) or action == "REJECT":
         return "rejected"
+    if signal == "RETEST_BUY":
+        return "retest"
+    if signal == "PULLBACK_BUY":
+        return "mature"
+    if stage in {"VCP_TIGHT", "VCP_MATURE"}:
+        return "mature"
+    if stage == "VCP_FORMING":
+        return "forming"
+    if stage == "VCP_EARLY":
+        return "early"
     return "rejected"
 
 
@@ -279,15 +310,15 @@ def compact_candidate(row, bloom_status=None, event_type=None):
     return {
         "code": row.get("code"),
         "name": row.get("name"),
-        "state": row.get("state"),
-        "vcp_stage": row.get("vcp_stage"),
-        "pool_type": row.get("pool_type"),
+        "state": quant_signal(row),
+        "vcp_stage": quant_stage(row),
+        "pool_type": quant_action(row),
         "bloom_status": bloom_status if bloom_status is not None else classify_result(row),
         "event_type": event_type,
-        "setup_score": row.get("setup_score"),
-        "risk_score": row.get("risk_score"),
+        "setup_score": quant_score(row),
+        "risk_score": quant_risk_score(row),
         "vcp_quality": row.get("vcp_quality"),
-        "watch_priority": row.get("watch_priority"),
+        "watch_priority": row.get("setup_signal", ""),
         "contraction_count": row.get("contraction_count"),
         "contraction_pcts": row.get("contraction_pcts"),
         "contraction_days": row.get("contraction_days"),
@@ -298,7 +329,7 @@ def compact_candidate(row, bloom_status=None, event_type=None):
         "structure_age_days": row.get("structure_age_days"),
         "structure_valid": row.get("structure_valid"),
         "structure_invalid_reason": row.get("structure_invalid_reason"),
-        "risk_flags": as_list(row.get("risk_flags")),
+        "risk_flags": quant_risk_flags(row),
         "close": row.get("close"),
         "MA20": row.get("MA20"),
         "MA60": row.get("MA60"),
@@ -321,16 +352,16 @@ def state_from_quant_results(results, date_iso):
             "days_tracked": "1",
             "days_in_observation": "1" if is_active_status(status) else "0",
             "active_status": status,
-            "last_state": row.get("state", ""),
-            "last_vcp_stage": row.get("vcp_stage", ""),
-            "last_pool_type": row.get("pool_type", ""),
-            "last_score": fmt_num(row.get("setup_score")),
+            "last_state": quant_signal(row),
+            "last_vcp_stage": quant_stage(row),
+            "last_pool_type": quant_action(row),
+            "last_score": fmt_num(quant_score(row)),
             "score_change": "",
             "best_status": status,
-            "best_score": fmt_num(row.get("setup_score")),
+            "best_score": fmt_num(quant_score(row)),
             "best_date": date_iso,
             "vcp_quality": row.get("vcp_quality", ""),
-            "watch_priority": row.get("watch_priority", ""),
+            "watch_priority": row.get("setup_signal", ""),
             "contraction_count": fmt_num(row.get("contraction_count")),
             "contraction_pcts": row.get("contraction_pcts", ""),
             "volume_pattern": row.get("volume_pattern", ""),
@@ -340,7 +371,7 @@ def state_from_quant_results(results, date_iso):
             "structure_age_days": fmt_num(row.get("structure_age_days")),
             "structure_valid": str(row.get("structure_valid", "")),
             "structure_invalid_reason": row.get("structure_invalid_reason", ""),
-            "risk_flags": ";".join(as_list(row.get("risk_flags"))),
+            "risk_flags": ";".join(quant_risk_flags(row)),
             "close": fmt_num(row.get("close")),
             "MA20": fmt_num(row.get("MA20")),
             "MA60": fmt_num(row.get("MA60")),
@@ -372,7 +403,7 @@ def event_type(prev_row, curr_status):
 def update_state_row(prev_row, row, date_iso, curr_status, event):
     prev_row = prev_row or {}
     prev_score = safe_float(prev_row.get("last_score"), None)
-    curr_score = safe_float(row.get("setup_score"), 0.0)
+    curr_score = safe_float(quant_score(row), 0.0)
     best_score = safe_float(prev_row.get("best_score"), -1.0)
     best_status = prev_row.get("best_status", "")
     best_date = prev_row.get("best_date", "")
@@ -394,16 +425,16 @@ def update_state_row(prev_row, row, date_iso, curr_status, event):
         "days_tracked": str(days_tracked),
         "days_in_observation": str(days_in_observation),
         "active_status": curr_status,
-        "last_state": row.get("state", ""),
-        "last_vcp_stage": row.get("vcp_stage", ""),
-        "last_pool_type": row.get("pool_type", ""),
+        "last_state": quant_signal(row),
+        "last_vcp_stage": quant_stage(row),
+        "last_pool_type": quant_action(row),
         "last_score": fmt_num(curr_score),
         "score_change": "" if prev_score is None else fmt_num(curr_score - prev_score),
         "best_status": best_status,
         "best_score": fmt_num(best_score),
         "best_date": best_date,
         "vcp_quality": row.get("vcp_quality", ""),
-        "watch_priority": row.get("watch_priority", ""),
+        "watch_priority": row.get("setup_signal", ""),
         "contraction_count": fmt_num(row.get("contraction_count")),
         "contraction_pcts": row.get("contraction_pcts", ""),
         "volume_pattern": row.get("volume_pattern", ""),
@@ -413,7 +444,7 @@ def update_state_row(prev_row, row, date_iso, curr_status, event):
         "structure_age_days": fmt_num(row.get("structure_age_days")),
         "structure_valid": str(row.get("structure_valid", "")),
         "structure_invalid_reason": row.get("structure_invalid_reason", ""),
-        "risk_flags": ";".join(as_list(row.get("risk_flags"))),
+        "risk_flags": ";".join(quant_risk_flags(row)),
         "close": fmt_num(row.get("close")),
         "MA20": fmt_num(row.get("MA20")),
         "MA60": fmt_num(row.get("MA60")),
@@ -473,11 +504,11 @@ def build_review(payload, previous_payload, date_yy, allow_partial=False):
                 "code": code,
                 "name": row.get("name", ""),
                 "bloom_status": curr_status,
-                "state": row.get("state", ""),
-                "vcp_stage": row.get("vcp_stage", ""),
-                "setup_score": row.get("setup_score"),
+                "state": quant_signal(row),
+                "vcp_stage": quant_stage(row),
+                "setup_score": quant_score(row),
                 "vcp_quality": row.get("vcp_quality"),
-                "watch_priority": row.get("watch_priority"),
+                "watch_priority": row.get("setup_signal", ""),
                 "reason": row.get("reason", ""),
             })
 
@@ -636,7 +667,7 @@ def call_llm_markdown(review):
 
     system_prompt = (
         "你是 Huaxin Quant 的每日花期复盘助手。只解释输入 JSON 中已有的模型一/模型二结果，"
-        "不得改变 state、vcp_stage、pool_type，不得自造价格、成交量或财务数据。"
+        "不得改变 structure_type、structure_stage、setup_signal，不得自造价格、成交量或财务数据。"
         "输出 Markdown，结构包括：今日概览、重点观察、新进入/升级/失效、需要人工看图、明日观察清单。"
     )
     user_prompt = json.dumps(review, ensure_ascii=False)

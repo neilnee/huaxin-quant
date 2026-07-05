@@ -1,0 +1,132 @@
+{
+  "strategy_version": "model1_pool_v1",
+  "description": "Model 1 pool screening parameters. This file contains query terms, thresholds, segments, industry exclusions, and soft-tag weights only.",
+  "runtime": {
+    "cache_max_age_days": 5,
+    "fetch_delay_seconds": 1.5,
+    "truncation_threshold": 200,
+    "split_sort_clauses": [
+      "按市盈率从小到大",
+      "按市盈率从大到小"
+    ]
+  },
+  "api_query": {
+    "filters": [
+      "营收同比增长率大于15%",
+      "净利润同比增长率大于20%",
+      "毛利率大于15%",
+      "研发费用占营收比例大于2.5%",
+      "排除ST股"
+    ],
+    "output_fields": [
+      "查询所属行业",
+      "上市日期",
+      "总市值",
+      "市盈率",
+      "市净率",
+      "ROE",
+      "营业收入",
+      "每股收益({annual_year}年年报)",
+      "经营活动产生的现金流量净额({annual_year}年年报)",
+      "归属母公司股东的净利润",
+      "资产负债率",
+      "A股"
+    ]
+  },
+  "market_cap_segments": [
+    {
+      "name": "mcap_50_100",
+      "condition": "总市值大于50亿 总市值小于100亿"
+    },
+    {
+      "name": "mcap_100_200",
+      "condition": "总市值大于100亿 总市值小于200亿"
+    },
+    {
+      "name": "mcap_200_500",
+      "condition": "总市值大于200亿 总市值小于500亿"
+    },
+    {
+      "name": "mcap_500_plus",
+      "condition": "总市值大于500亿"
+    }
+  ],
+  "hard_filters": {
+    "min_market_cap": 5000000000,
+    "min_listing_days": 365,
+    "max_debt_ratio_pct": 70.0,
+    "normal_gross_margin_floor_pct": 20.0,
+    "semiconductor_gross_margin_floor_pct": 15.0,
+    "semiconductor_revenue_growth_gate_pct": 25.0,
+    "np_min_annual": 50000000,
+    "ocf_np_threshold_by_period": {
+      "Q1": 0.0,
+      "H1": 0.1,
+      "Q3": 0.3,
+      "annual": 0.5,
+      "unknown": 0.5
+    },
+    "np_min_by_period": {
+      "Q1": 5000000,
+      "H1": 20000000,
+      "Q3": 35000000,
+      "annual": 50000000,
+      "unknown": 50000000
+    }
+  },
+  "industry": {
+    "semiconductor_keyword": "半导体",
+    "exclude_keywords": [
+      "银行",
+      "保险",
+      "证券",
+      "多元金融",
+      "白酒",
+      "食品饮料",
+      "服装家纺",
+      "家用电器",
+      "旅游零售",
+      "农林牧渔",
+      "商业物业经营",
+      "房地产开发",
+      "房地产服务",
+      "水泥",
+      "建筑装饰",
+      "煤炭",
+      "钢铁",
+      "石油石化",
+      "航运港口",
+      "航空机场",
+      "燃气",
+      "水务",
+      "环保",
+      "医药生物"
+    ]
+  },
+  "soft_tags": {
+    "small_cap_tag_ceiling": 10000000000,
+    "low_roe_pct": 5.0,
+    "weak_roe_pct": 10.0,
+    "weak_cashflow_ocf_np": 0.5,
+    "high_debt_edge_min_pct": 60.0,
+    "high_debt_edge_max_pct": 70.0,
+    "high_pe_ttm": 100.0,
+    "high_pb": 10.0,
+    "low_base_rebound_np_growth_pct": 100.0,
+    "tag_penalties": {
+      "LOW_ROE": 15,
+      "WEAK_ROE": 8,
+      "WEAK_CASHFLOW": 15,
+      "HIGH_DEBT_EDGE": 10,
+      "HIGH_VALUATION": 8,
+      "NEGATIVE_PE_TTM": 12,
+      "LOW_BASE_REBOUND": 12,
+      "MID_SMALL_CAP_50_100": 5,
+      "SEMI_CASHFLOW_RELAX": 5,
+      "DATA_PERIOD_QUARTERLY": 5,
+      "MISSING_KEY_DATA": 8
+    },
+    "base_quality_score": 100,
+    "min_quality_score": 0
+  }
+}

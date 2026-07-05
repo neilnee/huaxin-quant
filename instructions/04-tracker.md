@@ -469,7 +469,15 @@ python3 scripts/generate_report.py <YYMMDD>
 
 ## 上下游接口约定
 
-**上游（模型二）**：读取 `quant/` 下最新日期的 CSV，文件名日期距今 > 5 天时打印提醒。
+**上游（模型二）**：读取 `quant/` 下最新日期的 CSV，文件名日期距今 > 5 天时打印提醒。模型四只消费模型二的新契约字段：
+
+```text
+structure_type / structure_stage / setup_signal / action_hint
+structure_score / structure_risk_score / structure_risk_flags
+support_price / invalid_price / breakout_level
+```
+
+模型二只描述量价结构事实和量价侧提示；是否进入跟踪池、是否需要估值、是否可买、仓位多少、持仓是否加减仓，均由模型四结合模型三估值、positions、batches 和人工标记决定。
 
 **上游（模型三）**：读取 `reports/indexes/valuation_ranking.csv` 获取估值锚点。
 

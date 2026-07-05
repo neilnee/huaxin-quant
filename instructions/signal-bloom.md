@@ -204,7 +204,6 @@ DEEP_FALL
 |---------------|------|
 | `ADD` | 新进入 Bloom 池 |
 | `KEEP_FOCUS` | 重点观察 |
-| `KEEP_NORMAL` | 正常观察 |
 | `KEEP_LOW` | 低优先级观察 |
 | `COOLDOWN` | 保留观察，但暂不推进 |
 | `EXIT` | 移出 Bloom 池 |
@@ -212,9 +211,7 @@ DEEP_FALL
 
 基础规则：
 
-- `TRIGGERED` 且风险低或中：`KEEP_FOCUS`
-- `MATURE` 且风险低或中：`KEEP_FOCUS`
-- `FORMING`：`KEEP_NORMAL`
+- `TRIGGERED` / `MATURE` / `FORMING`：`KEEP_FOCUS`
 - `EARLY`：`KEEP_LOW`
 - `RISK_BLOCKED`：`COOLDOWN`
 - `INVALID`：进入冷却；超过保留期后 `EXIT`

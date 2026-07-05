@@ -384,10 +384,8 @@ def valuation_priority(status, risk, score):
 def pool_decision(status, event_type):
     if event_type == "NEW_ENTRY":
         return "ADD"
-    if status in {"TRIGGERED", "MATURE"}:
+    if status in {"TRIGGERED", "MATURE", "FORMING"}:
         return "KEEP_FOCUS"
-    if status == "FORMING":
-        return "KEEP_NORMAL"
     if status == "EARLY":
         return "KEEP_LOW"
     if status in {"RISK_BLOCKED", "COOLDOWN", "INVALID"}:
@@ -698,6 +696,9 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False):
         "exits": [r for r in rows if r["pool_decision"] == "EXIT"],
         "data_issues": [r for r in rows if r["bloom_status"] == "DATA_ISSUE"],
         "valuation_candidates": [r for r in rows if r["valuation_candidate"] == "true"],
+        "watching": [r for r in rows if r.get("model2_stage") in {"VCP_FORMING", "VCP_MATURE", "VCP_TIGHT"}
+                     or r.get("bloom_status") == "TRIGGERED"
+                     or r.get("model2_setup_signal") in {"PULLBACK_BUY", "RETEST_BUY"}],
     }
 
     summary = {
@@ -789,7 +790,7 @@ def build_markdown(bloom):
         "|------|------|",
         "| `bloom_status` | EARLY=早期 / FORMING=形成中 / MATURE=成熟 / TRIGGERED=已触发 / RISK_BLOCKED=风险阻断 / COOLDOWN=冷却 / INVALID=失效 / EXIT=移出 / DATA_ISSUE=数据异常 |",
         "| `bloom_signal` | NEW_ENTRY=新进入 / UPGRADE=升级 / DOWNGRADE=降级 / SETUP_TRIGGER=交易触发 / RISK_BLOCK=风险阻断 / COOLDOWN=进入冷却 / EXIT=移出 / DATA_HOLD=数据维持 / CONTINUED=延续 |",
-        "| `pool_decision` | ADD=入池 / KEEP_FOCUS=重点观察 / KEEP_NORMAL=正常观察 / KEEP_LOW=低优先观察 / COOLDOWN=冷却保留 / EXIT=移出 / DATA_HOLD=维持 |",
+        "| `pool_decision` | ADD=入池 / KEEP_FOCUS=重点观察 / KEEP_LOW=低优先观察 / COOLDOWN=冷却保留 / EXIT=移出 / DATA_HOLD=维持 |",
         "| `risk_level` | LOW=低 / MEDIUM=中 / HIGH=高 / HARD=硬风险 |",
         "| `signal_quality` | HIGH / MEDIUM / LOW / BLOCKED / NONE |",
         "| `valuation_priority` | HIGH / MEDIUM / LOW / NONE（由 Bloom 层判断，不读取模型三估值） |",
@@ -816,44 +817,32 @@ def build_markdown(bloom):
         "",
     ])
 
-    # ── ⚠️ 需要关注 ──
-    alerted = []
-    seen_alert = set()
-    for r in sections.get("triggered", []):
-        if r["code"] not in seen_alert:
-            alerted.append(("触发", r)); seen_alert.add(r["code"])
-    for r in sections.get("risk_blocked", []):
-        if r["code"] not in seen_alert:
-            alerted.append(("阻断", r)); seen_alert.add(r["code"])
-    for r in sections.get("upgrades", []):
-        if r["code"] not in seen_alert:
-            alerted.append(("升级", r)); seen_alert.add(r["code"])
-
-    lines.append("## ⚠️ 需要关注")
-    if alerted:
-        alert_cols = [
-            ("code", "代码"), ("name", "名称"), ("bloom_status", "状态"),
-            ("bloom_signal", "信号"), ("structure_score", "结构分"),
-            ("risk_level", "风险"), ("watch_reason", "原因"),
-        ]
-        lines.extend(table_lines([r for _, r in alerted], alert_cols))
-    else:
-        lines.extend(["", "*今日无需特别关注的信号*", ""])
-    lines.append("")
-
     # ── 🔥 重点观察 ──
-    focus = sections.get("focus", [])
+    watching = sections.get("watching", [])
     lines.append("## 🔥 重点观察")
-    if focus:
-        focus_cols = [
-            ("code", "代码"), ("name", "名称"), ("model2_stage", "模型二阶段"),
-            ("structure_score", "结构分"), ("risk_level", "风险"),
-            ("valuation_priority", "估值优先级"), ("pivot_distance", "距pivot%"),
+    if watching:
+        watch_cols = [
+            ("code", "代码"), ("name", "名称"), ("model2_stage", "结构阶段"),
+            ("bloom_status", "Bloom状态"), ("structure_score", "结构分"),
+            ("risk_level", "风险"), ("valuation_priority", "估值优先"),
             ("watch_reason", "观察要点"),
         ]
-        lines.extend(table_lines(focus[:15], focus_cols))
+        # 风险标记：HIGH/HARD 在风险列加 ⚠️ 前缀
+        def _mark_risk(row):
+            rl = row.get("risk_level", "")
+            if rl in ("HIGH", "HARD"):
+                return f"⚠️{rl}"
+            return rl
+        marked = []
+        for r in watching:
+            rr = dict(r)
+            rr["risk_level"] = _mark_risk(rr)
+            marked.append(rr)
+        lines.extend(table_lines(marked[:20], watch_cols))
+        if len(watching) > 20:
+            lines.append(f"\n> 共 {len(watching)} 只，以上展示前 20。")
     else:
-        lines.extend(["", "*今日无重点观察标的*", ""])
+        lines.extend(["", "*今日无符合条件的结构*", ""])
     lines.append("")
 
     # ── 📋 池子变化 ──

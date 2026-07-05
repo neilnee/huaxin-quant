@@ -802,8 +802,7 @@ def build_markdown(bloom):
         watch_cols = [
             ("code", "代码"), ("name", "名称"), ("model2_stage", "结构阶段"),
             ("bloom_status", "Bloom状态"), ("structure_score", "结构分"),
-            ("risk_level", "风险"), ("valuation_priority", "估值优先"),
-            ("watch_reason", "观察要点"),
+            ("risk_level", "风险"), ("watch_reason", "观察要点"),
         ]
         def _mark_risk(row):
             rl = row.get("risk_level", "")

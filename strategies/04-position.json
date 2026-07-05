@@ -1,0 +1,118 @@
+{
+  "strategy_version": "model4_position_book_v1",
+  "description": "Position bookkeeping layer. Trade ledgers and position plans are facts; lots and states are rebuildable derived outputs.",
+  "root_dir": "position",
+  "files": {
+    "plan": "position_plan.csv",
+    "lots_current": "lots_current.csv"
+  },
+  "dirs": {
+    "trades": "trades",
+    "states": "states",
+    "imports": "imports",
+    "performance": "performance"
+  },
+  "schemas": {
+    "position_plan": [
+      "code",
+      "name",
+      "asset_type",
+      "target_type",
+      "target_value",
+      "strategy_tag",
+      "max_position_pct",
+      "status",
+      "manual_tag",
+      "notes"
+    ],
+    "trade_ledger": [
+      "trade_id",
+      "trade_date",
+      "trade_time",
+      "recorded_at",
+      "code",
+      "name",
+      "asset_type",
+      "side",
+      "shares",
+      "price",
+      "amount",
+      "fee",
+      "tax",
+      "reason",
+      "signal_ref",
+      "notes"
+    ],
+    "lots_current": [
+      "lot_id",
+      "code",
+      "name",
+      "asset_type",
+      "open_date",
+      "source_trade_id",
+      "open_reason",
+      "shares_remaining",
+      "cost_price",
+      "cost_amount",
+      "realized_shares",
+      "cost_basis_type",
+      "price_ref_date",
+      "price_ref_source",
+      "status"
+    ],
+    "position_state": [
+      "as_of",
+      "code",
+      "name",
+      "asset_type",
+      "strategy_tag",
+      "target_type",
+      "target_value",
+      "actual_shares",
+      "cost_price",
+      "cost_amount",
+      "realized_pnl",
+      "last_trade_date",
+      "position_status",
+      "manual_tag",
+      "account_cost_price",
+      "account_cost_amount",
+      "latest_price",
+      "account_unrealized_pnl"
+    ],
+    "trade_performance": [
+      "year",
+      "as_of",
+      "code",
+      "name",
+      "asset_type",
+      "opening_shares",
+      "opening_price",
+      "opening_ref",
+      "buy_shares",
+      "sell_shares",
+      "buy_amount",
+      "sell_amount",
+      "current_shares",
+      "latest_price",
+      "ending_cost_amount",
+      "market_value",
+      "realized_pnl",
+      "year_unrealized_pnl",
+      "year_total_pnl",
+      "account_cost_price",
+      "account_unrealized_pnl",
+      "trade_count",
+      "notes"
+    ]
+  },
+  "rebuild": {
+    "sell_match_method": "FIFO",
+    "allow_short_position": false,
+    "write_empty_state": true
+  },
+  "bootstrap": {
+    "default_trade_id_prefix": "OPEN",
+    "default_reason": "bootstrap_existing_position"
+  }
+}

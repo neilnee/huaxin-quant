@@ -80,6 +80,12 @@ bloom/state/bloom_state.csv
 bloom/state/bloom_events.jsonl
 ```
 
+入池口径：
+
+- Bloom 消费模型二全量 JSON，但新建 Bloom 状态只允许 `model2_include=true` 的标的。
+- 如果标的已存在于 `bloom_state.csv`，即使当日 `model2_include=false` 或 `action_hint=REJECT`，也必须继续更新生命周期，用于判断 `COOLDOWN`、`INVALID` 或 `EXIT`。
+- 如果标的此前不在 Bloom 状态表，且当日 `model2_include=false`，不得新建 Bloom 状态，避免无效标的污染观察池。
+
 ---
 
 ## 三、叠加量化指标
@@ -132,7 +138,7 @@ Bloom 不重新计算模型二，但会使用模型二已输出或可直接读�
 | `structure_stage=TREND_REBUILD` | `INVALID` |
 | `structure_valid=false` | `INVALID` |
 | `structure_stage=DATA_ISSUE` | `DATA_ISSUE` |
-| `model2_include=false` / `action_hint=REJECT` | `COOLDOWN` 或 `EXIT` |
+| 已在 Bloom 状态表中的 `model2_include=false` / `action_hint=REJECT` | `COOLDOWN` 或 `EXIT` |
 
 风险阻断优先级高于普通观察状态。若结构状态为 `FORMING` / `MATURE` / `TRIGGERED`，但触发高风险规则，则输出 `RISK_BLOCKED`。
 
@@ -216,6 +222,7 @@ DEEP_FALL
 - `RISK_BLOCKED`：`COOLDOWN`
 - `INVALID`：进入冷却；超过保留期后 `EXIT`
 - `DATA_ISSUE`：`DATA_HOLD`
+- `EXIT`：只写入当日事件和报告，不再保留在滚动状态表 `bloom_state.csv`
 
 ---
 
@@ -304,5 +311,7 @@ bloom/state/bloom_input_<YYMMDD>.json
 - Bloom 不修改模型二输出，只做解释和生命周期管理。
 - 重复运行同一天时，事件流水先删除同日事件再重写，保持幂等。
 - 单日数据异常不能直接导致 `EXIT`。
+- 全新的 `model2_include=false` 标的不能写入 Bloom 状态表；已在状态表中的标的可因连续冷却或失效进入 `EXIT`。
+- `EXIT` 标的必须从滚动状态表移除，后续只能由模型二重新发现并以新生命周期进入。
 - 高结构分但高风险的股票应输出 `RISK_BLOCKED`，而不是 `TRIGGERED` 的正向交易结论。
 - `valuation_candidate` 只代表送估值候选，不代表估值结论或交易建议。

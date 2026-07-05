@@ -772,24 +772,7 @@ def build_markdown(bloom):
         "",
     ]
 
-    # ── 字段说明 ──
-    lines.extend([
-        "## 字段说明",
-        "",
-        "| 字段 | 说明 |",
-        "|------|------|",
-        "| `bloom_status` | EARLY=早期 / FORMING=形成中 / MATURE=成熟 / TRIGGERED=已触发 / RISK_BLOCKED=风险阻断 / COOLDOWN=冷却 / INVALID=失效 / EXIT=移出 / DATA_ISSUE=数据异常 |",
-        "| `bloom_signal` | NEW_ENTRY=新进入 / UPGRADE=升级 / DOWNGRADE=降级 / SETUP_TRIGGER=交易触发 / RISK_BLOCK=风险阻断 / COOLDOWN=进入冷却 / EXIT=移出 / DATA_HOLD=数据维持 / CONTINUED=延续 |",
-        "| `pool_decision` | ADD=入池 / KEEP_FOCUS=重点观察 / KEEP_LOW=低优先观察 / COOLDOWN=冷却保留 / EXIT=移出 / DATA_HOLD=维持 |",
-        "| `risk_level` | LOW=低 / MEDIUM=中 / HIGH=高 / HARD=硬风险 |",
-        "| `signal_quality` | HIGH / MEDIUM / LOW / BLOCKED / NONE |",
-        "| `valuation_priority` | HIGH / MEDIUM / LOW / NONE（由 Bloom 层判断，不读取模型三估值） |",
-        "",
-        "---",
-        "",
-    ])
-
-    # ── 今日概要（一段话）──
+    # ── 📊 今日概要（一段话）──
     triggered_n = summary.get("triggered", 0)
     blocked_n = summary.get("risk_blocked", 0)
     new_n = summary.get("new_entries", 0)
@@ -804,7 +787,7 @@ def build_markdown(bloom):
     alert_text = "，".join(alert_parts) if alert_parts else "无触发或阻断"
 
     lines.extend([
-        "## 今日概要",
+        "## 📊 今日概要",
         "",
         f"模型二扫描 {summary.get('input_total')} 只 → 产出 {summary.get('result_total')} 只。"
         f"Bloom 活跃观察 **{active}** 只，{alert_text}。"
@@ -874,12 +857,18 @@ def build_markdown(bloom):
         lines.append("**移出**：无")
     lines.append("")
 
-    # ── 执行边界 ──
+    # ── 📖 字段说明 ──
     lines.extend([
-        "## 执行边界",
-        "- 本报告只解释模型二信号，不做估值结论。",
-        "- 本报告不读取持仓，不输出最终买入、卖出或仓位建议。",
-        "- `valuation_candidate=true` 只表示值得进入后续估值触发层。",
+        "## 📖 字段说明",
+        "",
+        "| 字段 | 说明 |",
+        "|------|------|",
+        "| `bloom_status` | EARLY=早期 / FORMING=形成中 / MATURE=成熟 / TRIGGERED=已触发 / RISK_BLOCKED=风险阻断 / COOLDOWN=冷却 / INVALID=失效 / EXIT=移出 / DATA_ISSUE=数据异常 |",
+        "| `bloom_signal` | NEW_ENTRY=新进入 / UPGRADE=升级 / DOWNGRADE=降级 / SETUP_TRIGGER=交易触发 / RISK_BLOCK=风险阻断 / COOLDOWN=进入冷却 / EXIT=移出 / DATA_HOLD=数据维持 / CONTINUED=延续 |",
+        "| `pool_decision` | ADD=入池 / KEEP_FOCUS=重点观察 / KEEP_LOW=低优先观察 / COOLDOWN=冷却保留 / EXIT=移出 / DATA_HOLD=维持 |",
+        "| `risk_level` | LOW=低 / MEDIUM=中 / HIGH=高 / HARD=硬风险 |",
+        "| `signal_quality` | HIGH / MEDIUM / LOW / BLOCKED / NONE |",
+        "| `valuation_priority` | HIGH / MEDIUM / LOW / NONE（由 Bloom 层判断，不读取模型三估值） |",
         "",
         f"> strategy: {summary['strategy_version']}",
     ])

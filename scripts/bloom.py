@@ -766,16 +766,6 @@ def build_markdown(bloom):
     summary = bloom["summary"]
     sections = bloom["sections"]
 
-    # ── 状态分布计数 ──
-    status_dist = summary.get("status_dist", {})
-    status_order = ["TRIGGERED", "MATURE", "FORMING", "EARLY", "RISK_BLOCKED",
-                    "COOLDOWN", "INVALID", "DATA_ISSUE", "EXIT"]
-    status_labels = {
-        "TRIGGERED": "已触发", "MATURE": "成熟", "FORMING": "形成中", "EARLY": "早期",
-        "RISK_BLOCKED": "风险阻断", "COOLDOWN": "冷却", "INVALID": "失效",
-        "DATA_ISSUE": "数据异常", "EXIT": "移出",
-    }
-
     # ── 头部 ──
     lines = [
         f"# Bloom Signal Report {summary['date']}",
@@ -799,21 +789,26 @@ def build_markdown(bloom):
         "",
     ])
 
-    # ── 今日概要 ──
+    # ── 今日概要（一段话）──
+    triggered_n = summary.get("triggered", 0)
+    blocked_n = summary.get("risk_blocked", 0)
+    new_n = summary.get("new_entries", 0)
+    exit_n = summary.get("exits", 0)
     active = summary.get("active_total", 0)
+
+    alert_parts = []
+    if triggered_n:
+        alert_parts.append(f"{triggered_n} 只触发")
+    if blocked_n:
+        alert_parts.append(f"{blocked_n} 只风险阻断")
+    alert_text = "，".join(alert_parts) if alert_parts else "无触发或阻断"
+
     lines.extend([
         "## 今日概要",
         "",
-        f"| 指标 | 数值 |",
-        f"|------|------|",
-        f"| 模型二输入 | {summary.get('input_total')} 只 → 产出 {summary.get('result_total')} 只 |",
-        f"| Bloom 活跃观察 | **{active}** 只 |",
-        f"| 新进入 | {summary.get('new_entries')} 只 |",
-        f"| 升级 | {summary.get('upgrades')} 只 |",
-        f"| 触发 | {summary.get('triggered')} 只 |",
-        f"| 风险阻断 | {summary.get('risk_blocked')} 只 |",
-        f"| 移出 | {summary.get('exits')} 只 |",
-        f"| 待估值候选 | {summary.get('valuation_candidates')} 只 |",
+        f"模型二扫描 {summary.get('input_total')} 只 → 产出 {summary.get('result_total')} 只。"
+        f"Bloom 活跃观察 **{active}** 只，{alert_text}。"
+        f"新进入 {new_n} 只，移出 {exit_n} 只。",
         "",
     ])
 
@@ -827,7 +822,6 @@ def build_markdown(bloom):
             ("risk_level", "风险"), ("valuation_priority", "估值优先"),
             ("watch_reason", "观察要点"),
         ]
-        # 风险标记：HIGH/HARD 在风险列加 ⚠️ 前缀
         def _mark_risk(row):
             rl = row.get("risk_level", "")
             if rl in ("HIGH", "HARD"):
@@ -845,50 +839,39 @@ def build_markdown(bloom):
         lines.extend(["", "*今日无符合条件的结构*", ""])
     lines.append("")
 
-    # ── 📋 池子变化 ──
+    # ── 📋 池子变化（紧凑多列表格）──
     lines.append("## 📋 池子变化")
     new_entries = sections.get("new_entries", [])
     exits = sections.get("exits", [])
+
     if new_entries:
-        new_list = [f"`{r['code']}` {r['name']}（{r.get('bloom_status','')}）" for r in new_entries[:20]]
-        more = f" …等共 {len(new_entries)} 只" if len(new_entries) > 20 else ""
-        lines.append(f"- **新进入 {len(new_entries)} 只**：{'、'.join(new_list)}{more}")
+        lines.append(f"**新进入 {len(new_entries)} 只**")
+        lines.append("")
+        cols_per_row = 4
+        header = "| " + " | ".join(["股票"] * cols_per_row) + " |"
+        sep = "| " + " | ".join(["---"] * cols_per_row) + " |"
+        lines.append(header)
+        lines.append(sep)
+        for i in range(0, len(new_entries), cols_per_row):
+            chunk = new_entries[i:i + cols_per_row]
+            cells = []
+            for r in chunk:
+                code = r.get("code", "")
+                name = r.get("name", "")
+                status = r.get("bloom_status", "")
+                cells.append(f"`{code}` {name}<br>{status}")
+            while len(cells) < cols_per_row:
+                cells.append("")
+            lines.append("| " + " | ".join(cells) + " |")
+        lines.append("")
     else:
-        lines.append("- **新进入**：无")
+        lines.extend(["", "*无新进入*", ""])
+
     if exits:
         exit_list = [f"`{r['code']}` {r['name']}" for r in exits]
-        lines.append(f"- **移出 {len(exits)} 只**：{'、'.join(exit_list)}")
+        lines.append(f"**移出 {len(exits)} 只**：{'、'.join(exit_list)}")
     else:
-        lines.append("- **移出**：无")
-    lines.append("")
-
-    # ── 🌱 待估值候选 ──
-    val_candidates = [r for r in sections.get("valuation_candidates", [])
-                      if r.get("valuation_priority") in ("HIGH", "MEDIUM")]
-    val_low = [r for r in sections.get("valuation_candidates", [])
-               if r.get("valuation_priority") == "LOW"]
-    lines.append("## 🌱 待估值候选")
-    if val_candidates:
-        val_cols = [
-            ("code", "代码"), ("name", "名称"), ("model2_stage", "模型二阶段"),
-            ("structure_score", "结构分"), ("valuation_priority", "估值优先级"),
-        ]
-        lines.extend(table_lines(val_candidates, val_cols))
-        if val_low:
-            lines.append(f"\n> LOW 优先级 {len(val_low)} 只未列出。")
-    elif val_low:
-        lines.extend(["", f"*{len(val_low)} 只均为 LOW 优先级，无 HIGH/MEDIUM 候选*", ""])
-    else:
-        lines.extend(["", "*今日无待估值候选*", ""])
-    lines.append("")
-
-    # ── 📊 状态分布 ──
-    lines.extend(["## 📊 状态分布", ""])
-    dist_rows = [{"status": status_labels.get(s, s), "count": str(status_dist.get(s, 0))}
-                 for s in status_order if status_dist.get(s, 0) > 0]
-    total = sum(status_dist.values())
-    dist_rows.append({"status": "**合计**", "count": f"**{total}**"})
-    lines.extend(table_lines(dist_rows, [("status", "状态"), ("count", "数量")]))
+        lines.append("**移出**：无")
     lines.append("")
 
     # ── 执行边界 ──

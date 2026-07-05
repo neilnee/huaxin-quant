@@ -65,11 +65,11 @@ git -C <source-repo> commit -m "..."
 
 不要只改脚本不改指令卡，也不要只改指令卡不更新脚本。
 
-### 4. 固定指令卡文件名
+### 4. 固定指令卡命名
 
 当前已改为 Git 管理历史，不再靠文件名版本号管理。
 
-活跃指令卡只保留：
+模型主指令卡保持固定文件名：
 
 - `instructions/01-pool.md`
 - `instructions/02-quant.md`
@@ -77,6 +77,12 @@ git -C <source-repo> commit -m "..."
 - `instructions/03-valuation-ref.md`
 - `instructions/04-tracker.md`
 - `instructions/04-tracker-ref.md`
+
+模型四内部信号模块指令卡统一放在 `instructions/`，使用 `signal-` 前缀命名：
+
+- `instructions/signal-bloom.md`
+- 后续可新增 `instructions/signal-valuation-queue.md`
+- 后续可新增 `instructions/signal-position.md`
 
 禁止再新增 `*-dev.md`、`*-vX.Y.md` 或 `archive/` 版本副本。
 
@@ -105,7 +111,7 @@ quant_lab/  # Huaxin Quant 本地运行实例
 ├── pool/              模型一输出
 ├── quant/             模型二输出
 ├── bloom/             模型二后花期观察状态
-├── reports/           人类可读报告（valuation/indexes/daily/archive）
+├── reports/           估值报告与索引（valuation/indexes/archive）
 ├── signals/           模型四信号跟踪
 ├── refer/             本地参考资料
 ├── tmp/               临时脚本和临时文件
@@ -172,15 +178,15 @@ python3 scripts/quant_filter.py --code 300604 --name 长川科技
 
 估值逻辑必须明确说明收入、利润、估值倍数和年度预测假设，禁止不解释地线性外推。
 
-### 模型四：择时跟踪
+### 模型四：Tracker / Bloom
 
-入口脚本以 `instructions/04-tracker.md` 为准，核心逻辑在 `scripts/tracker.py`。
+总控指令卡以 `instructions/04-tracker.md` 为准。当前阶段先实现 Bloom 信号层，规则在 `instructions/signal-bloom.md`，策略参数在 `strategies/04-bloom.json`。
 
 职责：
 
-- 维护自选股和监控池。
-- 跟踪交易信号、仓位状态和风控状态。
-- 输出每日信号报告。
+- Bloom 信号层：消费模型二 JSON，维护观察状态，输出信号质量、风险阻断、估值候选和每日 Bloom 报告。
+- 估值触发层：后续独立实现。
+- 持仓管理层：后续独立实现。
 
 ## 缓存和数据口径
 

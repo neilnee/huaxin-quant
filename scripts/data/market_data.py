@@ -3,8 +3,7 @@
 
 当前实现:
   - MiaoxiangSource: 东方财富妙想 API（主数据源）
-  预留:
-  - TDXSource: 通达信 mootdx（备用数据源，下一阶段实现）
+  - TDXSource: 通达信 mootdx（备用数据源）
 
 设计原则:
   - DataSource 抽象基类定义 fetch_bars(code, name) → DataFrame | None 接口
@@ -262,29 +261,75 @@ class TDXSource(DataSource):
 
     def __init__(self):
         self._client = None
+        self._server = None
 
-    def _get_client(self):
-        """延迟初始化 mootdx 客户端，避免 import 时自动连接。"""
-        if self._client is None:
-            from mootdx.quotes import Quotes
-            self._client = Quotes.factory(market='std')
-        return self._client
+    def _candidate_servers(self):
+        """读取 mootdx 内置 HQ 服务器列表，按默认顺序短超时尝试。"""
+        from mootdx import config
+        servers = []
+        for item in config.get('SERVER').get('HQ')[:8]:
+            try:
+                _, ip, port = item
+                servers.append((ip, int(port)))
+            except (TypeError, ValueError):
+                continue
+        return servers
+
+    def _new_client(self, server):
+        """创建指定服务器的 mootdx 客户端。"""
+        from mootdx.quotes import Quotes
+        return Quotes.factory(market='std', server=server, timeout=3)
+
+    def _iter_clients(self):
+        """优先复用当前客户端，失败后切换候选服务器。"""
+        tried = set()
+        if self._client is not None and self._server is not None:
+            tried.add(self._server)
+            yield self._client, self._server, None
+
+        for server in self._candidate_servers():
+            if server in tried:
+                continue
+            try:
+                client = self._new_client(server)
+            except Exception as exc:
+                yield None, server, exc
+                continue
+            yield client, server, None
 
     def fetch_bars(self, code: str, name: str) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
         """通过 mootdx 获取日线数据。
 
         mootdx 自动根据 code 前缀识别沪深市场（6→SH, 0/2/3→SZ）。
         """
+        raw = None
+        errors = []
         try:
-            client = self._get_client()
-            raw = client.bars(symbol=code, frequency=4, offset=200)
+            for client, server, client_err in self._iter_clients():
+                if client_err is not None:
+                    errors.append(f"{server[0]}:{server[1]} {client_err}")
+                    continue
+                try:
+                    raw = client.bars(symbol=code, frequency=9, offset=200)
+                except Exception as exc:
+                    errors.append(f"{server[0]}:{server[1]} {exc}")
+                    self._client = None
+                    self._server = None
+                    continue
+
+                if raw is not None and not raw.empty:
+                    self._client = client
+                    self._server = server
+                    break
+                errors.append(f"{server[0]}:{server[1]} 返回空数据")
         except ImportError:
             return None, "mootdx 未安装，运行: pip install 'mootdx[all]'"
         except Exception as exc:
             return None, f"TDX 连接失败: {exc}"
 
         if raw is None or raw.empty:
-            return None, "TDX 返回空数据"
+            detail = "；".join(errors[:3]) if errors else "无可用服务器"
+            return None, f"TDX 返回空数据或连接失败: {detail}"
 
         # 过滤停牌日（volume=0，量价均为 0 的无交易行）
         normal = raw[raw["volume"] > 0].copy()

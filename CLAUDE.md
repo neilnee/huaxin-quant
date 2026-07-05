@@ -61,12 +61,11 @@ quant_lab/（本地工作区 · Huaxin Quant 运行实例）
 │
 ├── pool/                           本地 · 模型一（海选初筛）输出
 ├── quant/                          本地 · 模型二（量价精筛）输出
-├── bloom/                          本地 · 模型二后的花期观察状态层
-│                                    bloom_events.jsonl + bloom_state.csv
+├── bloom/                          本地 · Bloom 信号层输出
+│   └── state/                      机器状态表、事件流水、Bloom 输入包
 ├── reports/                        本地 · 人类可读报告
 │   ├── valuation/                  模型三个股估值报告
 │   ├── indexes/                    valuation_index.csv + valuation_ranking.csv
-│   ├── daily/                      Huaxin Daily Review
 │   └── archive/valuation/          估值报告历史归档
 ├── signals/                        本地 · 模型四（择时跟踪）工作区
 │                                    每日信号报告 + core_pool.csv + positions.csv
@@ -95,7 +94,7 @@ source repo/（云盘 · Huaxin Quant Git 仓库）
 
 - **指令文件是源头**，脚本是指令的配套实现。改逻辑先改指令，再改脚本；脚本与指令同提交更新
 - **指令卡保持精简**：只保留 LLM 执行所需内容（流程、规则、约束）。公式速查、报告模板、字段定义等放入配对 `*-ref.md`，按需查阅
-- **固定文件名**：`01-pool.md`、`02-quant.md`、`03-valuation.md`、`03-valuation-ref.md`、`04-tracker.md`、`04-tracker-ref.md`
+- **固定文件名**：模型主指令卡固定为 `01-pool.md`、`02-quant.md`、`03-valuation.md`、`03-valuation-ref.md`、`04-tracker.md`、`04-tracker-ref.md`；模型四内部信号模块使用 `signal-` 前缀，如 `signal-bloom.md`
 - **分支开发**：较大改动在 Git feature 分支上直接修改活跃文件；稳定后 commit/merge 保留历史，不靠复制文件发版
 - **收尾更新**：每次完成一组规则变更后，更新 `TODO.md` 勾掉已完成项
 - **数据口径统一**：模型一和模型三使用相同报告期数据，避免跨模型数据口径不一致

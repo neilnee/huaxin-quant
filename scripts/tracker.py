@@ -14,7 +14,7 @@ tracker.py — 模型四 择时跟踪 配套脚本
   python3 scripts/tracker.py                     # 默认：全量核心池
   python3 scripts/tracker.py --test              # 测试：只跑持仓标的
   python3 scripts/tracker.py --code 300442       # 单只更新
-  python3 scripts/tracker.py --no-cache          # 强制 API 拉取
+  python3 scripts/tracker.py --no-cache          # 跳过缓存，重新拉取行情
 """
 
 import os, json, time, csv, sys, argparse
@@ -820,7 +820,8 @@ def process_stock(stock, positions, rankings, datestr, use_cache=True):
     stock_batches = batches.get(code, []) if batches else []
     result = check_signals(code, name, df, pos_info, val_info, entry_pattern, entry_ma, stock_batches)
 
-    print(f"  {'✅' if source == 'cache' else '📡'} {code} {name} | "
+    source_icon = "✅" if source.startswith("cache") else ("📶" if source == "tdx" else "📡")
+    print(f"  {source_icon} {code} {name} | "
           f"{result['_meta']['hold_status']} | "
           f"{'有估值' if result['_meta']['has_valuation'] else '无估值'} | "
           f"{len(df)}日")
@@ -1020,7 +1021,7 @@ def main():
     parser = argparse.ArgumentParser(description="模型四 tracker.py — 日线拉取 + 指标计算 + 信号预检")
     parser.add_argument("--test", action="store_true", help="只处理有持仓的标的")
     parser.add_argument("--code", type=str, help="单只标的")
-    parser.add_argument("--no-cache", action="store_true", help="强制 API 拉取")
+    parser.add_argument("--no-cache", action="store_true", help="跳过缓存，重新拉取行情")
     parser.add_argument("--yes", action="store_true", help="跳过池子维护交互确认")
     parser.add_argument("--date", type=str, default=None, help="指定日期(YYMMDD)，默认今天，周末需手动指定最近交易日")
     args = parser.parse_args()
@@ -1068,6 +1069,7 @@ def main():
     results = []
     cache_hits = 0
     api_calls = 0
+    tdx_calls = 0
     api_fails = 0
     retry_queue = []  # code=112 失败的，待主循环结束后重试
 
@@ -1085,6 +1087,8 @@ def main():
 
         if source.startswith("cache"):
             cache_hits += 1
+        elif source == "tdx":
+            tdx_calls += 1
         else:
             api_calls += 1
 
@@ -1125,7 +1129,12 @@ def main():
                 api_fails += 1
                 continue
 
-            api_calls += 1
+            if source.startswith("cache"):
+                cache_hits += 1
+            elif source == "tdx":
+                tdx_calls += 1
+            else:
+                api_calls += 1
             df = calc_indicators(df)
             pos_info = positions.get(stock["code"])
             val_info = rankings.get(stock["code"])
@@ -1153,6 +1162,7 @@ def main():
             "failed": api_fails,
             "cache_hits": cache_hits,
             "api_calls": api_calls,
+            "tdx_calls": tdx_calls,
         },
         "stocks": results,
     }
@@ -1177,7 +1187,7 @@ def main():
 
     # 摘要
     print(f"\n{'='*60}")
-    print(f"✅ 完成: {len(results)}/{len(pool)} 只 | 缓存命中 {cache_hits} | API 调用 {api_calls} | 失败 {api_fails}")
+    print(f"✅ 完成: {len(results)}/{len(pool)} 只 | 缓存命中 {cache_hits} | 妙想API {api_calls} | 通达信 {tdx_calls} | 失败 {api_fails}")
 
     buy_triggered = [r for r in results if any(s["hit"] for s in r["buy_signals"])]
     sell_triggered = [r for r in results if any(s["hit"] for s in r["sell_signals"])]

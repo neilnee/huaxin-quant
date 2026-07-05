@@ -624,6 +624,58 @@ structure_score = stage_score
 
 `structure_score` 只评价结构形态质量，分数越高，说明 VCP 越标准、越紧致、量能越健康、趋势越配合、位置越合理。它不直接决定最终买卖，模型四需结合估值、持仓和风险管理使用。
 
+### 6.1 structure_score 评分明细
+
+`structure_score` 由四部分相加后限制在 `0~100`：
+
+```text
+structure_score = stage_score
+                + volume_score
+                + trend_score
+                + position_score
+```
+
+#### stage_score：结构阶段基础分
+
+| structure_stage | 分数 | 含义 |
+|-----------------|------|------|
+| `VCP_EARLY` | 18 | 识别到早期收缩，但结构样本不足 |
+| `VCP_FORMING` | 32 | 至少两轮收缩，结构开始形成 |
+| `VCP_MATURE` | 45 | 至少三轮收缩，结构较完整 |
+| `VCP_TIGHT` | 55 | 结构成熟且最后一轮较窄，接近 pivot |
+| `TREND_WATCH` | 12 | 趋势强但不是标准 VCP |
+| `POST_BREAKOUT` | 8 | 历史结构已突破延伸，不再作为当前买点 |
+| `TREND_REBUILD` | 8 | 旧结构失效后等待重建 |
+
+#### volume_score：量能评分
+
+| 条件 | 分数 | 含义 |
+|------|------|------|
+| `volume_pattern=decreasing` | +15 | 收缩轮次平均量能递减 |
+| `volume_pattern=drying` | +8 | 当前量能处于缩量状态 |
+| `volume_pattern=failed` | -10 | 最近量能放大，收缩失败 |
+| `volume_dry_up < 0.8` | +10 | 近 5 日均量显著低于近 20 日均量 |
+| `vol_ma20 < vol_ma60` | +5 | 中期量能低于长期量能，抛压减轻 |
+
+#### trend_score：趋势评分
+
+| 条件 | 分数 | 含义 |
+|------|------|------|
+| `MA20 >= MA60` | +7 | 中短期趋势未破坏 |
+| `MA20_slope >= 0` | +4 | MA20 没有向下 |
+| `MA60_slope >= -0.03` | +4 | MA60 没有明显走弱 |
+
+#### position_score：位置评分
+
+| 条件 | 分数 | 含义 |
+|------|------|------|
+| `distance_ma20 ∈ [-4%, +3%]` | +10 | 价格靠近 MA20，回踩位置较合理 |
+| `distance_ma20 <= 10%` | +5 | 价格未明显远离 MA20 |
+| `pivot_distance ∈ [-8%, 0%]` | +12 | 价格接近 pivot 下方，高质量观察区 |
+| `pivot_distance ∈ [-15%, 0%]` | +6 | 距 pivot 尚可，仍可观察 |
+
+### 6.2 structure_risk_score 风险评分
+
 结构风险不折进 `structure_score`，单独输出：
 
 ```text
@@ -632,6 +684,44 @@ structure_risk_flags
 ```
 
 模型二风险只描述量价结构事实，如过热、距离均线过远、长上影、放量滞涨、假突破、结构过期、突破后延伸等。模型四负责解释这些风险对未持仓和已持仓分别意味着什么。
+
+`structure_risk_score` 由风险标记累加后限制在 `0~100`：
+
+| risk_flag | 阈值 | 风险分 | 含义 |
+|-----------|------|--------|------|
+| `OVERHEAT_CHG5` | `chg_5 > 20%` | +25 | 5 日涨幅过热 |
+| `OVERHEAT_CHG20` | `chg_20 > 50%` | +25 | 20 日涨幅过热 |
+| `FAR_ABOVE_MA20` | `distance_ma20 > 15%` | +15 | 明显远离 MA20 |
+| `EXTENDED_FROM_MA20` | `distance_ma20 > 10%` | +8 | 偏离 MA20，追高风险上升 |
+| `LONG_UPPER_SHADOW` | 上影线占日内振幅 >45% 且量比 >1.5 | +18 | 放量冲高回落 |
+| `VOLUME_STALL` | 量比 >1.5 且实体涨幅 <1% | +15 | 放量滞涨 |
+| `DOWNTREND` | `MA20 < MA60` 且收盘低于 MA60 | +35 | 趋势破坏 |
+| `MA20_DECLINE` | `MA20_slope < -0.10` | +15 | MA20 明显下行 |
+| `DEEP_FALL` | 距 60 日高点 < -30% 且 20 日跌幅 < -15% | +35 | 深度下跌，结构风险高 |
+
+硬风险标记：
+
+```text
+OVERHEAT_CHG5
+OVERHEAT_CHG20
+DOWNTREND
+DEEP_FALL
+```
+
+触发硬风险时，模型二不会把风险直接扣进 `structure_score`，而是通过 `structure_risk_score`、`structure_risk_flags` 和 `action_hint` 告诉模型四：结构事实可能仍存在，但当前不适合追买或需要等待重建。
+
+### 6.3 模型四使用建议
+
+模型四/Bloom 消费这两个分数时，应保持语义分离：
+
+| 组合 | 含义 | Bloom 候选池处理建议 |
+|------|------|----------------------|
+| 高 `structure_score` + 低 `structure_risk_score` | 结构好且风险低 | 重点观察或等待触发 |
+| 高 `structure_score` + 高 `structure_risk_score` | 结构好但位置/量价风险高 | 保留观察，避免追买，等待风险释放 |
+| 低 `structure_score` + 低 `structure_risk_score` | 可能还在早期或无明显结构 | 低优先级观察或不进入 |
+| 低 `structure_score` + 高 `structure_risk_score` | 结构弱且风险高 | 不进入或移出观察 |
+
+具体阈值和权重的权威来源是 `strategies/02-quant.json`。本节用于解释当前策略口径；修改配置时必须同步更新本节。
 
 ---
 

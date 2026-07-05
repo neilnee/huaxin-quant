@@ -208,6 +208,8 @@ strategy_file
 
 模型二不维护跨日状态，不决定最终买卖，不判断估值安全边际，不管理持仓。
 
+模型二评分分为 `structure_score` 和 `structure_risk_score` 两条线：前者描述结构质量，后者描述当前量价风险。权威参数见 `strategies/02-quant.json`，解释性评分表见 `instructions/02-quant.md` 的“评分与风险事实”章节。
+
 ## 6. 模型三：Valuation
 
 模型三目标：形成估值锚点和安全边际。

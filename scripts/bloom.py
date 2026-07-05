@@ -74,6 +74,9 @@ STATE_FIELDS = [
     "best_date",
     "watch_reason",
     "next_watch_point",
+    "contraction_count",
+    "contraction_pcts",
+    "volume_pattern",
     "strategy_version",
 ]
 
@@ -581,6 +584,9 @@ def state_row(prev_row, row, date_iso, status):
         "best_date": best_date,
         "watch_reason": watch_reason,
         "next_watch_point": next_watch_point,
+        "contraction_count": str(row.get("contraction_count", "")),
+        "contraction_pcts": str(row.get("contraction_pcts", "")),
+        "volume_pattern": str(row.get("volume_pattern", "")),
         "strategy_version": STRATEGY_VERSION,
     }
 
@@ -799,22 +805,34 @@ def build_markdown(bloom):
     watching = sections.get("watching", [])
     lines.append("## 🔥 重点观察")
     if watching:
-        watch_cols = [
-            ("code", "代码"), ("name", "名称"), ("model2_stage", "结构阶段"),
-            ("bloom_status", "Bloom状态"), ("structure_score", "结构分"),
-            ("risk_level", "风险"), ("watch_reason", "观察要点"),
-        ]
-        def _mark_risk(row):
-            rl = row.get("risk_level", "")
-            if rl in ("HIGH", "HARD"):
-                return f"⚠️{rl}"
-            return rl
-        marked = []
-        for r in watching:
-            rr = dict(r)
-            rr["risk_level"] = _mark_risk(rr)
-            marked.append(rr)
-        lines.extend(table_lines(marked[:20], watch_cols))
+        watch_headers = ["代码", "名称", "结构", "Bloom", "分", "风险", "收缩", "观察要点"]
+        watch_sep = ["---"] * len(watch_headers)
+        lines.append("| " + " | ".join(watch_headers) + " |")
+        lines.append("| " + " | ".join(watch_sep) + " |")
+
+        def _mark_risk(rl):
+            return f"⚠️{rl}" if rl in ("HIGH", "HARD") else rl
+
+        shown = watching[:20]
+        for r in shown:
+            risk = _mark_risk(r.get("risk_level", ""))
+            cc = r.get("contraction_count", "") or ""
+            pcts = r.get("contraction_pcts", "") or ""
+            vp = r.get("volume_pattern", "") or ""
+
+            main = [
+                r.get("code", ""), r.get("name", ""),
+                r.get("model2_stage", ""), r.get("bloom_status", ""),
+                r.get("structure_score", ""), risk,
+                cc, r.get("watch_reason", ""),
+            ]
+            lines.append("| " + " | ".join(str(c) for c in main) + " |")
+
+            detail = f"↳ {cc}段：{pcts}"
+            if vp:
+                detail += f"，量能 {vp}"
+            sub = [""] * 7 + [detail]
+            lines.append("| " + " | ".join(sub) + " |")
         if len(watching) > 20:
             lines.append(f"\n> 共 {len(watching)} 只，以上展示前 20。")
     else:

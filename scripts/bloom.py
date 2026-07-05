@@ -808,22 +808,25 @@ def build_markdown(bloom):
     # ── 🔥 重点观察 ──
     watching = sections.get("watching", [])
     lines.append("## 🔥 重点观察")
-    if watching:
-        header_cols = ["代码", "名称", "结构", "Bloom", "分", "风险", "收缩", "观察要点"]
-        sep_cols = ["---"] * len(header_cols)
-        lines.append("| " + " | ".join(header_cols) + " |")
-        lines.append("| " + " | ".join(sep_cols) + " |")
-
-        def _mark_risk(rl):
-            return f"⚠️{rl}" if rl in ("HIGH", "HARD") else rl
-
+    if not watching:
+        lines.extend(["", "*今日无符合条件的结构*", ""])
+    else:
+        lines.append("")
         shown = watching[:20]
         for r in shown:
-            risk = _mark_risk(r.get("risk_level", ""))
-            cc = r.get("contraction_count", "") or ""
+            code = r.get("code", "")
+            name = r.get("name", "")
+            stage = r.get("model2_stage", "")
+            status = r.get("bloom_status", "")
+            score = r.get("structure_score", "")
+            risk = r.get("risk_level", "")
+            if risk in ("HIGH", "HARD"):
+                risk = f"⚠️{risk}"
+            cc = r.get("contraction_count", "") or "0"
+            reason = r.get("watch_reason", "")
             vp = r.get("volume_pattern", "") or ""
 
-            # Build contraction detail with dates
+            # Build contraction detail
             cg_raw = r.get("contraction_group", "") or ""
             detail_parts = []
             try:
@@ -831,31 +834,23 @@ def build_markdown(bloom):
             except (json.JSONDecodeError, TypeError):
                 cg = []
             for c in cg:
-                sd = str(c.get("start_date", ""))[5:]  # MM-DD
+                sd = str(c.get("start_date", ""))[5:]
                 ed = str(c.get("end_date", ""))[5:]
                 pct = c.get("pullback_pct", 0)
-                days = c.get("duration_days", "")
                 detail_parts.append(f"{sd}-{ed}({pct:.1f}%)")
             detail = " → ".join(detail_parts) if detail_parts else r.get("contraction_pcts", "")
             if vp:
                 detail += f"，量能 {vp}"
 
-            # main row
-            main = [
-                r.get("code", ""), r.get("name", ""),
-                r.get("model2_stage", ""), r.get("bloom_status", ""),
-                r.get("structure_score", ""), risk,
-                cc, r.get("watch_reason", ""),
-            ]
-            lines.append("| " + " | ".join(str(c) for c in main) + " |")
-            # sub row: empty col 1, detail starts at col 2
-            sub = [""] + [f"↳ {detail}"] + [""] * 6
-            lines.append("| " + " | ".join(sub) + " |")
+            meta = f"{stage} | {status} | {score}分 | {risk} | {cc}段收缩"
+            lines.append(f"**`{code}` {name}** — {meta}")
+            lines.append(f"> ↳ {detail}")
+            if reason:
+                lines.append(f"> {reason}")
+            lines.append("")
 
         if len(watching) > 20:
-            lines.append(f"\n> 共 {len(watching)} 只，以上展示前 20。")
-    else:
-        lines.extend(["", "*今日无符合条件的结构*", ""])
+            lines.append(f"> 共 {len(watching)} 只，以上展示前 20。\n")
     lines.append("")
 
     # ── 📋 池子变化（紧凑多列表格）──

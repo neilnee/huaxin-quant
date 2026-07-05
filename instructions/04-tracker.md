@@ -1,4 +1,108 @@
-# 模型四：择时跟踪与交易信号模型（自执行指令）
+# 模型四：Tracker 总控指令卡
+
+- **版本管理**: 由 Git 分支与提交历史管理，文件名不再携带版本号
+- **最近更新**: 2026-07-05
+- **核心目标**: 模型四负责把模型二、模型三和持仓数据整合成最终跟踪与交易管理体系。当前阶段先落地 Bloom 信号层，只处理模型二发现股票的信号判断。
+- **总控边界**: 模型四不是单一脚本逻辑，而是多个独立信号模块的统一调用层。
+
+---
+
+## 当前总控结构
+
+模型四拆为三个相对独立的模块：
+
+```text
+模型四 Tracker 总控
+├── Bloom 信号层
+├── 估值触发层
+└── 持仓管理层
+```
+
+| 模块 | 指令卡 | 当前状态 | 职责 |
+|------|--------|----------|------|
+| Bloom 信号层 | `instructions/signal-bloom.md` | 当前实现重点 | 消费模型二结果，判断候选信号质量、风险阻断、观察状态、估值候选 |
+| 估值触发层 | 后续新增 `instructions/signal-valuation-queue.md` | 暂不实现 | 基于 Bloom 结果判断哪些股票值得进入模型三估值 |
+| 持仓管理层 | 后续新增 `instructions/signal-position.md` | 暂不实现 | 基于持仓、Bloom 信号和模型三估值管理加减仓、止损止盈 |
+
+所有模块指令卡统一放在 `instructions/` 目录下。`signal-` 前缀表示模型四内部的独立信号模块。
+
+---
+
+## 当前阶段：Bloom 信号层
+
+当前阶段只实现 Bloom 信号层。重构完成后的正式入口为：
+
+```bash
+python3 scripts/bloom.py
+python3 scripts/bloom.py --date 260705
+```
+
+`scripts/bloom.py` 是 Bloom 信号层正式入口。旧 `scripts/daily_review.py` 已废弃并删除，不保留兼容包装，避免两套 Bloom 逻辑并存。
+
+### 输入
+
+```text
+cache/quant_runs/quant_<YYMMDD>.json
+bloom/state/bloom_state.csv（如存在，用于状态延续）
+bloom/state/bloom_events.jsonl（如存在，用于事件续写和幂等重跑）
+strategies/04-bloom.json
+```
+
+### 输出
+
+```text
+bloom/bloom_<YYMMDD>.md
+bloom/state/bloom_state.csv
+bloom/state/bloom_events.jsonl
+bloom/state/bloom_input_<YYMMDD>.json
+```
+
+Bloom 不读取模型三估值，不读取持仓，不输出最终买卖建议。
+
+---
+
+## 模块边界
+
+Bloom 信号层只回答：
+
+```text
+这只模型二发现的股票，当前信号质量如何？
+是否值得重点跟踪？
+是否被量价风险阻断？
+是否值得送估值？
+下一步观察点是什么？
+```
+
+Bloom 不回答：
+
+```text
+当前是否正式买入？
+应该买多少仓位？
+持仓是否止盈止损？
+估值是否有安全边际？
+```
+
+估值触发层后续独立实现，消费 Bloom 输出，判断哪些股票值得进入模型三估值流程。
+
+持仓管理层后续独立实现，同时消费持仓数据、Bloom 信号、模型三估值和行情量化指标。
+
+---
+
+## 当前验收标准
+
+- Bloom 状态、信号、池子决策全部使用大写枚举。
+- Bloom 不重新判断 VCP 阶段，不覆盖模型二的 `structure_stage` / `setup_signal`。
+- Bloom 能基于连续状态变化输出 `NEW_ENTRY`、`UPGRADE`、`DOWNGRADE`、`SETUP_TRIGGER`、`RISK_BLOCK`、`COOLDOWN`、`EXIT`、`DATA_HOLD`、`CONTINUED`。
+- Bloom 输出可被后续估值触发层和持仓管理层直接消费。
+- 当前阶段不接模型三估值，不接持仓，不写 `signals/positions.csv`。
+
+---
+
+## 历史参考：旧版择时跟踪与持仓规则
+
+> 以下内容是旧版大一统 `tracker.py` 规则，当前 Bloom 信号层重构阶段不执行。后续实现持仓管理层时，可从中迁移仍然有效的持仓、止损、止盈和报告规则。
+
+# 旧版模型四：择时跟踪与交易信号模型（历史参考）
 
 - **版本管理**: 由 Git 分支与提交历史管理，文件名不再携带版本号
 - **最近更新**: 2026-07-05

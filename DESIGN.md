@@ -66,7 +66,7 @@ Huaxin Quant 是多模型流水线的股票发现与跟踪系统：
 strategies/
   01-pool.json
   02-quant.json
-  04-bloom.json   # 规划中
+  04-bloom.json
 ```
 
 本地运行目录的 `strategies/` 是指向云盘源码仓库的软链，便于运行和版本管理使用同一份配置。
@@ -225,36 +225,34 @@ strategy_file
 
 ## 7. 模型四：Bloom
 
-模型四别名定为 Bloom。
+模型四总控名为 Tracker，内部当前重点模块为 Bloom 信号层。
 
-Bloom 不是模型二后面的独立中间层，而是完整的生命周期跟踪系统：
+模型四不是单一脚本逻辑，而是多个独立信号模块的统一调用层：
 
 ```text
-候选池同步
-→ 信号跟踪
-→ 持仓管理
-→ 渲染输出
+Tracker 总控
+├── Bloom 信号层
+├── 估值触发层
+└── 持仓管理层
 ```
 
-### 7.1 候选池同步
+所有模型四内部信号模块的指令卡统一放在 `instructions/` 目录下，并使用 `signal-` 前缀命名。例如：
 
-来源：
+```text
+instructions/signal-bloom.md
+instructions/signal-valuation-queue.md  # 后续
+instructions/signal-position.md         # 后续
+```
 
-- 模型二发现的 `model2_include=True` 标的。
-- 当前持仓标的。
-- 人工维护或自选股来源。
+### 7.1 Bloom 信号层
 
-职责：
+Bloom 信号层只消费模型二结果，不接估值，不接持仓。它负责把模型二每天的横截面结构发现转为跨日信号生命周期：
 
-- 新股票进入观察池。
-- 已在观察池的股票更新状态。
-- 模型二临时出局后不立刻删除，而是进入观察保留期。
-- 连续多日无结构、结构失效或风险过高后换出。
-- 持仓股票即使模型二不覆盖，也必须进入持仓管理分支。
-
-### 7.2 信号跟踪
-
-Bloom 消费模型二字段：
+- 信号质量判断。
+- 风险阻断。
+- 观察状态维护。
+- 冷却和移出。
+- 待估值候选标记。
 
 ```text
 structure_type
@@ -269,32 +267,39 @@ invalid_price
 breakout_level
 ```
 
-Bloom 再结合：
+Bloom 输出大写状态和信号枚举，例如 `MATURE`、`TRIGGERED`、`RISK_BLOCKED`、`NEW_ENTRY`、`UPGRADE`、`SETUP_TRIGGER`。
 
-- 模型三估值安全边际。
-- 是否持仓。
-- 当前仓位。
-- 批次止损线。
-- 历史观察状态。
+### 7.2 估值触发层
 
-生成最终交易建议。
+估值触发层后续独立实现。它消费 Bloom 输出，判断哪些股票值得进入模型三估值流程，以及已有估值是否需要复核。
+
+Bloom 只输出：
+
+```text
+valuation_candidate
+valuation_priority
+```
+
+它不计算估值，也不判断安全边际。
 
 ### 7.3 持仓管理
 
-持仓股票和模型二候选股票是两个数据来源。
+持仓管理层后续独立实现。它消费持仓数据、Bloom 信号和模型三估值结果，输出加仓、减仓、止损、止盈或继续持有建议。
 
-- 模型二覆盖持仓股票：Bloom 需要结合模型二信号，但不能简单套用候选股逻辑。
-- 模型二未覆盖持仓股票：Bloom 仍要基于持仓策略、成本、止损、估值和趋势管理。
+- 模型二覆盖持仓股票：持仓管理层可以参考 Bloom 信号。
+- 模型二未覆盖持仓股票：持仓管理层仍要独立管理。
 - 持仓管理优先保护已有仓位风险，不以模型二是否入选作为唯一依据。
 
-### 7.4 现有 bloom 层
+### 7.4 Bloom 输出目录
 
-当前 `bloom/` 和 `scripts/daily_review.py` 已经实现部分跨日观察状态：
+Bloom 信号层由 `scripts/bloom.py` 执行，输出目录约定：
 
-- `bloom/bloom_state.csv`
-- `bloom/bloom_events.jsonl`
-
-它们应被理解为 Bloom 的早期状态机实现和历史数据来源，后续应逐步并入模型四，而不是作为模型二和模型四之间的独立层。
+```text
+bloom/bloom_<YYMMDD>.md              # 人看的 Bloom 日报
+bloom/state/bloom_state.csv          # 机器状态表
+bloom/state/bloom_events.jsonl       # 机器事件流水
+bloom/state/bloom_input_<YYMMDD>.json # 下游消费的结构化输入
+```
 
 ## 8. 目录约定
 
@@ -329,9 +334,8 @@ tmp/
 
 1. 稳定模型一、模型二策略配置口径。
 2. 用配置文件调参，而不是改脚本逻辑。
-3. 梳理模型四 Bloom 的候选池同步、观察保留期和换出规则。
-4. 新增 `strategies/04-bloom.json`。
-5. 将 `daily_review.py` 中有价值的状态机能力迁入 Bloom。
-6. 按模块拆分模型四：数据读取、候选池策略、持仓策略、信号渲染。
+3. 按 `instructions/signal-bloom.md` 和 `strategies/04-bloom.json` 重构 Bloom 信号层。
+4. 后续新增估值触发层。
+5. 后续新增持仓管理层。
 
 当前阶段的重点是：把数据层共享、策略层配置化、模型边界固定下来，再逐步重构脚本实现。

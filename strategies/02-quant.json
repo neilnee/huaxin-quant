@@ -10,7 +10,6 @@
     "max_pullback_days": 45,
     "max_structure_age_days": 45,
     "min_pivot_distance_pct": -18.0,
-    "max_market_pivot_ratio": 1.1,
     "max_post_gain_pct": 25.0,
     "max_post_drawdown_pct": -18.0,
     "min_recovery_pct": 3.0,

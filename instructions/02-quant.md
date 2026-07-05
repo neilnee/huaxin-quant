@@ -145,7 +145,7 @@ VCP 结构已经成立
 先放量突破箱体上沿/收敛上沿/近 60 日高点
 随后 3-10 个交易日内缩量回踩
 回踩不有效跌破突破位
-重新站回突破位或 MA10/MA20
+重新站回突破位或 MA10
 ```
 
 `RETEST_BUY` 买的是确定性。价格通常高于 `PULLBACK_BUY`，但突破已经发生并经过回踩验证。
@@ -375,8 +375,9 @@ PULLBACK_BUY
 
 RETEST_BUY
 - 突破后回踩确认买点。
-- 前提形态：近期存在有效 VCP / 箱体突破。
-- 触发条件：先放量突破关键位，随后 3-10 个交易日内缩量回踩，回踩不跌破突破位，最新收盘重新站回突破位或 MA10。
+- 前提形态：当前存在有效 VCP 结构，且 `structure_stage` 只能是 `VCP_MATURE` / `VCP_TIGHT`。
+- 排除条件：`structure_valid=false`、`POST_BREAKOUT`、`TREND_REBUILD`、`TREND_WATCH`、`NONE`、`DATA_ISSUE`，以及硬风险标记（`OVERHEAT_CHG5`、`OVERHEAT_CHG20`、`DOWNTREND`、`DEEP_FALL`）均不得触发 `RETEST_BUY`。
+- 触发条件：先放量突破关键位（突破日不能是放量长上影），随后 3-10 个交易日内缩量回踩，回踩不跌破突破位，最新收盘重新站回突破位或 MA10。
 - 交易含义：突破已经发生并经回踩确认，确定性高于 PULLBACK_BUY。
 - 模型二量价侧建议：BUY_STANDARD，参考仓位 60%-80%。
 ```
@@ -542,7 +543,6 @@ post_structure_drawdown >= -18%
 |----------------|------|
 | structure_too_old | 最后一轮收缩距当前太久 |
 | far_below_structure_pivot | 当前价距离结构 pivot 过远 |
-| old_structure_broken_out | 后续市场高点显著超过结构 pivot |
 | post_structure_extended | 结构后涨幅过大，旧 VCP 已完成 |
 | post_structure_drawdown | 结构后再度深回撤，需要重新形成 |
 
@@ -773,6 +773,17 @@ run_date
 strategy_version
 ```
 
+输出文件命名规则：
+
+| 运行模式 | CSV | JSON |
+|----------|-----|------|
+| 全量 | `quant/quant_<YYMMDD>.csv` | `cache/quant_runs/quant_<YYMMDD>.json` |
+| 测试 | `quant/quant_<YYMMDD>_test.csv` | `cache/quant_runs/quant_<YYMMDD>_test.json` |
+| 单股 | `quant/single_<code>_<YYMMDD>.csv` | `cache/quant_runs/<code>_<YYMMDD>.json` |
+| 多股 | `quant/multi_<YYMMDD>.csv` | `cache/quant_runs/multi_<YYMMDD>.json` |
+
+只有全量模式允许覆盖 `cache/quant_runs/quant_<YYMMDD>.json`。测试、单股、多股模式不得覆盖全量 JSON，避免 Bloom 消费到测试结果。
+
 单股模式必须打印终端摘要，并同样写入 JSON。
 
 ---
@@ -820,79 +831,79 @@ llm_status = failed
 
 ---
 
-## 九、每日花期复盘层
+## 九、Bloom 信号层
 
-模型一、模型二完成后，运行每日复盘层，把脚本结果沉淀为 Huaxin Quant 的花期观察数据层和人类可读复盘。
+模型一、模型二完成后，运行 Bloom 信号层，把模型二结果沉淀为候选信号生命周期、估值候选和人类可读 Bloom 报告。
 
 入口：
 
 ```bash
-python3 scripts/daily_review.py
-python3 scripts/daily_review.py --date 260703
-python3 scripts/daily_review.py --date 260703 --with-llm
+python3 scripts/bloom.py
+python3 scripts/bloom.py --date 260703
 ```
 
 输入：
 
 ```text
-pool/pool_<YYMMDD>.csv
-quant/quant_<YYMMDD>.csv
 cache/quant_runs/quant_<YYMMDD>.json
-bloom/bloom_state.csv（如存在，用于状态延续）
-bloom/bloom_events.jsonl（如存在，用于去重追加）
+bloom/state/bloom_state.csv（如存在，用于状态延续）
+bloom/state/bloom_events.jsonl（如存在，用于去重追加）
+strategies/04-bloom.json
 ```
 
 输出：
 
 ```text
-bloom/bloom_events.jsonl
-bloom/bloom_state.csv
-cache/reviews/review_input_<YYMMDD>.json
-reports/daily/review_<YYMMDD>.md
+bloom/bloom_<YYMMDD>.md
+bloom/state/bloom_state.csv
+bloom/state/bloom_events.jsonl
+bloom/state/bloom_input_<YYMMDD>.json
 ```
 
 职责边界：
 
 | 模块 | 职责 |
 |------|------|
-| `daily_review.py` | 确定性汇总、状态 diff、事件追加、当前状态表更新、生成 LLM 输入包和基础 Markdown |
-| LLM | 可选解释、复盘措辞、重点样本点评，不改变模型一/二判定 |
+| `scripts/bloom.py` | 确定性汇总、状态 diff、事件追加、当前状态表更新、生成 Bloom 结构化输入和 Markdown |
+| `strategies/04-bloom.json` | 状态映射、风险阈值、保留天数、输出数量等策略参数 |
 
-`bloom/` 是模型二之后、模型三/四之前的花期观察数据层：
+Bloom 是模型四内部的信号层，只消费模型二结果：
 
-- `bloom_events.jsonl`：追加式事件流水。重复跑同一天时先删除同日事件再重写，保持幂等。
-- `bloom_state.csv`：当前观察状态表。每天全量模式运行后覆盖更新。
+- 不重新识别 VCP。
+- 不改写模型二 `structure_stage` / `setup_signal`。
+- 不读取模型三估值。
+- 不读取持仓。
+- 不输出最终买入、卖出或仓位建议。
 
 状态映射：
 
 | 脚本状态 | bloom 状态 | 含义 |
 |----------|------------|------|
-| `structure_stage=VCP_EARLY` | `early` | 早期花蕾，刚出现收缩过程 |
-| `structure_stage=VCP_FORMING` | `forming` | 花期形成中，重点观察 |
-| `structure_stage=VCP_TIGHT` / `VCP_MATURE` | `mature` | 结构更完整或更紧致 |
-| `setup_signal=RETEST_BUY` | `retest` | 突破后回踩确认 |
-| `POST_BREAKOUT` | `breakout` | 历史结构已走完，不再算当前形成期 |
-| `TREND_REBUILD` | `invalid` | 历史结构失效，等待重建 |
-| `DATA_ISSUE` / API 缺失 | `data_issue` | 数据不足或接口异常 |
-| `action_hint=REJECT` | `rejected` | 当前不进入观察 |
+| `structure_stage=VCP_EARLY` | `EARLY` | 早期结构，低优先级观察 |
+| `structure_stage=VCP_FORMING` | `FORMING` | 结构形成中，正常观察 |
+| `structure_stage=VCP_TIGHT` / `VCP_MATURE` | `MATURE` | 结构更完整或更紧致 |
+| `setup_signal=PULLBACK_BUY` / `RETEST_BUY` | `TRIGGERED` | 模型二候选触发 |
+| 高风险分或硬风险 | `RISK_BLOCKED` | 结构存在，但当前风险阻断 |
+| `POST_BREAKOUT` / 临时出局 | `COOLDOWN` | 保留观察，不立即删除 |
+| `TREND_REBUILD` / `structure_valid=false` | `INVALID` | 结构失效，等待重建 |
+| `DATA_ISSUE` / API 缺失 | `DATA_ISSUE` | 数据不足或接口异常 |
+| 连续无效达到规则 | `EXIT` | 移出 Bloom 池 |
 
-事件类型：
+信号类型：
 
 ```text
-new_entry   昨日不存在/非观察 → 今日 early/forming/mature/retest
-upgrade     观察状态升级，例如 early → forming
-downgrade   观察状态降级，例如 forming → early
-invalidated 观察状态 → rejected/invalid/breakout/data_issue
-continued   观察状态延续
-data_issue  今日数据不足或缺失
+NEW_ENTRY
+UPGRADE
+DOWNGRADE
+SETUP_TRIGGER
+RISK_BLOCK
+COOLDOWN
+EXIT
+DATA_HOLD
+CONTINUED
 ```
 
-LLM 解释层不得：
-
-- 推翻脚本的 `structure_type` / `structure_stage` / `setup_signal`
-- 自造价格、成交量、财务数据
-- 把 `REJECT` / `DATA_SKIP` 改成观察或买点
-- 替代模型三估值或模型四交易信号
+Bloom 详细规则见 `instructions/signal-bloom.md`。
 
 ---
 

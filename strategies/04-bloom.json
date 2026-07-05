@@ -1,0 +1,89 @@
+{
+  "strategy_version": "model4_bloom_signal_v1",
+  "description": "Bloom signal layer parameters. Bloom consumes Model 2 quant JSON, tracks signal lifecycle, and does not run valuation or position management.",
+  "inputs": {
+    "quant_run_dir": "cache/quant_runs",
+    "state_path": "bloom/state/bloom_state.csv",
+    "events_path": "bloom/state/bloom_events.jsonl"
+  },
+  "outputs": {
+    "review_input_dir": "bloom/state",
+    "daily_report_dir": "bloom"
+  },
+  "statuses": {
+    "active": [
+      "EARLY",
+      "FORMING",
+      "MATURE",
+      "TRIGGERED",
+      "RISK_BLOCKED"
+    ],
+    "terminal": [
+      "EXIT"
+    ],
+    "hold": [
+      "COOLDOWN",
+      "DATA_ISSUE"
+    ],
+    "rank": {
+      "EXIT": 0,
+      "INVALID": 0,
+      "DATA_ISSUE": 0,
+      "COOLDOWN": 1,
+      "EARLY": 2,
+      "FORMING": 3,
+      "MATURE": 4,
+      "TRIGGERED": 5,
+      "RISK_BLOCKED": 4
+    }
+  },
+  "stage_mapping": {
+    "VCP_EARLY": "EARLY",
+    "VCP_FORMING": "FORMING",
+    "VCP_MATURE": "MATURE",
+    "VCP_TIGHT": "MATURE",
+    "POST_BREAKOUT": "COOLDOWN",
+    "TREND_REBUILD": "INVALID",
+    "DATA_ISSUE": "DATA_ISSUE",
+    "DATA_INSUFFICIENT": "DATA_ISSUE"
+  },
+  "setup_mapping": {
+    "PULLBACK_BUY": "TRIGGERED",
+    "RETEST_BUY": "TRIGGERED",
+    "NONE": null
+  },
+  "risk_rules": {
+    "low_max_score": 19.99,
+    "medium_max_score": 39.99,
+    "high_min_score": 40.0,
+    "hard_flags": [
+      "OVERHEAT_CHG5",
+      "OVERHEAT_CHG20",
+      "DOWNTREND",
+      "DEEP_FALL"
+    ],
+    "risk_block_min_score": 40.0
+  },
+  "score_rules": {
+    "upgrade_delta": 8.0,
+    "downgrade_delta": -8.0,
+    "high_quality_score": 70.0,
+    "medium_quality_score": 55.0
+  },
+  "pool_rules": {
+    "cooldown_keep_days": 5,
+    "invalid_keep_days": 3,
+    "data_issue_keep_days": 3,
+    "exit_after_consecutive_reject": 5
+  },
+  "valuation_candidate_rules": {
+    "high_min_score": 70.0,
+    "medium_min_score": 55.0,
+    "allow_medium_risk_for_medium_priority": true
+  },
+  "reporting": {
+    "top_candidates": 20,
+    "section_limit": 30,
+    "human_review_limit": 12
+  }
+}

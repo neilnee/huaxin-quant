@@ -63,7 +63,6 @@ VCP_MIN_PULLBACK_DAYS = VCP_CFG["min_pullback_days"]
 VCP_MAX_PULLBACK_DAYS = VCP_CFG["max_pullback_days"]
 VCP_MAX_STRUCTURE_AGE_DAYS = VCP_CFG["max_structure_age_days"]
 VCP_MIN_PIVOT_DISTANCE = VCP_CFG["min_pivot_distance_pct"]
-VCP_MAX_MARKET_PIVOT_RATIO = VCP_CFG["max_market_pivot_ratio"]
 VCP_MAX_POST_GAIN = VCP_CFG["max_post_gain_pct"]
 VCP_MAX_POST_DRAWDOWN = VCP_CFG["max_post_drawdown_pct"]
 
@@ -467,8 +466,6 @@ def evaluate_vcp_group(df, group):
         invalid_reasons.append("structure_too_old")
     if pivot_distance is not None and pivot_distance < VCP_MIN_PIVOT_DISTANCE:
         invalid_reasons.append("far_below_structure_pivot")
-    if market_pivot and structure_pivot and market_pivot > structure_pivot * VCP_MAX_MARKET_PIVOT_RATIO:
-        invalid_reasons.append("old_structure_broken_out")
     if post_structure_gain > VCP_MAX_POST_GAIN:
         invalid_reasons.append("post_structure_extended")
     if post_structure_drawdown < VCP_MAX_POST_DRAWDOWN:
@@ -637,7 +634,7 @@ def detect_vcp_structure(df):
         state = "TREND_WATCH"
         conditions.append("强趋势但未形成收缩轮次")
     elif base_ok and structure_invalid_reason:
-        if "old_structure_broken_out" in structure_invalid_reason or "post_structure_extended" in structure_invalid_reason:
+        if "post_structure_extended" in structure_invalid_reason:
             state = "POST_BREAKOUT"
         elif "post_structure_drawdown" in structure_invalid_reason:
             state = "TREND_REBUILD"
@@ -752,6 +749,10 @@ def detect_retest_buy(df, structure, overheat):
     cfg = SETUP_CFG["retest_buy"]
     if overheat["hard_reject"]:
         return {"hit": False, "reason": "风险硬排除"}
+    if not structure.get("structure_valid"):
+        return {"hit": False, "reason": "无当前有效VCP结构"}
+    if structure.get("state") not in {"VCP_MATURE", "VCP_TIGHT"}:
+        return {"hit": False, "reason": "结构阶段未达到突破回踩前提"}
     breakout = find_recent_breakout(df, lookback=cfg["lookback_days"])
     if not breakout:
         return {"hit": False, "reason": "近期无有效突破"}
@@ -1240,6 +1241,10 @@ def build_output_paths(args, today_yy, mode, codes):
         json_path = args.output_json
     elif mode == "单股":
         json_path = f"{QUANT_RUNS_DIR}/{codes[0][0]}_{today_yy}.json"
+    elif mode == "多股":
+        json_path = f"{QUANT_RUNS_DIR}/multi_{today_yy}.json"
+    elif mode == "测试":
+        json_path = f"{QUANT_RUNS_DIR}/quant_{today_yy}_test.json"
     else:
         json_path = f"{QUANT_RUNS_DIR}/quant_{today_yy}.json"
     return quant_path, json_path

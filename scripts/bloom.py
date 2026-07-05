@@ -77,6 +77,7 @@ STATE_FIELDS = [
     "contraction_count",
     "contraction_pcts",
     "contraction_days",
+    "contraction_group",
     "volume_pattern",
     "strategy_version",
 ]
@@ -588,6 +589,7 @@ def state_row(prev_row, row, date_iso, status):
         "contraction_count": str(row.get("contraction_count", "")),
         "contraction_pcts": str(row.get("contraction_pcts", "")),
         "contraction_days": str(row.get("contraction_days", "")),
+        "contraction_group": json.dumps(row.get("contraction_group", []), ensure_ascii=False),
         "volume_pattern": str(row.get("volume_pattern", "")),
         "strategy_version": STRATEGY_VERSION,
     }
@@ -819,11 +821,25 @@ def build_markdown(bloom):
         for r in shown:
             risk = _mark_risk(r.get("risk_level", ""))
             cc = r.get("contraction_count", "") or ""
-            pcts = r.get("contraction_pcts", "") or ""
             vp = r.get("volume_pattern", "") or ""
-            detail = f"↳ {cc}段：{pcts}"
+
+            # Build contraction detail with dates
+            cg_raw = r.get("contraction_group", "") or ""
+            detail_parts = []
+            try:
+                cg = json.loads(cg_raw) if isinstance(cg_raw, str) else cg_raw
+            except (json.JSONDecodeError, TypeError):
+                cg = []
+            for c in cg:
+                sd = str(c.get("start_date", ""))[5:]  # MM-DD
+                ed = str(c.get("end_date", ""))[5:]
+                pct = c.get("pullback_pct", 0)
+                days = c.get("duration_days", "")
+                detail_parts.append(f"{sd}-{ed}({pct:.1f}%)")
+            detail = " → ".join(detail_parts) if detail_parts else r.get("contraction_pcts", "")
             if vp:
                 detail += f"，量能 {vp}"
+
             # main row
             main = [
                 r.get("code", ""), r.get("name", ""),
@@ -832,8 +848,8 @@ def build_markdown(bloom):
                 cc, r.get("watch_reason", ""),
             ]
             lines.append("| " + " | ".join(str(c) for c in main) + " |")
-            # sub row: empty first 7 cols, detail in last
-            sub = [""] * 7 + [detail]
+            # sub row: empty col 1, detail starts at col 2
+            sub = [""] + [f"↳ {detail}"] + [""] * 6
             lines.append("| " + " | ".join(sub) + " |")
 
         if len(watching) > 20:

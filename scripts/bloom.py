@@ -211,6 +211,17 @@ def quant_model2_include(row):
     return row.get("pool_type") != "REJECT" and row.get("state") != "REJECT"
 
 
+def should_track_quant_row(row, prev_state):
+    """Track new Model 2 includes, plus existing Bloom names that need lifecycle updates."""
+    if quant_model2_include(row):
+        return True
+    code = normalize_code(row.get("code"))
+    prev_row = prev_state.get(code)
+    if not prev_row:
+        return False
+    return normalize_status(prev_row.get("bloom_status")) != "EXIT"
+
+
 def normalize_status(value):
     value = str(value or "").strip()
     if not value:
@@ -310,7 +321,11 @@ def read_state_before(date_iso):
 
 
 def write_state(rows):
-    ordered = sorted(rows.values(), key=lambda r: (
+    active_rows = [
+        row for row in rows.values()
+        if normalize_status(row.get("bloom_status")) != "EXIT"
+    ]
+    ordered = sorted(active_rows, key=lambda r: (
         0 if is_active_status(r.get("bloom_status")) else 1,
         -safe_float(r.get("structure_score")),
         r.get("code", ""),
@@ -619,6 +634,8 @@ def state_from_quant_results(results, date_iso):
             continue
         row = dict(source)
         row["code"] = code
+        if not should_track_quant_row(row, state):
+            continue
         status = base_status(row)
         state[code] = state_row(None, row, date_iso, status)
     return state
@@ -663,6 +680,8 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False):
         if code:
             row = dict(item)
             row["code"] = code
+            if not should_track_quant_row(row, prev_state):
+                continue
             by_code[code] = row
 
     new_state = dict(prev_state)
@@ -706,13 +725,14 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False):
                      or r.get("bloom_status") == "TRIGGERED"
                      or r.get("model2_setup_signal") in {"PULLBACK_BUY", "RETEST_BUY"}],
     }
+    persisted_rows = [r for r in rows if r.get("bloom_status") != "EXIT"]
 
     summary = {
         "date": run_date,
         "mode": mode,
         "input_total": meta.get("total"),
         "result_total": len(results),
-        "state_total": len(rows),
+        "state_total": len(persisted_rows),
         "active_total": sum(1 for r in rows if is_active_status(r.get("bloom_status"))),
         "new_entries": len(sections["new_entries"]),
         "upgrades": len(sections["upgrades"]),

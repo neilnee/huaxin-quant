@@ -2,7 +2,7 @@
 
 - **版本管理**: 由 Git 分支与提交历史管理，文件名不再携带版本号
 - **最近更新**: 2026-07-05
-- **核心目标**: 模型四负责把模型二、模型三和持仓数据整合成最终跟踪与交易管理体系。当前阶段先落地 Bloom 信号层，只处理模型二发现股票的信号判断。
+- **核心目标**: 模型四负责把模型二、模型三和持仓数据整合成最终跟踪与交易管理体系。当前阶段已落地 Bloom 发现侧和持仓账本管理第一版，估值触发层与持仓策略监控后续独立补齐。
 - **总控边界**: 模型四不是单一脚本逻辑，而是多个独立信号模块的统一调用层。
 
 ---
@@ -22,15 +22,15 @@
 |------|--------|----------|------|
 | Bloom 信号层 | `instructions/signal-bloom.md` | 当前实现重点 | 消费模型二结果，判断候选信号质量、风险阻断、观察状态、估值候选 |
 | 估值触发层 | 后续新增 `instructions/signal-valuation-queue.md` | 暂不实现 | 基于 Bloom 结果判断哪些股票值得进入模型三估值 |
-| 持仓管理层 | 后续新增 `instructions/signal-position.md` | 暂不实现 | 基于持仓、Bloom 信号和模型三估值管理加减仓、止损止盈 |
+| 持仓管理层 | `instructions/signal-position.md` | 账本层第一版实现 | 独立维护交易流水、当前批次和每日持仓状态，后续再接策略监控 |
 
 所有模块指令卡统一放在 `instructions/` 目录下。`signal-` 前缀表示模型四内部的独立信号模块。
 
 ---
 
-## 当前阶段：Bloom 信号层
+## 当前阶段：Bloom 信号层 + 持仓管理层
 
-当前阶段只实现 Bloom 信号层。重构完成后的正式入口为：
+Bloom 信号层正式入口为：
 
 ```bash
 python3 scripts/bloom.py
@@ -59,6 +59,19 @@ bloom/state/bloom_input_<YYMMDD>.json
 
 Bloom 不读取模型三估值，不读取持仓，不输出最终买卖建议。
 
+持仓管理层账本入口为：
+
+```bash
+python3 scripts/position.py init
+python3 scripts/position.py bootstrap --from signals/positions.csv --as-of 2026-07-05
+python3 scripts/position.py add-trade --trade-date 2026-07-06 --code 300442 --name 润泽科技 --asset-type STOCK --side BUY --shares 100 --price 80 --reason manual
+python3 scripts/position.py import --file tmp/trades.csv
+python3 scripts/position.py reconstruct-year --holdings position/imports/current_holdings_2026-07-05.csv --trades refer/历史成交0705.csv --as-of 2026-07-05 --year-start 2026-01-01 --overwrite-ledgers
+python3 scripts/position.py rebuild --as-of 2026-07-05
+```
+
+`scripts/position.py` 当前只做持仓账本管理：按真实交易日期写入月度交易流水，重建 `position/lots_current.csv`、`position/states/position_state_<YYYY-MM-DD>.csv` 和年度复盘表。策略监控层后续再读取这些账本输出交易点提示。
+
 ---
 
 ## 模块边界
@@ -84,7 +97,7 @@ Bloom 不回答：
 
 估值触发层后续独立实现，消费 Bloom 输出，判断哪些股票值得进入模型三估值流程。
 
-持仓管理层后续独立实现，同时消费持仓数据、Bloom 信号、模型三估值和行情量化指标。
+持仓管理层先独立维护账本。后续策略监控再消费持仓状态、Bloom 信号和行情量化指标；模型三估值只作为人工参考，不作为自动买卖硬依据。
 
 ---
 

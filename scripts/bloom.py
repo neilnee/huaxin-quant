@@ -847,7 +847,7 @@ def build_markdown(bloom):
     if new_entries:
         lines.append(f"**新进入 {len(new_entries)} 只**")
         lines.append("")
-        cols_per_row = 4
+        cols_per_row = 8
         header = "| " + " | ".join(["股票"] * cols_per_row) + " |"
         sep = "| " + " | ".join(["---"] * cols_per_row) + " |"
         lines.append(header)

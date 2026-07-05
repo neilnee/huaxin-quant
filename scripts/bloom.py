@@ -715,6 +715,9 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False):
         "exits": len(sections["exits"]),
         "data_issues": len(sections["data_issues"]),
         "valuation_candidates": len(sections["valuation_candidates"]),
+        "status_dist": {s: sum(1 for r in rows if r.get("bloom_status") == s)
+                        for s in ["TRIGGERED", "MATURE", "FORMING", "EARLY",
+                                  "RISK_BLOCKED", "COOLDOWN", "INVALID", "DATA_ISSUE", "EXIT"]},
         "strategy_version": STRATEGY_VERSION,
         "strategy_file": STRATEGY_PATH,
         "quant_stats": payload.get("stats", {}),
@@ -761,47 +764,145 @@ def table_lines(rows, columns):
 def build_markdown(bloom):
     summary = bloom["summary"]
     sections = bloom["sections"]
-    limit = CONFIG["reporting"]["section_limit"]
+
+    # ── 状态分布计数 ──
+    status_dist = summary.get("status_dist", {})
+    status_order = ["TRIGGERED", "MATURE", "FORMING", "EARLY", "RISK_BLOCKED",
+                    "COOLDOWN", "INVALID", "DATA_ISSUE", "EXIT"]
+    status_labels = {
+        "TRIGGERED": "已触发", "MATURE": "成熟", "FORMING": "形成中", "EARLY": "早期",
+        "RISK_BLOCKED": "风险阻断", "COOLDOWN": "冷却", "INVALID": "失效",
+        "DATA_ISSUE": "数据异常", "EXIT": "移出",
+    }
+
+    # ── 头部 ──
     lines = [
         f"# Bloom Signal Report {summary['date']}",
         "",
-        "## 今日概览",
-        f"- 模型二输入标的：{summary.get('input_total')} 只",
-        f"- Bloom 状态池：{summary.get('state_total')} 只，活跃观察：{summary.get('active_total')} 只",
-        f"- 新进入：{summary.get('new_entries')} 只；升级：{summary.get('upgrades')} 只；触发：{summary.get('triggered')} 只；风险阻断：{summary.get('risk_blocked')} 只",
-        f"- 冷却：{summary.get('cooldown')} 只；移出：{summary.get('exits')} 只；数据异常：{summary.get('data_issues')} 只；待估值候选：{summary.get('valuation_candidates')} 只",
+    ]
+
+    # ── 字段说明 ──
+    lines.extend([
+        "## 字段说明",
         "",
-    ]
+        "| 字段 | 说明 |",
+        "|------|------|",
+        "| `bloom_status` | EARLY=早期 / FORMING=形成中 / MATURE=成熟 / TRIGGERED=已触发 / RISK_BLOCKED=风险阻断 / COOLDOWN=冷却 / INVALID=失效 / EXIT=移出 / DATA_ISSUE=数据异常 |",
+        "| `bloom_signal` | NEW_ENTRY=新进入 / UPGRADE=升级 / DOWNGRADE=降级 / SETUP_TRIGGER=交易触发 / RISK_BLOCK=风险阻断 / COOLDOWN=进入冷却 / EXIT=移出 / DATA_HOLD=数据维持 / CONTINUED=延续 |",
+        "| `pool_decision` | ADD=入池 / KEEP_FOCUS=重点观察 / KEEP_NORMAL=正常观察 / KEEP_LOW=低优先观察 / COOLDOWN=冷却保留 / EXIT=移出 / DATA_HOLD=维持 |",
+        "| `risk_level` | LOW=低 / MEDIUM=中 / HIGH=高 / HARD=硬风险 |",
+        "| `signal_quality` | HIGH / MEDIUM / LOW / BLOCKED / NONE |",
+        "| `valuation_priority` | HIGH / MEDIUM / LOW / NONE（由 Bloom 层判断，不读取模型三估值） |",
+        "",
+        "---",
+        "",
+    ])
 
-    columns = [
-        ("code", "代码"),
-        ("name", "名称"),
-        ("bloom_status", "状态"),
-        ("bloom_signal", "信号"),
-        ("pool_decision", "池子决策"),
-        ("signal_quality", "质量"),
-        ("risk_level", "风险"),
-        ("structure_score", "结构分"),
-        ("structure_risk_score", "风险分"),
-        ("valuation_priority", "估值优先级"),
-        ("watch_reason", "原因"),
-        ("next_watch_point", "下一步"),
-    ]
+    # ── 今日概要 ──
+    active = summary.get("active_total", 0)
+    lines.extend([
+        "## 今日概要",
+        "",
+        f"| 指标 | 数值 |",
+        f"|------|------|",
+        f"| 模型二输入 | {summary.get('input_total')} 只 → 产出 {summary.get('result_total')} 只 |",
+        f"| Bloom 活跃观察 | **{active}** 只 |",
+        f"| 新进入 | {summary.get('new_entries')} 只 |",
+        f"| 升级 | {summary.get('upgrades')} 只 |",
+        f"| 触发 | {summary.get('triggered')} 只 |",
+        f"| 风险阻断 | {summary.get('risk_blocked')} 只 |",
+        f"| 移出 | {summary.get('exits')} 只 |",
+        f"| 待估值候选 | {summary.get('valuation_candidates')} 只 |",
+        "",
+    ])
 
-    ordered_sections = [
-        ("今日新进入", "new_entries"),
-        ("今日结构升级", "upgrades"),
-        ("成熟/触发重点观察", "triggered"),
-        ("高风险阻断", "risk_blocked"),
-        ("冷却与准备移出", "cooldown"),
-        ("数据异常", "data_issues"),
-        ("待估值候选", "valuation_candidates"),
-    ]
-    for title, key in ordered_sections:
-        lines.extend([f"## {title}"])
-        lines.extend(table_lines(sections.get(key, [])[:limit], columns))
-        lines.append("")
+    # ── ⚠️ 需要关注 ──
+    alerted = []
+    seen_alert = set()
+    for r in sections.get("triggered", []):
+        if r["code"] not in seen_alert:
+            alerted.append(("触发", r)); seen_alert.add(r["code"])
+    for r in sections.get("risk_blocked", []):
+        if r["code"] not in seen_alert:
+            alerted.append(("阻断", r)); seen_alert.add(r["code"])
+    for r in sections.get("upgrades", []):
+        if r["code"] not in seen_alert:
+            alerted.append(("升级", r)); seen_alert.add(r["code"])
 
+    lines.append("## ⚠️ 需要关注")
+    if alerted:
+        alert_cols = [
+            ("code", "代码"), ("name", "名称"), ("bloom_status", "状态"),
+            ("bloom_signal", "信号"), ("structure_score", "结构分"),
+            ("risk_level", "风险"), ("watch_reason", "原因"),
+        ]
+        lines.extend(table_lines([r for _, r in alerted], alert_cols))
+    else:
+        lines.extend(["", "*今日无需特别关注的信号*", ""])
+    lines.append("")
+
+    # ── 🔥 重点观察 ──
+    focus = sections.get("focus", [])
+    lines.append("## 🔥 重点观察")
+    if focus:
+        focus_cols = [
+            ("code", "代码"), ("name", "名称"), ("model2_stage", "模型二阶段"),
+            ("structure_score", "结构分"), ("risk_level", "风险"),
+            ("valuation_priority", "估值优先级"), ("pivot_distance", "距pivot%"),
+            ("watch_reason", "观察要点"),
+        ]
+        lines.extend(table_lines(focus[:15], focus_cols))
+    else:
+        lines.extend(["", "*今日无重点观察标的*", ""])
+    lines.append("")
+
+    # ── 📋 池子变化 ──
+    lines.append("## 📋 池子变化")
+    new_entries = sections.get("new_entries", [])
+    exits = sections.get("exits", [])
+    if new_entries:
+        new_list = [f"`{r['code']}` {r['name']}（{r.get('bloom_status','')}）" for r in new_entries[:20]]
+        more = f" …等共 {len(new_entries)} 只" if len(new_entries) > 20 else ""
+        lines.append(f"- **新进入 {len(new_entries)} 只**：{'、'.join(new_list)}{more}")
+    else:
+        lines.append("- **新进入**：无")
+    if exits:
+        exit_list = [f"`{r['code']}` {r['name']}" for r in exits]
+        lines.append(f"- **移出 {len(exits)} 只**：{'、'.join(exit_list)}")
+    else:
+        lines.append("- **移出**：无")
+    lines.append("")
+
+    # ── 🌱 待估值候选 ──
+    val_candidates = [r for r in sections.get("valuation_candidates", [])
+                      if r.get("valuation_priority") in ("HIGH", "MEDIUM")]
+    val_low = [r for r in sections.get("valuation_candidates", [])
+               if r.get("valuation_priority") == "LOW"]
+    lines.append("## 🌱 待估值候选")
+    if val_candidates:
+        val_cols = [
+            ("code", "代码"), ("name", "名称"), ("model2_stage", "模型二阶段"),
+            ("structure_score", "结构分"), ("valuation_priority", "估值优先级"),
+        ]
+        lines.extend(table_lines(val_candidates, val_cols))
+        if val_low:
+            lines.append(f"\n> LOW 优先级 {len(val_low)} 只未列出。")
+    elif val_low:
+        lines.extend(["", f"*{len(val_low)} 只均为 LOW 优先级，无 HIGH/MEDIUM 候选*", ""])
+    else:
+        lines.extend(["", "*今日无待估值候选*", ""])
+    lines.append("")
+
+    # ── 📊 状态分布 ──
+    lines.extend(["## 📊 状态分布", ""])
+    dist_rows = [{"status": status_labels.get(s, s), "count": str(status_dist.get(s, 0))}
+                 for s in status_order if status_dist.get(s, 0) > 0]
+    total = sum(status_dist.values())
+    dist_rows.append({"status": "**合计**", "count": f"**{total}**"})
+    lines.extend(table_lines(dist_rows, [("status", "状态"), ("count", "数量")]))
+    lines.append("")
+
+    # ── 执行边界 ──
     lines.extend([
         "## 执行边界",
         "- 本报告只解释模型二信号，不做估值结论。",

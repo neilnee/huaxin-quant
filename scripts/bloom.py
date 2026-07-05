@@ -74,6 +74,9 @@ STATE_FIELDS = [
     "best_date",
     "watch_reason",
     "next_watch_point",
+    "contraction_count",
+    "contraction_pcts",
+    "volume_pattern",
     "strategy_version",
 ]
 
@@ -581,6 +584,9 @@ def state_row(prev_row, row, date_iso, status):
         "best_date": best_date,
         "watch_reason": watch_reason,
         "next_watch_point": next_watch_point,
+        "contraction_count": str(row.get("contraction_count", "")),
+        "contraction_pcts": str(row.get("contraction_pcts", "")),
+        "volume_pattern": str(row.get("volume_pattern", "")),
         "strategy_version": STRATEGY_VERSION,
     }
 
@@ -802,7 +808,7 @@ def build_markdown(bloom):
         watch_cols = [
             ("code", "代码"), ("name", "名称"), ("model2_stage", "结构阶段"),
             ("bloom_status", "Bloom状态"), ("structure_score", "结构分"),
-            ("risk_level", "风险"), ("watch_reason", "观察要点"),
+            ("risk_level", "风险"), ("contraction_detail", "收缩"), ("watch_reason", "观察要点"),
         ]
         def _mark_risk(row):
             rl = row.get("risk_level", "")
@@ -813,6 +819,18 @@ def build_markdown(bloom):
         for r in watching:
             rr = dict(r)
             rr["risk_level"] = _mark_risk(rr)
+            # Build contraction detail: "3段 -23%→-13%→-14%，drying"
+            cc = r.get("contraction_count", "") or ""
+            pcts = r.get("contraction_pcts", "") or ""
+            vp = r.get("volume_pattern", "") or ""
+            parts = []
+            if cc:
+                parts.append(f"{cc}段")
+            if pcts:
+                parts.append(pcts)
+            if vp:
+                parts.append(vp)
+            rr["contraction_detail"] = "，".join(parts) if parts else ""
             marked.append(rr)
         lines.extend(table_lines(marked[:20], watch_cols))
         if len(watching) > 20:

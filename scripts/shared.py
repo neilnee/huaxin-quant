@@ -5,7 +5,7 @@ Huaxin Quant 共享工具模块
   - PROJECT_ROOT: 项目根路径（从本文件位置推导，消除硬编码）
   - RateLimiter: API 请求限流（基础间隔 + 随机抖动 + 指数退避 + 批次歇息）
   - DailyCache: 日线数据本地缓存层（load/save/cleanup）
-  - fetch_daily: 统一日线数据获取入口（缓存 → 妙想 API）
+  - fetch_daily: 统一日线数据获取入口（缓存 → 妙想 API → 通达信）
   - find_key / find_field: 字段名模糊匹配
   - get_latest_annual_period: 推断最新可用年报报告期
   - expected_trade_date / cache_is_fresh: 缓存新鲜度检查
@@ -263,6 +263,24 @@ def _ensure_tdx_source():
     return _tdx_source
 
 
+def _fetch_daily_from_tdx(code, name, datestr, cache):
+    """尝试使用通达信备用源，成功时写入统一日线缓存。"""
+    try:
+        tdx = _ensure_tdx_source()
+        df, err_msg = tdx.fetch_bars(code, name)
+    except Exception as exc:
+        return None, f"通达信备用源异常: {exc}"
+
+    if df is None:
+        return None, err_msg or "通达信备用源返回空数据"
+    if df.empty:
+        return None, "通达信备用源无有效交易日数据"
+
+    df = df.sort_values("date").reset_index(drop=True)
+    cache.save(code, datestr, df)
+    return df, "tdx"
+
+
 def fetch_daily(code, name, datestr, use_cache=True):
     """统一日线数据获取入口（替代 quant_filter / tracker 各自的 fetch_daily）。
 
@@ -288,33 +306,35 @@ def fetch_daily(code, name, datestr, use_cache=True):
             return cached, f"cache({cache_date})"
 
     # ── 第 2 步：妙想 API ──
-    mx = _ensure_mx_source()
-
     api_key = os.environ.get("MX_APIKEY")
     if not api_key:
-        return None, "FATAL:环境变量 MX_APIKEY 未设置，且未命中缓存"
+        df, tdx_msg = _fetch_daily_from_tdx(code, name, datestr, cache)
+        if df is not None:
+            return df, tdx_msg
+        return None, f"妙想API不可用: MX_APIKEY 未设置；通达信失败: {tdx_msg}"
 
     try:
+        mx = _ensure_mx_source()
         df, err_msg = mx.fetch_bars(code, name)
     except Exception as exc:
-        return None, f"数据源异常: {exc}"
+        df, tdx_msg = _fetch_daily_from_tdx(code, name, datestr, cache)
+        if df is not None:
+            return df, tdx_msg
+        return None, f"妙想API异常: {exc}；通达信失败: {tdx_msg}"
 
     if df is None:
         mx_error = err_msg or "妙想API返回空数据"
         # ── 第 3 步：通达信回退 ──
-        try:
-            tdx = _ensure_tdx_source()
-            df, tdx_msg = tdx.fetch_bars(code, name)
-            if df is not None and not df.empty:
-                df = df.sort_values("date").reset_index(drop=True)
-                cache.save(code, datestr, df)
-                return df, "tdx"
-        except Exception:
-            pass
-        return None, mx_error
+        df, tdx_msg = _fetch_daily_from_tdx(code, name, datestr, cache)
+        if df is not None:
+            return df, tdx_msg
+        return None, f"{mx_error}；通达信失败: {tdx_msg}"
 
     if df.empty:
-        return None, "无有效交易日数据(可能长期停牌)"
+        df, tdx_msg = _fetch_daily_from_tdx(code, name, datestr, cache)
+        if df is not None:
+            return df, tdx_msg
+        return None, f"妙想API无有效交易日数据(可能长期停牌)；通达信失败: {tdx_msg}"
 
     df = df.sort_values("date").reset_index(drop=True)
     cache.save(code, datestr, df)

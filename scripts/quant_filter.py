@@ -1061,13 +1061,22 @@ def print_single_summary(result):
         print(f"风险: {', '.join(result['risk_flags'])}")
 
 
-def print_summary(total, pull_ok, pull_fail, data_insufficient, results, cache_hits=0, api_calls=0):
+def count_data_source(stats, source):
+    if source.startswith("cache"):
+        stats["cache_hits"] += 1
+    elif source == "tdx":
+        stats["tdx_calls"] += 1
+    else:
+        stats["api_calls"] += 1
+
+
+def print_summary(total, pull_ok, pull_fail, data_insufficient, results, cache_hits=0, api_calls=0, tdx_calls=0):
     print()
     print("=" * 70)
     print("模型二执行摘要 — VCP/P2/P3 量价精筛")
     print("=" * 70)
     print(f"  输入标的: {total} 只")
-    print(f"  数据来源: 缓存命中 {cache_hits} 只 + API 拉取 {api_calls} 只")
+    print(f"  数据来源: 缓存命中 {cache_hits} 只 + 妙想API {api_calls} 只 + 通达信 {tdx_calls} 只")
     print(f"  成功拉取行情: {pull_ok} 只（失败: {pull_fail} 只）")
     print(f"  数据不足跳过: {data_insufficient} 只")
 
@@ -1179,7 +1188,14 @@ def build_output_paths(args, today_yy, mode, codes):
 
 def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True):
     results = []
-    stats = {"pull_ok": 0, "pull_fail": 0, "data_insufficient": 0, "cache_hits": 0, "api_calls": 0}
+    stats = {
+        "pull_ok": 0,
+        "pull_fail": 0,
+        "data_insufficient": 0,
+        "cache_hits": 0,
+        "api_calls": 0,
+        "tdx_calls": 0,
+    }
     fatal_stop = False
     retry_queue = []
 
@@ -1202,7 +1218,7 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True):
                     fatal_stop = True
             continue
 
-        stats["cache_hits" if source.startswith("cache") else "api_calls"] += 1
+        count_data_source(stats, source)
         if len(df) < 20:
             print(f"跳过: 数据不足({len(df)}天)")
             stats["data_insufficient"] += 1
@@ -1238,7 +1254,7 @@ def main():
     parser.add_argument("--output-json", help="JSON 输出路径")
     parser.add_argument("--json", action="store_true", help="同时将结构化结果打印到 stdout")
     parser.add_argument("--include-reject", action="store_true", help="CSV 中包含 REJECT 标的")
-    parser.add_argument("--no-cache", action="store_true", help="跳过缓存，强制从 API 拉取")
+    parser.add_argument("--no-cache", action="store_true", help="跳过缓存，重新拉取行情")
     parser.add_argument("--refresh", action="store_true", help="清除今日缓存后重新拉取")
     parser.add_argument("--with-llm", action="store_true", help="可选调用 LLM 对 top 标的做解释")
     parser.add_argument("--llm-top", type=int, default=10, help="LLM 解释 Top N，默认 10")
@@ -1293,7 +1309,7 @@ def main():
     }
 
     print_summary(len(codes), stats["pull_ok"], stats["pull_fail"], stats["data_insufficient"],
-                  results, stats["cache_hits"], stats["api_calls"])
+                  results, stats["cache_hits"], stats["api_calls"], stats["tdx_calls"])
 
     if csv_results:
         write_csv(csv_results, quant_path)

@@ -47,11 +47,15 @@ def get_latest_annual_period():
 def expected_trade_date(run_date=None):
     """预期最近的 A 股交易日，周末回退到周五。
 
+    以 15:00（收盘）为日分隔线：收盘前取前一自然日，收盘后取当日。
     主动避免引入假日日历依赖。周末运行以周五数据为准；
     交易所假日可通过回测日参数覆盖。
     """
     if run_date is None:
-        cur = datetime.now().date()
+        now = datetime.now()
+        cur = now.date()
+        if now.hour < 15:
+            cur -= timedelta(days=1)
     elif isinstance(run_date, str):
         cur = datetime.strptime(run_date, "%Y-%m-%d").date()
     else:

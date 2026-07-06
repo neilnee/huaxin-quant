@@ -968,7 +968,9 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False):
         "valuation_candidates": [r for r in rows if r["valuation_candidate"] == "true"],
         "watching": [r for r in rows if r.get("model2_stage") in {"VCP_FORMING", "VCP_MATURE", "VCP_TIGHT"}
                      or r.get("bloom_status") == "TRIGGERED"
-                     or r.get("model2_setup_signal") in {"PULLBACK_BUY", "RETEST_BUY"}],
+                     or r.get("model2_setup_signal") in {"PULLBACK_BUY", "RETEST_BUY"}
+                     or (r.get("model2_stage") == "VCP_EARLY"
+                         and safe_float(r.get("structure_score")) >= 60)],
     }
 
     # ── LLM 解读：为重点观察标的生成自然语言洞察 ──

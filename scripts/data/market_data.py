@@ -276,62 +276,52 @@ class TDXSource(DataSource):
     """通达信数据源，基于 mootdx 库连接公共行情服务器。
 
     作为妙想 API 限流时的备用数据源，免费、无额度限制。
-    使用已验证的低延迟服务器列表，定期通过以下命令刷新：
-      python -m mootdx bestip -vv
-    （注意：bestip 探测后不要在同一个 Python 进程内立即用 factory(bestip=True)
-     建连，会被服务器限流；应只取探测结果的 IP 列表更新 _KNOWN_SERVERS。）
+    每次初始化时用 sync=False 轻量探测（与 CLI 行为一致），
+    取延迟最低的服务器直连。不同于 factory(bestip=True)，
+    后者用 sync=True 探测后立即建连，会被服务器限流。
     依赖: pip install 'mootdx[all]'
     """
 
     display_name = "tdx"
 
-    # 已验证的低延迟服务器（定期通过 `python -m mootdx bestip -vv` 刷新）
-    _KNOWN_SERVERS = [
-        ("180.153.18.170", 7709),
-        ("60.191.117.167", 7709),
-        ("115.238.56.198", 7709),
-        ("115.238.90.165", 7709),
-        ("123.125.108.14", 7709),
-    ]
-
-    _FALLBACK_SERVERS = [
-        ("218.75.126.9", 7709),
-        ("60.12.136.250", 7709),
-        ("218.6.170.47", 7709),
-    ]
-
     def __init__(self):
         self._client = None
-        self._server = None
-
-    def _try_connect(self, server):
-        """尝试连接指定服务器，成功返回 client，失败返回 None。"""
-        from mootdx.quotes import Quotes
-        try:
-            client = Quotes.factory(market='std', server=server, timeout=8)
-            raw = client.bars(symbol='000001', frequency=9, offset=1)
-            if raw is not None and not raw.empty:
-                return client
-        except Exception:
-            pass
-        return None
 
     def _get_client(self):
-        """获取或创建 mootdx 客户端。"""
+        """获取或创建 mootdx 客户端。
+
+        用 sync=False 探测（和 CLI `mootdx bestip` 一致），
+        然后直连最快的服务器。
+        """
         if self._client is not None:
             return self._client
 
-        # 快速服务器 → 备用服务器
-        for server in self._KNOWN_SERVERS + self._FALLBACK_SERVERS:
-            client = self._try_connect(server)
-            if client is not None:
-                self._client = client
-                self._server = server
-                return client
+        from mootdx.server import server as probe_servers
+        from mootdx.quotes import Quotes
 
-        raise RuntimeError(
-            "通达信所有服务器不可达。执行 'python -m mootdx bestip -vv' 刷新服务器列表"
-        )
+        try:
+            results = probe_servers(index='HQ', limit=5, sync=False)
+        except Exception:
+            raise RuntimeError("通达信服务器探测失败")
+
+        if not results:
+            raise RuntimeError("通达信无可用的行情服务器")
+
+        # 逐个尝试前几台最快的服务器
+        errors = []
+        for ip, port in results:
+            try:
+                client = Quotes.factory(market='std', server=(ip, port), timeout=10)
+                # 快速验证
+                raw = client.bars(symbol='000001', frequency=9, offset=1)
+                if raw is not None and not raw.empty:
+                    self._client = client
+                    return client
+            except Exception as exc:
+                errors.append(f"{ip}:{port} {exc}")
+                continue
+
+        raise RuntimeError(f"通达信连接失败: {'; '.join(errors[:3])}")
 
     def fetch_bars(self, code: str, name: str) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
         """通过 mootdx 获取日线数据。

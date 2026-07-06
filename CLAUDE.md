@@ -21,18 +21,18 @@ git -C <source-repo> commit -m "..."
 
 **禁止**在本地目录执行 `git` 命令（会因找不到 `.git` 而失败或触发额外授权）。
 
-### 规则二：临时脚本统一写到 `tmp/` 目录
+### 规则二：临时脚本统一写到 `.tmp/` 目录
 
-`tmp/` 目录已在 `settings.json` 中预授权读写编辑（`Read/Write/Edit(tmp/**)`），写入和执行不会触发授权弹窗。脚本放 `tmp/scripts/` 子目录下：
+`.tmp/` 目录已在 `settings.json` 中预授权读写编辑（`Read/Write/Edit(.tmp/**)`），写入和执行不会触发授权弹窗。脚本放 `.tmp/scripts/` 子目录下：
 
 ```
-✅ Write(tmp/scripts/calc.py)  →  Bash(python3 tmp/scripts/calc.py)
+✅ Write(.tmp/scripts/calc.py)  →  Bash(python3 .tmp/scripts/calc.py)
 ❌ Write(calc.py)              →  Bash(python3 calc.py)           ← 触发授权
 ❌ Bash(python3 -c "...")      →  单行 python3 -c 无法预授权       ← 触发授权
 ❌ Bash(python3 << *)          →  多行 heredoc 匹配不了            ← 反复弹授权
 ```
 
-用完清理：`rm -rf tmp/scripts/`（保留 `tmp/` 目录本身）。
+用完清理：`rm -rf .tmp/scripts/`（保留 `.tmp/` 目录本身）。
 
 ## 目录架构
 
@@ -74,7 +74,7 @@ quant_lab/（本地工作区 · Huaxin Quant 运行实例）
 ├── SIGNALS.md                      本地 · 最新信号报告快捷副本
 ├── TODO.md                         本地 · 项目待办
 ├── .env                            本地 · 环境变量（settings.json deny 保护）
-└── tmp/                            临时目录（settings.json 预授权读写编辑）
+└── .tmp/                            临时目录（settings.json 预授权读写编辑）
     └── scripts/                     临时脚本，用完即删
 
 

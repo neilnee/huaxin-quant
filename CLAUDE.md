@@ -95,14 +95,6 @@ LLM 拆解业务线 + 脚本 DCF/PE 计算，按需手动触发。执行方式�
 # 详见 instructions/03-valuation.md
 ```
 
-### 日常完整链路
-
-```bash
-python3 scripts/run_pool.py --skip-fetch
-python3 scripts/quant_filter.py
-python3 scripts/bloom.py
-cat bloom/bloom_<YYMMDD>.md
-```
 
 ## 目录架构
 

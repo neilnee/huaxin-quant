@@ -48,6 +48,7 @@ STATE_FIELDS = [
     "last_seen",
     "days_tracked",
     "days_in_observation",
+    "days_in_data_issue",
     "days_since_active",
     "consecutive_reject",
     "bloom_status",
@@ -459,6 +460,12 @@ def bloom_signal(row, status, event_type, delta):
 
 def apply_exit_rules(prev_row, status):
     if status == "DATA_ISSUE":
+        # 统计连续 DATA_ISSUE 天数，超期后移出观察池
+        prev_days = safe_int(prev_row.get("days_in_data_issue")) if prev_row else 0
+        days = prev_days + 1
+        threshold = CONFIG["pool_rules"]["data_issue_keep_days"]
+        if days > threshold:
+            return "EXIT"
         return status
     consecutive = safe_int(prev_row.get("consecutive_reject")) if prev_row else 0
     if status in {"COOLDOWN", "INVALID"}:
@@ -562,6 +569,8 @@ def state_row(prev_row, row, date_iso, status):
 
     previous_since_active = safe_int(prev_row.get("days_since_active"))
     days_since_active = 0 if is_active_status(status) else previous_since_active + 1
+    prev_data_issue_days = safe_int(prev_row.get("days_in_data_issue"))
+    days_in_data_issue = prev_data_issue_days + 1 if status == "DATA_ISSUE" else 0
     consecutive_reject = safe_int(prev_row.get("consecutive_reject"))
     if status in {"COOLDOWN", "INVALID", "EXIT"}:
         consecutive_reject += 1
@@ -575,6 +584,7 @@ def state_row(prev_row, row, date_iso, status):
         "last_seen": date_iso,
         "days_tracked": str(days_tracked),
         "days_in_observation": str(days_in_observation),
+        "days_in_data_issue": str(days_in_data_issue),
         "days_since_active": str(days_since_active),
         "consecutive_reject": str(consecutive_reject),
         "bloom_status": status,

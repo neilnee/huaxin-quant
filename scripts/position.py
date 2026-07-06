@@ -52,7 +52,10 @@ def clean_cell(value):
 
 
 def normalize_code(value):
-    return clean_cell(value)
+    text = clean_cell(value)
+    if text and len(text) <= 6 and text.isdigit():
+        text = text.zfill(6)
+    return text
 
 
 def safe_float(value, default=0.0):

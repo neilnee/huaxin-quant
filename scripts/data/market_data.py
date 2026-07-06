@@ -108,9 +108,9 @@ class MiaoxiangSource(DataSource):
 
         for qi, query in enumerate(queries):
             payload = {"toolQuery": query, "toolType": "query_tool"}
-            result = self._do_request(headers, payload)
+            result, req_err = self._do_request(headers, payload)
             if result is None:
-                last_error = "网络请求失败(重试3次仍失败)"
+                last_error = req_err or "网络请求失败"
                 continue
 
             raw, resolved, err = self._extract_table(result)
@@ -153,7 +153,11 @@ class MiaoxiangSource(DataSource):
     # ── HTTP 请求 + 重试 ──
 
     def _do_request(self, headers, payload):
-        """执行 HTTP 请求，含重试和错误码处理。"""
+        """执行 HTTP 请求，含重试和错误码处理。
+
+        Returns (data_dict, None) 成功，或 (None, error_message) 失败。
+        error_message 保留具体错误码供上层做重试/fatal stop 决策。
+        """
         for attempt in range(MAX_RETRIES):
             try:
                 resp = requests.post(MX_BASE_URL, headers=headers, json=payload, timeout=30)
@@ -163,35 +167,37 @@ class MiaoxiangSource(DataSource):
                 if attempt < 1:
                     self._rl.wait(is_fail=True)
                     continue
-                return None
+                return None, "网络超时(重试3次仍失败)"
             except requests.exceptions.ConnectionError:
                 if attempt < 1:
                     self._rl.wait(is_fail=True)
                     continue
-                return None
+                return None, "网络连接失败(重试3次仍失败)"
             except Exception:
-                return None
+                return None, "未知网络错误"
 
             code = data.get("code", -1)
             if code == 0:
                 self._rl.reset_fails()
-                return data
+                return data, None
             if code == 112:  # 频率限制
                 if attempt < 2:
                     self._rl.wait(is_fail=True)
                     time.sleep(5)
                     continue
-                return None
-            if code in (113, 114):  # 调用上限 / Key 失效 — 致命
-                return None
+                return None, "112 频率限制(重试耗尽)"
+            if code == 113:  # 调用上限 — 致命
+                return None, "FATAL:113 本周调用额度已用完"
+            if code == 114:  # Key 失效 — 致命
+                return None, "FATAL:114 API Key 无效或已过期"
             if code == 115:  # 无数据
-                return None
+                return None, "115 无数据"
             if attempt == 0:
                 self._rl.wait(is_fail=True)
                 continue
-            return None
+            return None, f"API 错误码 {code}"
 
-        return None
+        return None, "未知错误(重试耗尽)"
 
     # ── 表选择（quant_filter 的遍历方式）──
 

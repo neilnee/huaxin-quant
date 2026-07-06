@@ -12,14 +12,16 @@
 """
 
 import abc
+import json
 import os
 import time
+from pathlib import Path
 from typing import Optional, Tuple
 
 import pandas as pd
 import requests
 
-from scripts.shared import RateLimiter
+from scripts.shared import PROJECT_ROOT, RateLimiter
 
 # ===================== 常量 =====================
 
@@ -284,14 +286,37 @@ class TDXSource(DataSource):
 
     display_name = "tdx"
 
+    _CACHE_FILE = Path(PROJECT_ROOT) / "cache" / "tdx_servers.json"
+
     def __init__(self):
         self._client = None
+
+    @classmethod
+    def _load_cached_servers(cls):
+        """读取上次探测成功的服务器缓存。"""
+        try:
+            if cls._CACHE_FILE.exists():
+                data = json.loads(cls._CACHE_FILE.read_text())
+                if isinstance(data, list) and data:
+                    return [(item[0], item[1]) for item in data]
+        except Exception:
+            pass
+        return []
+
+    @classmethod
+    def _save_cached_servers(cls, servers):
+        """保存成功探测的服务器列表（最多保留 10 台）。"""
+        try:
+            cls._CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            cls._CACHE_FILE.write_text(json.dumps(servers[:10]))
+        except Exception:
+            pass
 
     def _get_client(self):
         """获取或创建 mootdx 客户端。
 
-        用 sync=False 探测（和 CLI `mootdx bestip` 一致），
-        然后直连最快的服务器。
+        1. sync=False 轻量探测（和 CLI 一致）→ 直连最快服务器
+        2. 探测失败 → 回退到缓存文件中的上次可用服务器
         """
         if self._client is not None:
             return self._client
@@ -299,20 +324,29 @@ class TDXSource(DataSource):
         from mootdx.server import server as probe_servers
         from mootdx.quotes import Quotes
 
+        candidates = []  # [(ip, port), ...]
+
+        # 尝试实时探测
         try:
             results = probe_servers(index='HQ', limit=5, sync=False)
+            if results:
+                self._save_cached_servers(results)
+                candidates = results[:5]
         except Exception:
-            raise RuntimeError("通达信服务器探测失败")
+            pass
 
-        if not results:
-            raise RuntimeError("通达信无可用的行情服务器")
+        # 探测失败，回退到缓存
+        if not candidates:
+            candidates = self._load_cached_servers()
 
-        # 逐个尝试前几台最快的服务器
+        if not candidates:
+            raise RuntimeError("通达信服务器探测失败且无缓存可用")
+
+        # 逐个尝试，取第一个成功的
         errors = []
-        for ip, port in results:
+        for ip, port in candidates:
             try:
                 client = Quotes.factory(market='std', server=(ip, port), timeout=10)
-                # 快速验证
                 raw = client.bars(symbol='000001', frequency=9, offset=1)
                 if raw is not None and not raw.empty:
                     self._client = client

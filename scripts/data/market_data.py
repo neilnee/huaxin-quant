@@ -276,82 +276,99 @@ class TDXSource(DataSource):
     """通达信数据源，基于 mootdx 库连接公共行情服务器。
 
     作为妙想 API 限流时的备用数据源，免费、无额度限制。
+    优先尝试已验证可用的快速服务器，失败后回退到 bestip 自动探测。
     依赖: pip install 'mootdx[all]'
     """
 
     display_name = "tdx"
 
+    # 已验证的低延迟服务器（定期通过 `python -m mootdx bestip -vv` 更新）
+    _KNOWN_SERVERS = [
+        ("180.153.18.170", 7709),
+        ("60.191.117.167", 7709),
+        ("115.238.56.198", 7709),
+        ("115.238.90.165", 7709),
+        ("123.125.108.14", 7709),
+    ]
+
+    _FALLBACK_SERVERS = [
+        ("218.75.126.9", 7709),
+        ("60.12.136.250", 7709),
+        ("218.6.170.47", 7709),
+    ]
+
     def __init__(self):
         self._client = None
         self._server = None
 
-    def _candidate_servers(self):
-        """读取 mootdx 内置 HQ 服务器列表，按默认顺序短超时尝试。"""
-        from mootdx import config
-        servers = []
-        for item in config.get('SERVER').get('HQ')[:8]:
-            try:
-                _, ip, port = item
-                servers.append((ip, int(port)))
-            except (TypeError, ValueError):
-                continue
-        return servers
-
-    def _new_client(self, server):
-        """创建指定服务器的 mootdx 客户端。"""
+    def _try_connect(self, server):
+        """尝试连接指定服务器，成功返回 client，失败返回 None。"""
         from mootdx.quotes import Quotes
-        return Quotes.factory(market='std', server=server, timeout=3)
+        try:
+            client = Quotes.factory(market='std', server=server, timeout=8)
+            # 快速验证连接
+            raw = client.bars(symbol='000001', frequency=9, offset=1)
+            if raw is not None and not raw.empty:
+                return client
+        except Exception:
+            pass
+        return None
 
-    def _iter_clients(self):
-        """优先复用当前客户端，失败后切换候选服务器。"""
-        tried = set()
-        if self._client is not None and self._server is not None:
-            tried.add(self._server)
-            yield self._client, self._server, None
+    def _get_client(self):
+        """获取或创建 mootdx 客户端。
 
-        for server in self._candidate_servers():
-            if server in tried:
-                continue
-            try:
-                client = self._new_client(server)
-            except Exception as exc:
-                yield None, server, exc
-                continue
-            yield client, server, None
+        连接策略：已知快速服务器 → 已知备用服务器 → bestip 自动探测。
+        """
+        if self._client is not None:
+            return self._client
+
+        from mootdx.quotes import Quotes
+
+        # 第一轮：已验证的快速服务器
+        for server in self._KNOWN_SERVERS:
+            client = self._try_connect(server)
+            if client is not None:
+                self._client = client
+                self._server = server
+                return client
+
+        # 第二轮：备用服务器
+        for server in self._FALLBACK_SERVERS:
+            client = self._try_connect(server)
+            if client is not None:
+                self._client = client
+                self._server = server
+                return client
+
+        # 第三轮：bestip 自动探测
+        try:
+            self._client = Quotes.factory(market='std', bestip=True, timeout=15)
+            self._server = ("auto", 0)
+            return self._client
+        except Exception:
+            raise RuntimeError("通达信所有服务器不可达")
 
     def fetch_bars(self, code: str, name: str) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
         """通过 mootdx 获取日线数据。
 
         mootdx 自动根据 code 前缀识别沪深市场（6→SH, 0/2/3→SZ）。
         """
-        raw = None
-        errors = []
         try:
-            for client, server, client_err in self._iter_clients():
-                if client_err is not None:
-                    errors.append(f"{server[0]}:{server[1]} {client_err}")
-                    continue
-                try:
-                    raw = client.bars(symbol=code, frequency=9, offset=200)
-                except Exception as exc:
-                    errors.append(f"{server[0]}:{server[1]} {exc}")
-                    self._client = None
-                    self._server = None
-                    continue
-
-                if raw is not None and not raw.empty:
-                    self._client = client
-                    self._server = server
-                    break
-                errors.append(f"{server[0]}:{server[1]} 返回空数据")
+            client = self._get_client()
         except ImportError:
             return None, "mootdx 未安装，运行: pip install 'mootdx[all]'"
         except Exception as exc:
-            return None, f"TDX 连接失败: {exc}"
+            return None, f"TDX 服务器探测失败: {exc}"
+
+        try:
+            raw = client.bars(symbol=code, frequency=9, offset=200)
+        except Exception as exc:
+            self._client = None
+            self._server = None
+            return None, f"TDX 请求失败: {exc}"
 
         if raw is None or raw.empty:
-            detail = "；".join(errors[:3]) if errors else "无可用服务器"
-            return None, f"TDX 返回空数据或连接失败: {detail}"
+            return None, "TDX 返回空数据"
 
         # 过滤停牌日（volume=0，量价均为 0 的无交易行）
         normal = raw[raw["volume"] > 0].copy()
@@ -366,7 +383,7 @@ class TDXSource(DataSource):
             "low":      normal["low"].astype(float),
             "close":    normal["close"].astype(float),
             "volume":   normal["volume"].astype(float),
-            "turnover": 0.0,   # 通达信不提供换手率，两个模型均未使用此字段
+            "turnover": 0.0,
         })
 
         # mootdx 返回最新在前，转为升序

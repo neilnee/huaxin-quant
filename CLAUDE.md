@@ -48,57 +48,52 @@ python3 ~/Library/CloudStorage/OneDrive-个人/huaxin_quant/scripts/quant_filter
 
 ## 🧭 模块使用指南
 
-> 每个模块的详细规则、输入输出、策略参数见对应指令卡。以下只列常用命令。
+> 以下只列常用命令。执行方式、筛选规则、输出格式详见对应指令卡。
 
 ### 模型一：海选初筛 → `pool/pool_<date>.csv`
 
-全市场基本面过滤 + 行业排除 + 软标签评分。
+全市场基本面过滤 + 行业排除 + 软标签评分。执行方式参考 `instructions/01-pool.md`，策略参数见 `strategies/01-pool.json`。
 
 ```bash
 python3 scripts/run_pool.py                  # 端到端
 python3 scripts/run_pool.py --skip-fetch     # 复用 xuangu 缓存
 python3 scripts/run_pool.py --force-refresh  # 强制重拉
 ```
-📖 `instructions/01-pool.md` | ⚙️ `strategies/01-pool.json`
 
 ### 模型二：VCP 精筛 → `quant/quant_<date>.csv`
 
-逐只识别 VCP 收缩结构、量能趋势、风险标记，输出结构评分。
+逐只识别 VCP 收缩结构、量能趋势、风险标记。执行方式参考 `instructions/02-quant.md`，策略参数见 `strategies/02-quant.json`。
 
 ```bash
 python3 scripts/quant_filter.py                          # 全量
 python3 scripts/quant_filter.py --code 603444            # 单只
 python3 scripts/quant_filter.py --codes 300442,688676    # 多只
 ```
-📖 `instructions/02-quant.md` | ⚙️ `strategies/02-quant.json`
 
 ### Bloom 信号层 → `bloom/bloom_<date>.md`
 
-消费模型二 JSON，维护跨日信号生命周期，LLM 解读重点观察标的。
+消费模型二 JSON，维护跨日信号生命周期，LLM 解读重点观察标的。执行方式参考 `instructions/signal-bloom.md`，策略参数见 `strategies/04-bloom.json`。
 
 ```bash
 python3 scripts/bloom.py [--date 260706]
 ```
-📖 `instructions/signal-bloom.md` | ⚙️ `strategies/04-bloom.json`
 
 ### 持仓管理 → `position/`
 
-独立账本：交易流水、当前持仓、每日状态快照。
+独立账本：交易流水、当前持仓、每日状态快照。执行方式参考 `instructions/signal-position.md`。
 
 ```bash
 python3 scripts/position.py add-trade --trade-date 2026-07-06 --code 688676 --name 金盘科技 --side BUY --shares 200 --price 83.89
 python3 scripts/position.py rebuild --as-of 2026-07-06
 ```
-📖 `instructions/signal-position.md` | ⚙️ `strategies/04-position.json`
 
 ### 模型三：深度估值 → `reports/valuation/`
 
-LLM 拆解业务线 + 脚本 DCF/PE 计算，按需手动触发。
+LLM 拆解业务线 + 脚本 DCF/PE 计算，按需手动触发。执行方式参考 `instructions/03-valuation.md`。
 
 ```bash
 # 详见 instructions/03-valuation.md
 ```
-📖 `instructions/03-valuation.md` + `03-valuation-ref.md`
 
 ### 日常完整链路
 

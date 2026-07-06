@@ -48,128 +48,64 @@ python3 ~/Library/CloudStorage/OneDrive-个人/huaxin_quant/scripts/quant_filter
 
 ## 🧭 模块使用指南
 
-> 指令卡是源头，脚本是配套实现。每个模块的详细规则见 `instructions/` 下对应的指令文件。
+> 每个模块的详细规则、输入输出、策略参数见对应指令卡。以下只列常用命令。
 
-### 模型一：海选初筛（Pool）
+### 模型一：海选初筛 → `pool/pool_<date>.csv`
 
-从全市场筛选优质资产，建立候选观察池。只做基本面硬过滤 + 行业排除 + 软标签评分。
+全市场基本面过滤 + 行业排除 + 软标签评分。
 
 ```bash
-# 端到端执行（拉取数据 + 过滤 + 输出 CSV）
-python3 scripts/run_pool.py
-
-# 只做处理（复用已有 xuangu 缓存）
-python3 scripts/run_pool.py --skip-fetch
-
-# 强制重新拉取
-python3 scripts/run_pool.py --force-refresh
+python3 scripts/run_pool.py                  # 端到端
+python3 scripts/run_pool.py --skip-fetch     # 复用 xuangu 缓存
+python3 scripts/run_pool.py --force-refresh  # 强制重拉
 ```
+📖 `instructions/01-pool.md` | ⚙️ `strategies/01-pool.json`
 
-| 项目 | 内容 |
-|------|------|
-| 输入 | 全市场 A 股（通过 mx-xuangu 分段拉取） |
-| 输出 | `pool/pool_<YYMMDD>.csv`（供模型二使用） |
-| 指令卡 | `instructions/01-pool.md` |
-| 脚本 | `scripts/run_pool.py`（入口）+ `scripts/process_pool.py`（处理） |
-| 策略 | `strategies/01-pool.json` |
-| 缓存 | `cache/xuangu/`（5 天有效） |
+### 模型二：VCP 精筛 → `quant/quant_<date>.csv`
 
-### 模型二：量价精筛（Quant）
-
-对候选池逐只做 VCP 结构识别：收缩轮次、量能趋势、MA 位置、风险标记。输出结构评分和触发信号。
+逐只识别 VCP 收缩结构、量能趋势、风险标记，输出结构评分。
 
 ```bash
-# 全量（读取最新 pool）
-python3 scripts/quant_filter.py
-
-# 指定池文件
-python3 scripts/quant_filter.py --pool pool/pool_260706.csv
-
-# 单只 / 多只快速查看
-python3 scripts/quant_filter.py --code 603444
-python3 scripts/quant_filter.py --codes 300442,688676
+python3 scripts/quant_filter.py                          # 全量
+python3 scripts/quant_filter.py --code 603444            # 单只
+python3 scripts/quant_filter.py --codes 300442,688676    # 多只
 ```
+📖 `instructions/02-quant.md` | ⚙️ `strategies/02-quant.json`
 
-| 项目 | 内容 |
-|------|------|
-| 输入 | `pool/pool_<YYMMDD>.csv` |
-| 输出 | `quant/quant_<YYMMDD>.csv` + `cache/quant_runs/quant_<YYMMDD>.json` |
-| 指令卡 | `instructions/02-quant.md` |
-| 脚本 | `scripts/quant_filter.py` |
-| 策略 | `strategies/02-quant.json` |
-| 缓存 | `cache/daily/`（5 天有效，日线 OHLCV） |
+### Bloom 信号层 → `bloom/bloom_<date>.md`
 
-### Bloom 信号层
-
-消费模型二 JSON，维护跨日信号生命周期。输出重点观察列表和自然语言解读（DeepSeek LLM）。
+消费模型二 JSON，维护跨日信号生命周期，LLM 解读重点观察标的。
 
 ```bash
-python3 scripts/bloom.py
-
-# 指定日期
-python3 scripts/bloom.py --date 260706
+python3 scripts/bloom.py [--date 260706]
 ```
+📖 `instructions/signal-bloom.md` | ⚙️ `strategies/04-bloom.json`
 
-| 项目 | 内容 |
-|------|------|
-| 输入 | `cache/quant_runs/quant_<YYMMDD>.json` |
-| 输出 | `bloom/bloom_<YYMMDD>.md`（报告）+ `bloom/state/`（状态持久化） |
-| 指令卡 | `instructions/signal-bloom.md` |
-| 脚本 | `scripts/bloom.py` |
-| 策略 | `strategies/04-bloom.json` |
+### 持仓管理 → `position/`
 
-### 持仓管理（Position）
-
-独立账本模块：交易流水、当前持仓、每日状态快照。事实源驱动，状态可重建。
+独立账本：交易流水、当前持仓、每日状态快照。
 
 ```bash
-# 补录一笔交易
-python3 scripts/position.py add-trade \
-  --trade-date 2026-07-06 --code 688676 --name 金盘科技 \
-  --side BUY --shares 200 --price 83.89 --reason manual
-
-# 重建持仓状态
+python3 scripts/position.py add-trade --trade-date 2026-07-06 --code 688676 --name 金盘科技 --side BUY --shares 200 --price 83.89
 python3 scripts/position.py rebuild --as-of 2026-07-06
 ```
+📖 `instructions/signal-position.md` | ⚙️ `strategies/04-position.json`
 
-| 项目 | 内容 |
-|------|------|
-| 输入 | 交易流水（手动补录或券商 CSV 导入） |
-| 输出 | `position/lots_current.csv` + `position/states/position_state_<日期>.csv` |
-| 指令卡 | `instructions/signal-position.md` |
-| 脚本 | `scripts/position.py` |
-| 策略 | `strategies/04-position.json` |
+### 模型三：深度估值 → `reports/valuation/`
 
-### 模型三：深度估值（Valuation）
-
-对单只标的拉取财务数据 + 研报搜索，LLM 拆解业务线并构建估值参数，脚本做 DCF/PE 计算和情景分析。
+LLM 拆解业务线 + 脚本 DCF/PE 计算，按需手动触发。
 
 ```bash
-# 单只估值（LLM 编排，按需手动触发）
 # 详见 instructions/03-valuation.md
 ```
+📖 `instructions/03-valuation.md` + `03-valuation-ref.md`
 
-| 项目 | 内容 |
-|------|------|
-| 输入 | 自选标的（通过 mx-data + mx-search） |
-| 输出 | `reports/valuation/<code>_<name>.md` + `reports/indexes/` |
-| 指令卡 | `instructions/03-valuation.md` + `instructions/03-valuation-ref.md` |
-| 脚本 | `scripts/valuate.py` + `scripts/calc_valuation.py` |
-| 缓存 | `cache/financial/`（90 天）+ `cache/research/` + `cache/calc_params/` + `cache/calc_results/` |
-
-### 日常运行完整链路
+### 日常完整链路
 
 ```bash
-# 1. 模型一 → 候选池
 python3 scripts/run_pool.py --skip-fetch
-
-# 2. 模型二 → VCP 精筛（读取缓存日线，不用 --no-cache）
 python3 scripts/quant_filter.py
-
-# 3. Bloom → 信号报告
 python3 scripts/bloom.py
-
-# 4. 查看报告
 cat bloom/bloom_<YYMMDD>.md
 ```
 

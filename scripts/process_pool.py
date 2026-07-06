@@ -7,13 +7,13 @@ from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.data.pool_data import PoolSegmentCache, find_key, parse_date, parse_num, parse_pct
-from scripts.shared import get_latest_annual_period
+from scripts.shared import get_latest_annual_period, expected_trade_date
 from scripts.strategy_config import load_strategy_config
 
 PROJECT_ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SEGMENT_DIR = PROJECT_ROOT / "cache" / "xuangu"
 OUTPUT_DIR = PROJECT_ROOT / "pool"
-TODAY = date.today()
+TODAY = datetime.strptime(expected_trade_date(), "%Y-%m-%d").date()
 ANNUAL_PERIOD = get_latest_annual_period()
 POOL_STRATEGY_FILE = "01-pool.json"
 POOL_STRATEGY, POOL_STRATEGY_PATH = load_strategy_config(POOL_STRATEGY_FILE)

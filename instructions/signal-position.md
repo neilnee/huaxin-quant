@@ -346,7 +346,7 @@ python3 scripts/position.py rebuild --as-of 2026-07-06
 python3 scripts/position.py init
 python3 scripts/position.py bootstrap --from signals/positions.csv --as-of 2026-07-05
 python3 scripts/position.py add-trade --trade-date 2026-07-06 --code 300442 --name 润泽科技 --asset-type STOCK --side BUY --shares 100 --price 80 --reason manual
-python3 scripts/position.py import --file tmp/trades.csv
+python3 scripts/position.py import --file .tmp/trades.csv
 python3 scripts/position.py reconstruct-year --holdings position/imports/current_holdings_2026-07-05.csv --trades refer/历史成交0705.csv --as-of 2026-07-05 --year-start 2026-01-01 --overwrite-ledgers
 python3 scripts/position.py rebuild --as-of 2026-07-05
 ```

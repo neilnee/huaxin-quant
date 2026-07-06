@@ -12,14 +12,16 @@
 """
 
 import abc
+import json
 import os
 import time
+from pathlib import Path
 from typing import Optional, Tuple
 
 import pandas as pd
 import requests
 
-from scripts.shared import RateLimiter
+from scripts.shared import PROJECT_ROOT, RateLimiter
 
 # ===================== 常量 =====================
 
@@ -86,50 +88,76 @@ class MiaoxiangSource(DataSource):
     # ── 公共接口 ──
 
     def fetch_bars(self, code: str, name: str) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
-        """通过妙想 API 获取日线数据。返回 (DataFrame, None) 或 (None, error_msg)。"""
+        """通过妙想 API 获取日线数据。返回 (DataFrame, None) 或 (None, error_msg)。
+
+        查询策略：以代码为主锚点，避免 NLP 对简称（尤其是 ETF）匹配到残缺数据表。
+        1. 主查询："{code} {name}近200个交易日..."
+        2. 兜底：  "{code}近200个交易日..."  （纯代码，消除歧义）
+        """
         api_key = os.environ.get("MX_APIKEY")
         if not api_key:
             return None, "MX_APIKEY 未设置"
 
-        query = f"{name}近200个交易日每日开盘价、最高价、最低价、收盘价、成交量、换手率"
+        queries = [
+            f"{code} {name}近200个交易日每日开盘价、最高价、最低价、收盘价、成交量、换手率",
+            f"{code}近200个交易日每日开盘价、最高价、最低价、收盘价、成交量、换手率",
+        ]
+
         headers = {"Content-Type": "application/json", "apikey": api_key}
-        payload = {"toolQuery": query, "toolType": "query_tool"}
+        last_error = None
 
-        result = self._do_request(headers, payload)
-        if result is None:
-            return None, "网络请求失败(重试3次仍失败)"
+        for qi, query in enumerate(queries):
+            payload = {"toolQuery": query, "toolType": "query_tool"}
+            result, req_err = self._do_request(headers, payload)
+            if result is None:
+                last_error = req_err or "网络请求失败"
+                continue
 
-        # 提取 API 内层 message（code=0 时也可能有限流等提示）
+            raw, resolved, err = self._extract_table(result)
+            if raw is not None:
+                df = self._parse_rows(raw, resolved)
+                if df is not None:
+                    return df, None
+                last_error = "无有效交易日数据(可能长期停牌)"
+                continue
+
+            last_error = err or "未找到完整历史行情表(字段缺失或结构异常)"
+
+        return None, last_error
+
+    def _extract_table(self, result: dict) -> Tuple[Optional[dict], Optional[dict], Optional[str]]:
+        """从 API 响应中提取完整 OHLCV 表。
+
+        返回 (raw_table, resolved_fields, error_msg)。
+        表不完整或结构异常时 raw_table 为 None。
+        """
         try:
             inner_msg = result.get("data", {}).get("data", {}).get("message", "")
         except (KeyError, TypeError, AttributeError):
             inner_msg = ""
 
-        # 检查是否为周限额/调用上限（code=0 但 dataTableDTOList 为空）
         if inner_msg and ("上限" in str(inner_msg) or "额度" in str(inner_msg)):
-            return None, str(inner_msg)
+            return None, None, str(inner_msg)
 
         try:
             tables = result["data"]["data"]["searchDataResultDTO"]["dataTableDTOList"]
         except (KeyError, TypeError):
-            return None, "数据结构异常(缺 dataTableDTOList)"
+            return None, None, "数据结构异常(缺 dataTableDTOList)"
 
         raw, resolved = self._select_table(tables)
         if raw is None:
-            if inner_msg:
-                return None, str(inner_msg)
-            return None, "未找到完整历史行情表(字段缺失或结构异常)"
+            return None, None, str(inner_msg) if inner_msg else None
 
-        df = self._parse_rows(raw, resolved)
-        if df is None:
-            return None, "无有效交易日数据(可能长期停牌)"
-
-        return df, None
+        return raw, resolved, None
 
     # ── HTTP 请求 + 重试 ──
 
     def _do_request(self, headers, payload):
-        """执行 HTTP 请求，含重试和错误码处理。"""
+        """执行 HTTP 请求，含重试和错误码处理。
+
+        Returns (data_dict, None) 成功，或 (None, error_message) 失败。
+        error_message 保留具体错误码供上层做重试/fatal stop 决策。
+        """
         for attempt in range(MAX_RETRIES):
             try:
                 resp = requests.post(MX_BASE_URL, headers=headers, json=payload, timeout=30)
@@ -139,35 +167,37 @@ class MiaoxiangSource(DataSource):
                 if attempt < 1:
                     self._rl.wait(is_fail=True)
                     continue
-                return None
+                return None, "网络超时(重试3次仍失败)"
             except requests.exceptions.ConnectionError:
                 if attempt < 1:
                     self._rl.wait(is_fail=True)
                     continue
-                return None
+                return None, "网络连接失败(重试3次仍失败)"
             except Exception:
-                return None
+                return None, "未知网络错误"
 
             code = data.get("code", -1)
             if code == 0:
                 self._rl.reset_fails()
-                return data
+                return data, None
             if code == 112:  # 频率限制
                 if attempt < 2:
                     self._rl.wait(is_fail=True)
                     time.sleep(5)
                     continue
-                return None
-            if code in (113, 114):  # 调用上限 / Key 失效 — 致命
-                return None
+                return None, "112 频率限制(重试耗尽)"
+            if code == 113:  # 调用上限 — 致命
+                return None, "FATAL:113 本周调用额度已用完"
+            if code == 114:  # Key 失效 — 致命
+                return None, "FATAL:114 API Key 无效或已过期"
             if code == 115:  # 无数据
-                return None
+                return None, "115 无数据"
             if attempt == 0:
                 self._rl.wait(is_fail=True)
                 continue
-            return None
+            return None, f"API 错误码 {code}"
 
-        return None
+        return None, "未知错误(重试耗尽)"
 
     # ── 表选择（quant_filter 的遍历方式）──
 
@@ -254,82 +284,106 @@ class TDXSource(DataSource):
     """通达信数据源，基于 mootdx 库连接公共行情服务器。
 
     作为妙想 API 限流时的备用数据源，免费、无额度限制。
+    每次初始化时用 sync=False 轻量探测（与 CLI 行为一致），
+    取延迟最低的服务器直连。不同于 factory(bestip=True)，
+    后者用 sync=True 探测后立即建连，会被服务器限流。
     依赖: pip install 'mootdx[all]'
     """
 
     display_name = "tdx"
 
+    _CACHE_FILE = Path(PROJECT_ROOT) / "cache" / "tdx_servers.json"
+
     def __init__(self):
         self._client = None
-        self._server = None
 
-    def _candidate_servers(self):
-        """读取 mootdx 内置 HQ 服务器列表，按默认顺序短超时尝试。"""
-        from mootdx import config
-        servers = []
-        for item in config.get('SERVER').get('HQ')[:8]:
-            try:
-                _, ip, port = item
-                servers.append((ip, int(port)))
-            except (TypeError, ValueError):
-                continue
-        return servers
+    @classmethod
+    def _load_cached_servers(cls):
+        """读取上次探测成功的服务器缓存。"""
+        try:
+            if cls._CACHE_FILE.exists():
+                data = json.loads(cls._CACHE_FILE.read_text())
+                if isinstance(data, list) and data:
+                    return [(item[0], item[1]) for item in data]
+        except Exception:
+            pass
+        return []
 
-    def _new_client(self, server):
-        """创建指定服务器的 mootdx 客户端。"""
+    @classmethod
+    def _save_cached_servers(cls, servers):
+        """保存成功探测的服务器列表（最多保留 10 台）。"""
+        try:
+            cls._CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            cls._CACHE_FILE.write_text(json.dumps(servers[:10]))
+        except Exception:
+            pass
+
+    def _get_client(self):
+        """获取或创建 mootdx 客户端。
+
+        1. sync=False 轻量探测（和 CLI 一致）→ 直连最快服务器
+        2. 探测失败 → 回退到缓存文件中的上次可用服务器
+        """
+        if self._client is not None:
+            return self._client
+
+        from mootdx.server import server as probe_servers
         from mootdx.quotes import Quotes
-        return Quotes.factory(market='std', server=server, timeout=3)
 
-    def _iter_clients(self):
-        """优先复用当前客户端，失败后切换候选服务器。"""
-        tried = set()
-        if self._client is not None and self._server is not None:
-            tried.add(self._server)
-            yield self._client, self._server, None
+        candidates = []  # [(ip, port), ...]
 
-        for server in self._candidate_servers():
-            if server in tried:
-                continue
+        # 尝试实时探测
+        try:
+            results = probe_servers(index='HQ', limit=5, sync=False)
+            if results:
+                self._save_cached_servers(results)
+                candidates = results[:5]
+        except Exception:
+            pass
+
+        # 探测失败，回退到缓存
+        if not candidates:
+            candidates = self._load_cached_servers()
+
+        if not candidates:
+            raise RuntimeError("通达信服务器探测失败且无缓存可用")
+
+        # 逐个尝试，取第一个成功的
+        errors = []
+        for ip, port in candidates:
             try:
-                client = self._new_client(server)
+                client = Quotes.factory(market='std', server=(ip, port), timeout=10)
+                raw = client.bars(symbol='000001', frequency=9, offset=1)
+                if raw is not None and not raw.empty:
+                    self._client = client
+                    return client
             except Exception as exc:
-                yield None, server, exc
+                errors.append(f"{ip}:{port} {exc}")
                 continue
-            yield client, server, None
+
+        raise RuntimeError(f"通达信连接失败: {'; '.join(errors[:3])}")
 
     def fetch_bars(self, code: str, name: str) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
         """通过 mootdx 获取日线数据。
 
         mootdx 自动根据 code 前缀识别沪深市场（6→SH, 0/2/3→SZ）。
         """
-        raw = None
-        errors = []
         try:
-            for client, server, client_err in self._iter_clients():
-                if client_err is not None:
-                    errors.append(f"{server[0]}:{server[1]} {client_err}")
-                    continue
-                try:
-                    raw = client.bars(symbol=code, frequency=9, offset=200)
-                except Exception as exc:
-                    errors.append(f"{server[0]}:{server[1]} {exc}")
-                    self._client = None
-                    self._server = None
-                    continue
-
-                if raw is not None and not raw.empty:
-                    self._client = client
-                    self._server = server
-                    break
-                errors.append(f"{server[0]}:{server[1]} 返回空数据")
+            client = self._get_client()
         except ImportError:
             return None, "mootdx 未安装，运行: pip install 'mootdx[all]'"
         except Exception as exc:
-            return None, f"TDX 连接失败: {exc}"
+            return None, f"TDX 服务器探测失败: {exc}"
+
+        try:
+            raw = client.bars(symbol=code, frequency=9, offset=200)
+        except Exception as exc:
+            self._client = None
+            self._server = None
+            return None, f"TDX 请求失败: {exc}"
 
         if raw is None or raw.empty:
-            detail = "；".join(errors[:3]) if errors else "无可用服务器"
-            return None, f"TDX 返回空数据或连接失败: {detail}"
+            return None, "TDX 返回空数据"
 
         # 过滤停牌日（volume=0，量价均为 0 的无交易行）
         normal = raw[raw["volume"] > 0].copy()
@@ -344,7 +398,7 @@ class TDXSource(DataSource):
             "low":      normal["low"].astype(float),
             "close":    normal["close"].astype(float),
             "volume":   normal["volume"].astype(float),
-            "turnover": 0.0,   # 通达信不提供换手率，两个模型均未使用此字段
+            "turnover": 0.0,
         })
 
         # mootdx 返回最新在前，转为升序

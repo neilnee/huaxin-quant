@@ -26,7 +26,7 @@ import pandas as pd
 import requests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from scripts.shared import DailyCache, PROJECT_ROOT, VALUATION_INDEX_PATH, fetch_daily
+from scripts.shared import DailyCache, PROJECT_ROOT, VALUATION_INDEX_PATH, fetch_daily, expected_trade_date
 from scripts.strategy_config import load_strategy_config
 
 
@@ -322,6 +322,9 @@ def detect_overheat(df):
     ):
         flags.append("DEEP_FALL")
         risk_score += risk_scores["DEEP_FALL"]
+    if pd.notna(latest.get("MA120")) and latest["close"] < latest["MA120"]:
+        flags.append("BELOW_MA120")
+        risk_score += risk_scores.get("BELOW_MA120", 20)
 
     return {
         "risk_flags": flags,
@@ -444,6 +447,27 @@ def volume_pattern_for_contractions(contractions, latest):
     if len(vols) >= 2 and vols[-1] > vols[-2] * CONTRACTION_CFG["volume_failed_ratio"]:
         return "failed"
     return "mixed"
+
+
+def _check_bottom_lifting(contractions, threshold_pct=0.0):
+    """检查收缩轮次的低点是否在收敛（底部不再创新低）。
+
+    只看最后两轮低点的方向：末轮低点不低于前一轮低点，
+    说明卖压已不再推动价格下行，处于筑底或收敛状态。
+
+    Returns True if the bottom is stabilizing (last two lows not declining).
+    """
+    if not contractions or len(contractions) < 2:
+        return True
+    if len(contractions) >= 3:
+        # 有 3 轮以上：看末两轮低点是否停止下移
+        prev_low = contractions[-2]["low_price"]
+        last_low = contractions[-1]["low_price"]
+        return last_low >= prev_low * (1 + threshold_pct / 100)
+    # 只有 2 轮：简单的末轮不低于首轮
+    first_low = contractions[0]["low_price"]
+    last_low = contractions[-1]["low_price"]
+    return last_low >= first_low * (1 + threshold_pct / 100)
 
 
 def evaluate_vcp_group(df, group):
@@ -626,6 +650,24 @@ def detect_vcp_structure(df):
             and volume_pattern in {"decreasing", "drying"}
         ):
             state = "VCP_TIGHT"
+
+        # ── 趋势背景过滤器：VCP 要求上升趋势背景 ──
+        if has_structure and pd.notna(latest.get("MA120")) and latest["close"] < latest["MA120"]:
+            trend_cfg = RISK_CFG.get("trend_background", {})
+            if _check_bottom_lifting(recent, trend_cfg.get("bottom_lift_pct", 0.0)):
+                # 底部在收敛：降级但不拒绝
+                downgrade = {"VCP_MATURE": "VCP_FORMING", "VCP_FORMING": "VCP_EARLY"}
+                old_state = state
+                if state in downgrade:
+                    state = downgrade[state]
+                    misses.append(f"趋势背景存疑(低于MA120)，{old_state}→{state}")
+                else:
+                    misses.append("趋势背景存疑(低于MA120)")
+            elif trend_cfg.get("strict_reject_no_lift", True):
+                # 低点持续下移：趋势不成立，硬拒绝
+                state = "REJECT"
+                has_structure = False
+                misses.append("趋势背景不成立(低于MA120且低点未收敛)")
     elif (
         base_ok
         and safe_float(latest.get("distance_ma20"), 0) > BASE_CFG["trend_watch_min_distance_ma20_pct"]
@@ -1020,6 +1062,7 @@ def result_from_df(code, name, df, run_date):
         "volume_dry_up": round_or_none(latest.get("volume_dry_up"), 4),
         "distance_ma20": round_or_none(latest.get("distance_ma20")),
         "distance_ma60": round_or_none(latest.get("distance_ma60")),
+        "distance_ma120": round_or_none(latest.get("distance_ma120")),
         "distance_high_60": round_or_none(latest.get("distance_high_60")),
         "chg_5": round_or_none(latest.get("chg_5")),
         "chg_20": round_or_none(latest.get("chg_20")),
@@ -1324,8 +1367,9 @@ def main():
     parser.add_argument("--llm-top", type=int, default=10, help="LLM 解释 Top N，默认 10")
     args = parser.parse_args()
 
-    today_yy = datetime.now().strftime("%y%m%d")
-    run_date = datetime.now().strftime("%Y-%m-%d")
+    trade_date = expected_trade_date()
+    today_yy = trade_date.replace("-", "")[2:]
+    run_date = trade_date
     use_cache = not args.no_cache
 
     try:

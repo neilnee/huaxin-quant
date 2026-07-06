@@ -16,6 +16,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+import requests
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.shared import PROJECT_ROOT
 from scripts.strategy_config import load_strategy_config
@@ -46,6 +48,7 @@ STATE_FIELDS = [
     "last_seen",
     "days_tracked",
     "days_in_observation",
+    "days_in_data_issue",
     "days_since_active",
     "consecutive_reject",
     "bloom_status",
@@ -74,8 +77,10 @@ STATE_FIELDS = [
     "best_date",
     "watch_reason",
     "next_watch_point",
+    "llm_insight",
     "contraction_count",
     "contraction_pcts",
+    "contraction_days",
     "volume_pattern",
     "strategy_version",
 ]
@@ -455,6 +460,12 @@ def bloom_signal(row, status, event_type, delta):
 
 def apply_exit_rules(prev_row, status):
     if status == "DATA_ISSUE":
+        # 统计连续 DATA_ISSUE 天数，超期后移出观察池
+        prev_days = safe_int(prev_row.get("days_in_data_issue")) if prev_row else 0
+        days = prev_days + 1
+        threshold = CONFIG["pool_rules"]["data_issue_keep_days"]
+        if days > threshold:
+            return "EXIT"
         return status
     consecutive = safe_int(prev_row.get("consecutive_reject")) if prev_row else 0
     if status in {"COOLDOWN", "INVALID"}:
@@ -558,6 +569,8 @@ def state_row(prev_row, row, date_iso, status):
 
     previous_since_active = safe_int(prev_row.get("days_since_active"))
     days_since_active = 0 if is_active_status(status) else previous_since_active + 1
+    prev_data_issue_days = safe_int(prev_row.get("days_in_data_issue"))
+    days_in_data_issue = prev_data_issue_days + 1 if status == "DATA_ISSUE" else 0
     consecutive_reject = safe_int(prev_row.get("consecutive_reject"))
     if status in {"COOLDOWN", "INVALID", "EXIT"}:
         consecutive_reject += 1
@@ -571,6 +584,7 @@ def state_row(prev_row, row, date_iso, status):
         "last_seen": date_iso,
         "days_tracked": str(days_tracked),
         "days_in_observation": str(days_in_observation),
+        "days_in_data_issue": str(days_in_data_issue),
         "days_since_active": str(days_since_active),
         "consecutive_reject": str(consecutive_reject),
         "bloom_status": status,
@@ -601,6 +615,7 @@ def state_row(prev_row, row, date_iso, status):
         "next_watch_point": next_watch_point,
         "contraction_count": str(row.get("contraction_count", "")),
         "contraction_pcts": str(row.get("contraction_pcts", "")),
+        "contraction_days": str(row.get("contraction_days", "")),
         "volume_pattern": str(row.get("volume_pattern", "")),
         "strategy_version": STRATEGY_VERSION,
     }
@@ -659,6 +674,248 @@ def missing_data_row(prev_row, date_iso):
 
 def compact_row(row):
     return {field: row.get(field, "") for field in STATE_FIELDS}
+
+
+# ── LLM 解读：术语翻译映射 ──
+
+_STAGE_CN = {
+    "VCP_MATURE": "VCP成熟期（收缩收敛、接近突破点）",
+    "VCP_FORMING": "VCP形成期（收缩结构构建中）",
+    "VCP_EARLY": "VCP早期（刚进入观察，结构尚不完整）",
+    "VCP_TIGHT": "VCP紧凑期（波动极度收窄）",
+}
+
+_VOLUME_CN = {
+    "drying": "缩量枯竭（近5日均量远低于20日均量，卖压衰竭）",
+    "decreasing": "逐轮缩量（每轮收缩成交量递减）",
+    "mixed": "量能不稳定（各轮收缩量能无明显规律）",
+}
+
+_RISK_FLAG_CN = {
+    "DOWNTREND": "均线空排（MA20<MA60且价格在MA60下方）",
+    "MA20_DECLINE": "MA20均线下行",
+    "DEEP_FALL": "深度回撤（距60日高点超20%）",
+    "OVERHEAT_CHG5": "短期过热（5日涨幅过大）",
+    "FAR_ABOVE_MA20": "远离MA20均线",
+    "EXTENDED_FROM_MA20": "远离MA20均线",
+    "VOLUME_STALL": "放量滞涨",
+    "LONG_UPPER_SHADOW": "长上影线抛压",
+}
+
+_RISK_LEVEL_CN = {
+    "LOW": "低风险",
+    "MEDIUM": "中风险",
+    "HIGH": "高风险",
+    "HARD": "硬风险阻断（存在结构性缺陷，不适合入场）",
+}
+
+_BLOOM_STATUS_CN = {
+    "MATURE": "成熟观察",
+    "FORMING": "形成中观察",
+    "EARLY": "早期观察",
+    "RISK_BLOCKED": "风险阻断",
+    "TRIGGERED": "已触发信号",
+}
+
+
+def _translate_risk_flags(flags_str: str) -> str:
+    """将 DOWNTREND;MA20_DECLINE 翻译为中文短语列表。"""
+    if not flags_str:
+        return "无"
+    parts = [s.strip() for s in flags_str.split(";") if s.strip()]
+    translated = [_RISK_FLAG_CN.get(p, p) for p in parts]
+    return "；".join(translated)
+
+
+def _describe_volume_trend(contractions: list) -> str:
+    """从逐轮收缩的 avg_volume 提炼量能变化趋势，只描述数据不做判断。
+
+    返回如：
+      - "178万→138万→162万（末轮较首轮-9%，整体持平）"
+      - "2.4千万→1.7千万→1.3千万（逐轮递减，末轮较首轮-46%）"
+      - "1.5千万→2.1千万→1.4千万（波动，末轮较首轮-3%）"
+    """
+    if not contractions or len(contractions) < 2:
+        return "量能数据不足"
+
+    vols = []
+    for c in contractions:
+        v = c.get("avg_volume", 0)
+        try:
+            vols.append(float(v))
+        except (ValueError, TypeError):
+            vols.append(0)
+
+    n = len(vols)
+
+    def _fmt(v):
+        if v >= 1e7:
+            return f"{v/1e7:.1f}千万"
+        elif v >= 1e4:
+            return f"{v/1e4:.0f}万"
+        else:
+            return f"{v:.0f}"
+
+    vols_str = "→".join(_fmt(v) for v in vols)
+    first_v, last_v = vols[0], vols[-1]
+    change = (last_v - first_v) / first_v * 100 if first_v > 0 else 0
+
+    # 趋势定性
+    if n >= 3:
+        # 检查是否单调递减
+        decreasing = all(vols[i] >= vols[i+1] for i in range(n-1))
+        increasing = all(vols[i] <= vols[i+1] for i in range(n-1))
+        if decreasing:
+            return f"{vols_str}（逐轮递减，末轮较首轮{change:+.0f}%）"
+        if increasing:
+            return f"{vols_str}（逐轮递增，末轮较首轮{change:+.0f}%）"
+
+    # 看首尾变化幅度
+    if change > 30:
+        return f"{vols_str}（末轮较首轮+{change:.0f}%，明显放量）"
+    if change < -30:
+        return f"{vols_str}（末轮较首轮{change:.0f}%，明显缩量）"
+    if abs(change) <= 15:
+        return f"{vols_str}（末轮较首轮{change:+.0f}%，整体持平）"
+
+    return f"{vols_str}（末轮较首轮{change:+.0f}%）"
+
+
+def _build_stock_context(r: dict, contractions: list = None) -> dict:
+    """将 bloom 内部字段重组为 LLM 可理解的中文上下文。"""
+    flags_cn = _translate_risk_flags(r.get("structure_risk_flags", ""))
+    stage_raw = r.get("model2_stage", "")
+    risk_raw = r.get("risk_level", "")
+    bloom_raw = r.get("bloom_status", "")
+
+    # 均线上下文
+    close = r.get("close", "")
+    ma20 = r.get("MA20", "")
+    ma60 = r.get("MA60", "")
+    if close and ma20 and ma60:
+        try:
+            c, m20, m60 = float(close), float(ma20), float(ma60)
+            above_ma60 = "站上" if c > m60 else "低于"
+            ma_context = f"收盘{c}，MA20={m20}，MA60={m60}（价格{above_ma60}MA60）"
+        except (ValueError, TypeError):
+            ma_context = f"收盘{close}，MA20={ma20}，MA60={ma60}"
+    else:
+        ma_context = ""
+
+    # 枢轴上下文
+    pivot = r.get("pivot_price", "")
+    pivot_dist = r.get("pivot_distance", "")
+    if pivot and pivot_dist is not None and pivot_dist != "":
+        try:
+            pd_val = float(pivot_dist)
+            if pd_val < -2:
+                pivot_context = f"枢轴{pivot}元，距突破位{pd_val:+.1f}%（尚未突破）"
+            elif pd_val > 2:
+                pivot_context = f"枢轴{pivot}元，距突破位{pd_val:+.1f}%（已突破）"
+            else:
+                pivot_context = f"枢轴{pivot}元，紧贴突破位（{pd_val:+.1f}%）"
+        except (ValueError, TypeError):
+            pivot_context = f"枢轴{pivot}元"
+    else:
+        pivot_context = ""
+
+    # 量能趋势：用逐轮明细替代 volume_pattern 标签
+    volume_detail = _describe_volume_trend(contractions) if contractions else "量能数据暂缺"
+
+    return {
+        "code": r.get("code", ""),
+        "name": r.get("name", ""),
+        "结构阶段": _STAGE_CN.get(stage_raw, stage_raw),
+        "Bloom状态": _BLOOM_STATUS_CN.get(bloom_raw, bloom_raw),
+        "综合评分": f"{r.get('structure_score', '')}分",
+        "风险等级": _RISK_LEVEL_CN.get(risk_raw, risk_raw),
+        "风险标记": flags_cn,
+        "收缩与量能": (
+            f"{r.get('contraction_count', '')}轮收缩，幅度{r.get('contraction_pcts', '')}；"
+            f"量能趋势：{volume_detail}"
+        ),
+        "关键位置": "；".join(filter(None, [ma_context, pivot_context])),
+    }
+
+
+def call_llm_insights(watching_rows, quant_results=None):
+    """为每只重点观察标的生成自然语言解读。
+
+    调用 DeepSeek API，先将内部编码翻译为中文术语再传入，
+    返回 {code: insight_text} 字典。API 不可用时返回空字典。
+    """
+    api_key = os.environ.get("DEEPSEEK_API_KEY")
+    if not api_key:
+        return {}
+
+    model = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
+    base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
+
+    # 建立 code → contractions 的查找表（从 quant 原始结果中取）
+    contractions_by_code = {}
+    if quant_results:
+        for item in quant_results:
+            code = normalize_code(item.get("code"))
+            if code:
+                cs = item.get("contractions", [])
+                if cs:
+                    contractions_by_code[code] = cs
+
+    stocks_data = []
+    for r in watching_rows:
+        code = r.get("code", "")
+        all_cs = contractions_by_code.get(code, [])
+        # 只取 VCP 有效收缩轮次（与 contraction_count 对齐）
+        cc = int(r.get("contraction_count", 0)) if r.get("contraction_count") else 0
+        if cc > 0 and len(all_cs) >= cc:
+            contractions = all_cs[-cc:]
+        else:
+            contractions = all_cs
+        stocks_data.append(_build_stock_context(r, contractions))
+
+    system_prompt = (
+        "你是A股量价形态（VCP）解读助手。根据每只股票的结构化数据，"
+        "生成一句简洁的中文解读（40-60字），涵盖三个要点：\n"
+        "① 结构状态——收缩是否收敛、量能是否衰竭\n"
+        "② 关键位置——与枢轴、均线的关系\n"
+        "③ 观察方向——等突破确认 / 等风险释放 / 等结构改善\n\n"
+        "术语参考：\n"
+        "- VCP（波动收缩形态）：上升趋势中多轮回调，每轮波幅递减、量能萎缩，"
+        "表明卖压衰竭、筹码锁定，是潜在突破前兆\n"
+        "- 枢轴（pivot）：前期波段高点，股价放量突破此位视为结构完成\n"
+        "- 缩量枯竭：成交量萎缩至极低水平，卖方力量耗尽，是正面信号\n"
+        "- 逐轮缩量：每轮收缩的成交量递减，筹码趋于锁定\n"
+        "- 均线空排：短期均线在长期均线下方，处于下跌趋势中\n"
+        "- 短期过热：近期涨幅过大，追涨风险高，需等待回调\n\n"
+        "规则：只使用输入中已有的数据，不得引入未提供的外部事实。"
+        "必须输出合法 JSON 对象，格式为："
+        '{"insights":[{"code":"...","insight":"..."}]}'
+    )
+
+    try:
+        resp = requests.post(
+            f"{base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": json.dumps(stocks_data, ensure_ascii=False)},
+                ],
+                "response_format": {"type": "json_object"},
+                "stream": False,
+                "temperature": 0.3,
+                "max_tokens": 2000,
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        content = data["choices"][0]["message"].get("content", "")
+        parsed = json.loads(content)
+        return {item["code"]: item["insight"] for item in parsed.get("insights", [])}
+    except Exception:
+        return {}
 
 
 def build_bloom(payload, previous_payload, date_yy, allow_partial=False):
@@ -723,8 +980,20 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False):
         "valuation_candidates": [r for r in rows if r["valuation_candidate"] == "true"],
         "watching": [r for r in rows if r.get("model2_stage") in {"VCP_FORMING", "VCP_MATURE", "VCP_TIGHT"}
                      or r.get("bloom_status") == "TRIGGERED"
-                     or r.get("model2_setup_signal") in {"PULLBACK_BUY", "RETEST_BUY"}],
+                     or r.get("model2_setup_signal") in {"PULLBACK_BUY", "RETEST_BUY"}
+                     or (r.get("model2_stage") == "VCP_EARLY"
+                         and safe_float(r.get("structure_score")) >= 60)],
     }
+
+    # ── LLM 解读：为重点观察标的生成自然语言洞察 ──
+    watching = sections.get("watching", [])
+    if watching:
+        insights = call_llm_insights(watching, results)
+        for r in watching:
+            code = r.get("code", "")
+            if code in insights:
+                r["llm_insight"] = insights[code]
+
     persisted_rows = [r for r in rows if r.get("bloom_status") != "EXIT"]
 
     summary = {
@@ -788,6 +1057,23 @@ def table_lines(rows, columns):
     return lines
 
 
+def _format_contraction_detail(cc, pcts, days):
+    """拼接触收缩详情行。将百分比和天数逐段嵌入，如：
+    ↳ 3段：-21.34%（18天） -> -7.83%（3天） -> -6.93%（5天）
+    """
+    pct_parts = [p.strip() for p in pcts.split("->")]
+    day_parts = [d.strip() for d in days.split("->")] if days else []
+
+    segments = []
+    for i, p in enumerate(pct_parts):
+        if i < len(day_parts):
+            segments.append(f"{p}（{day_parts[i]}天）")
+        else:
+            segments.append(p)
+
+    return f"↳ {cc}段：" + " -> ".join(segments)
+
+
 def build_markdown(bloom):
     summary = bloom["summary"]
     sections = bloom["sections"]
@@ -833,28 +1119,25 @@ def build_markdown(bloom):
         def _mark_risk(rl):
             return f"⚠️{rl}" if rl in ("HIGH", "HARD") else rl
 
-        shown = watching[:20]
-        for r in shown:
+        for r in watching:
             risk = _mark_risk(r.get("risk_level", ""))
             cc = r.get("contraction_count", "") or ""
             pcts = r.get("contraction_pcts", "") or ""
-            vp = r.get("volume_pattern", "") or ""
+            days = r.get("contraction_days", "") or ""
+            insight = r.get("llm_insight") or r.get("watch_reason", "")
 
             main = [
                 r.get("code", ""), r.get("name", ""),
                 r.get("model2_stage", ""), r.get("bloom_status", ""),
                 r.get("structure_score", ""), risk,
-                cc, r.get("watch_reason", ""),
+                cc, insight,
             ]
             lines.append("| " + " | ".join(str(c) for c in main) + " |")
 
-            detail = f"↳ {cc}段：{pcts}"
-            if vp:
-                detail += f"，量能 {vp}"
-            sub = [""] * 7 + [detail]
-            lines.append("| " + " | ".join(sub) + " |")
-        if len(watching) > 20:
-            lines.append(f"\n> 共 {len(watching)} 只，以上展示前 20。")
+            if cc and pcts:
+                detail = _format_contraction_detail(cc, pcts, days)
+                sub = [""] * 7 + [detail]
+                lines.append("| " + " | ".join(sub) + " |")
     else:
         lines.extend(["", "*今日无符合条件的结构*", ""])
     lines.append("")
@@ -919,7 +1202,26 @@ def write_markdown(date_yy, markdown):
     return path
 
 
+def _load_dotenv():
+    """加载本地 .env 中的 KEY=VALUE，不覆盖已有环境变量。"""
+    env_path = Path(PROJECT_ROOT) / ".env"
+    if not env_path.exists():
+        return
+    with open(env_path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
 def main():
+    _load_dotenv()
+
     parser = argparse.ArgumentParser(description="Huaxin Quant Bloom signal layer")
     parser.add_argument("--date", help="Bloom 日期，支持 YYMMDD 或 YYYY-MM-DD；默认取最新 quant run")
     parser.add_argument("--allow-partial", action="store_true", help="允许单股/多股/测试模式生成 Bloom 输出")

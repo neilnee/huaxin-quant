@@ -53,6 +53,13 @@
     "ma20_decline_slope": -0.1,
     "deep_fall_distance_high_60_pct": -30.0,
     "deep_fall_chg20_pct": -15.0,
+    "trend_background": {
+      "require_above_ma120": false,
+      "downgrade_if_below_ma120": true,
+      "bottom_lift_pct": 0.0,
+      "strict_reject_no_lift": true,
+      "description": "VCP要求上升趋势背景。close<MA120时降级(底部抬升)或拒绝(低点下移)。bottom_lift_pct: 末轮低点相对首轮低点允许的下降幅度"
+    },
     "risk_scores": {
       "OVERHEAT_CHG5": 25,
       "OVERHEAT_CHG20": 25,
@@ -62,7 +69,8 @@
       "VOLUME_STALL": 15,
       "DOWNTREND": 35,
       "MA20_DECLINE": 15,
-      "DEEP_FALL": 35
+      "DEEP_FALL": 35,
+      "BELOW_MA120": 20
     },
     "hard_reject_flags": [
       "OVERHEAT_CHG5",

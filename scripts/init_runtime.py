@@ -36,7 +36,7 @@ RUNTIME_DIRS = [
     "reports/archive/valuation",
     "signals",
     "refer",
-    "tmp/scripts",
+    ".tmp/scripts",
 ]
 
 CSV_TEMPLATES = {

@@ -2,6 +2,7 @@
 """Run model 1 end-to-end: fetch xuangu segments, then process the pool."""
 import argparse
 import os
+import subprocess
 import sys
 import time
 from dataclasses import dataclass

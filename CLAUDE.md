@@ -10,41 +10,15 @@ Huaxin Quant，多模型流水线的股票花期发现与跟踪系统。每个�
 
 ### 规则一：Git 操作必须走云盘路径
 
-本地目录没有 `.git`，所有 Git 操作使用 `-C` 指向云盘仓库，避免反复触发授权：
-
-```
-git -C <source-repo> status
-git -C <source-repo> diff
-git -C <source-repo> add <file>
-git -C <source-repo> commit -m "..."
-```
-
-**禁止**在本地目录执行 `git` 命令（会因找不到 `.git` 而失败或触发额外授权）。
+本地目录没有 `.git`，所有 Git 操作使用 `git -C <云盘路径>`，**禁止**在本地目录直接执行 `git`。
 
 ### 规则二：临时脚本统一写到 `.tmp/` 目录
 
-`.tmp/` 目录已在 `settings.json` 中预授权读写编辑（`Read/Write/Edit(.tmp/**)`），写入和执行不会触发授权弹窗。脚本放 `.tmp/scripts/` 子目录下：
+`.tmp/` 已在 `settings.json` 预授权，直接读写不弹窗。用完 `rm -rf .tmp/scripts/`。
 
-```
-✅ Write(.tmp/scripts/calc.py)  →  Bash(python3 .tmp/scripts/calc.py)
-❌ Write(calc.py)              →  Bash(python3 calc.py)           ← 触发授权
-❌ Bash(python3 -c "...")      →  单行 python3 -c 无法预授权       ← 触发授权
-❌ Bash(python3 << *)          →  多行 heredoc 匹配不了            ← 反复弹授权
-```
+### 规则三：脚本始终走本地 symlink 路径调用
 
-用完清理：`rm -rf .tmp/scripts/`（保留 `.tmp/` 目录本身）。
-
-### 规则三：脚本始终走本地工作区 symlink 路径调用
-
-脚本通过 `quant_lab/scripts/`（symlink → 云盘）调用，`PROJECT_ROOT` 自然指向本地工作区：
-
-```bash
-# ✅ 正确 — PROJECT_ROOT = /Users/neil/ai/quant_lab
-python3 /Users/neil/ai/quant_lab/scripts/quant_filter.py --pool pool/pool_260706.csv
-
-# ❌ 错误 — PROJECT_ROOT = 云盘，读不到数据目录
-python3 ~/Library/CloudStorage/OneDrive-个人/huaxin_quant/scripts/quant_filter.py ...
-```
+`quant_lab/scripts/` 是 symlink，走这个路径调用 `PROJECT_ROOT` 自然指向本地工作区。走云盘真实路径会导致读不到数据目录。
 
 ## 🧭 模块使用指南
 

@@ -1047,6 +1047,23 @@ def table_lines(rows, columns):
     return lines
 
 
+def _format_contraction_detail(cc, pcts, days):
+    """拼接触收缩详情行。将百分比和天数逐段嵌入，如：
+    ↳ 3段：-21.34%（18天） -> -7.83%（3天） -> -6.93%（5天）
+    """
+    pct_parts = [p.strip() for p in pcts.split("->")]
+    day_parts = [d.strip() for d in days.split("->")] if days else []
+
+    segments = []
+    for i, p in enumerate(pct_parts):
+        if i < len(day_parts):
+            segments.append(f"{p}（{day_parts[i]}天）")
+        else:
+            segments.append(p)
+
+    return f"↳ {cc}段：" + " -> ".join(segments)
+
+
 def build_markdown(bloom):
     summary = bloom["summary"]
     sections = bloom["sections"]
@@ -1108,9 +1125,7 @@ def build_markdown(bloom):
             lines.append("| " + " | ".join(str(c) for c in main) + " |")
 
             if cc and pcts:
-                detail = f"↳ {cc}段：{pcts}"
-                if days:
-                    detail += f"（{days}天）"
+                detail = _format_contraction_detail(cc, pcts, days)
                 sub = [""] * 7 + [detail]
                 lines.append("| " + " | ".join(sub) + " |")
     else:

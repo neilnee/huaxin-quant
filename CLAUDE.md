@@ -52,7 +52,7 @@ python3 ~/Library/CloudStorage/OneDrive-个人/huaxin_quant/scripts/quant_filter
 
 ### 模型一：海选初筛 → `pool/pool_<date>.csv`
 
-全市场基本面过滤 + 行业排除 + 软标签评分。执行方式参考 `instructions/01-pool.md`，策略参数见 `strategies/01-pool.json`。
+全市场基本面过滤 + 行业排除 + 软标签评分。执行方式参考 `instructions/01-pool.md`。
 
 ```bash
 python3 scripts/run_pool.py                  # 端到端
@@ -62,7 +62,7 @@ python3 scripts/run_pool.py --force-refresh  # 强制重拉
 
 ### 模型二：VCP 精筛 → `quant/quant_<date>.csv`
 
-逐只识别 VCP 收缩结构、量能趋势、风险标记。执行方式参考 `instructions/02-quant.md`，策略参数见 `strategies/02-quant.json`。
+逐只识别 VCP 收缩结构、量能趋势、风险标记。执行方式参考 `instructions/02-quant.md`。
 
 ```bash
 python3 scripts/quant_filter.py                          # 全量
@@ -72,7 +72,7 @@ python3 scripts/quant_filter.py --codes 300442,688676    # 多只
 
 ### Bloom 信号层 → `bloom/bloom_<date>.md`
 
-消费模型二 JSON，维护跨日信号生命周期，LLM 解读重点观察标的。执行方式参考 `instructions/signal-bloom.md`，策略参数见 `strategies/04-bloom.json`。
+消费模型二 JSON，维护跨日信号生命周期，LLM 解读重点观察标的。执行方式参考 `instructions/signal-bloom.md`。
 
 ```bash
 python3 scripts/bloom.py [--date 260706]

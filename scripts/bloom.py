@@ -79,6 +79,7 @@ STATE_FIELDS = [
     "llm_insight",
     "contraction_count",
     "contraction_pcts",
+    "contraction_days",
     "volume_pattern",
     "strategy_version",
 ]
@@ -604,6 +605,7 @@ def state_row(prev_row, row, date_iso, status):
         "next_watch_point": next_watch_point,
         "contraction_count": str(row.get("contraction_count", "")),
         "contraction_pcts": str(row.get("contraction_pcts", "")),
+        "contraction_days": str(row.get("contraction_days", "")),
         "volume_pattern": str(row.get("volume_pattern", "")),
         "strategy_version": STRATEGY_VERSION,
     }
@@ -1094,6 +1096,7 @@ def build_markdown(bloom):
             risk = _mark_risk(r.get("risk_level", ""))
             cc = r.get("contraction_count", "") or ""
             pcts = r.get("contraction_pcts", "") or ""
+            days = r.get("contraction_days", "") or ""
             insight = r.get("llm_insight") or r.get("watch_reason", "")
 
             main = [
@@ -1106,6 +1109,8 @@ def build_markdown(bloom):
 
             if cc and pcts:
                 detail = f"↳ {cc}段：{pcts}"
+                if days:
+                    detail += f"（{days}天）"
                 sub = [""] * 7 + [detail]
                 lines.append("| " + " | ".join(sub) + " |")
     else:

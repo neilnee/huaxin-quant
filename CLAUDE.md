@@ -111,59 +111,24 @@ cat bloom/bloom_<YYMMDD>.md
 
 ## 目录架构
 
-```
-quant_lab/（本地工作区 · Huaxin Quant 运行实例）
-│
-├── .claude/                        本地目录 · Claude Code 项目配置
-│   ├── settings.json          🔗→ 云盘 .claude/settings.json（Git 版本管理）
-│   └── settings.local.json        本地机特定权限（不入 Git）
-│
-├── instructions/              🔗→ 云盘 · 模型执行指令卡（Git 管理）
-├── scripts/                   🔗→ 云盘 · 辅助 Python 脚本（Git 管理）
-├── CLAUDE.md                  🔗→ 云盘 · 本文件（Git 管理）
-├── dev_logs/                      本地 · 开发复盘日志（不纳入公开核心仓库）
-│
-├── cache/                         本地 · 所有缓存数据，脚本自动管理
-│   ├── daily/                      模型二+四共享日线缓存（<code>_<YYMMDD>.pkl）
-│   ├── xuangu/                     模型一选股数据缓存
-│   ├── financial/                  模型三财报缓存（_raw.json 保留）
-│   ├── briefing/                   模型三简报册缓存
-│   ├── calc_params/                模型三估值引擎输入参数 JSON
-│   ├── calc_results/               模型三估值引擎输出结果 JSON
-│   ├── research/                   mx-search 研报搜索结果
-│   ├── reviews/                    LLM 每日复盘输入包（可重建）
-│   └── zixuan/                     自选股同步本地缓存（zixuan.csv）
-│
-├── pool/                           本地 · 模型一（海选初筛）输出
-├── quant/                          本地 · 模型二（量价精筛）输出
-├── bloom/                          本地 · Bloom 信号层输出
-│   └── state/                      机器状态表、事件流水、Bloom 输入包
-├── reports/                        本地 · 人类可读报告
-│   ├── valuation/                  模型三个股估值报告
-│   ├── indexes/                    valuation_index.csv + valuation_ranking.csv
-│   └── archive/valuation/          估值报告历史归档
-├── signals/                        本地 · 模型四（择时跟踪）工作区
-│                                    每日信号报告 + core_pool.csv + positions.csv
-│                                    + batches.csv + trade_log.csv
-├── refer/                          本地 · 参考资料（策略文档、研究 PDF 等）
-├── SIGNALS.md                      本地 · 最新信号报告快捷副本
-├── TODO.md                         本地 · 项目待办
-├── .env                            本地 · 环境变量（settings.json deny 保护）
-└── .tmp/                            临时目录（settings.json 预授权读写编辑）
-    └── scripts/                     临时脚本，用完即删
+本地工作区 `quant_lab/`（`🔗` = symlink → 云盘 Git 管理）：
 
+| 目录 | 用途 | 来源 |
+|------|------|------|
+| `instructions/` | 模型执行指令卡 | 🔗 云盘 |
+| `scripts/` | 辅助 Python 脚本 | 🔗 云盘 |
+| `strategies/` | 策略 JSON 配置 | 🔗 云盘 |
+| `CLAUDE.md` | 本文件 | 🔗 云盘 |
+| `cache/` | 缓存：daily/ xuangu/ financial/ research/ 等 | 本地 |
+| `pool/` | 模型一输出 | 本地 |
+| `quant/` | 模型二输出 | 本地 |
+| `bloom/` | Bloom 信号报告 + state/ | 本地 |
+| `reports/` | 估值报告 + indexes/ | 本地 |
+| `position/` | 持仓账本 | 本地 |
+| `.tmp/` | 临时脚本（预授权，用完即删） | 本地 |
+| `.env` | 环境变量（不入 Git） | 本地 |
 
-source repo/（云盘 · Huaxin Quant Git 仓库）
-│
-├── .git/                           Git 仓库
-├── .gitignore
-├── .claude/
-│   └── settings.json               Claude Code 共享权限策略（Git 管理）
-├── CLAUDE.md
-├── instructions/                   各模型指令卡
-├── scripts/                        辅助 Python 脚本
-└── WORKFLOW.md                     日常执行工作流
-```
+> 云盘 `source repo/` 只放 Git 管理源码，数据产出全部在本地。
 
 ## 开发约定
 

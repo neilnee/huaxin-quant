@@ -9,7 +9,7 @@ Huaxin Quant，多模型流水线的股票花期发现与跟踪系统。Codex �
 - `<runtime-workspace>`：本地工作区，作为 Huaxin Quant 的运行实例，负责日常运行、缓存、输出、报告。
 - `<source-repo>`：云盘 Git 仓库，负责 Huaxin Quant 源代码、指令卡和开发文档版本管理。
 
-`instructions/`、`scripts/`、`CLAUDE.md` 在本地工作区中可以是指向源码仓库的软链。缓存、输出目录和本地开发日志默认不进 Git。
+`instructions/`、`scripts/`、`strategies/`、`CLAUDE.md`、`AGENTS.md`、`TODO.md` 在本地工作区中可以是指向源码仓库的软链。缓存、输出目录、持仓账本和本地开发日志默认不进 Git。
 
 ## 核心规则
 
@@ -26,14 +26,29 @@ git -C <source-repo> commit -m "..."
 
 禁止在 `<runtime-workspace>` 直接执行普通 `git status`、`git diff`、`git add`、`git commit`。
 
-### 2. 源文件走 Git，数据产物不提交
+### 2. 脚本始终走本地 symlink 路径调用
+
+运行项目脚本时必须使用本地工作区路径，例如：
+
+```bash
+python3 scripts/run_pool.py
+python3 scripts/quant_filter.py
+python3 scripts/bloom.py
+python3 scripts/position.py
+```
+
+`quant_lab/scripts/` 是指向云盘源码仓库的 symlink。通过本地 symlink 调用时，脚本内的 `PROJECT_ROOT` 自然指向本地工作区，可以正确读取 `cache/`、`pool/`、`quant/`、`bloom/`、`reports/`、`position/` 等运行数据。不要用云盘真实路径直接调用脚本。
+
+### 3. 源文件走 Git，数据产物不提交
 
 纳入 Git 的内容：
 
 - `CLAUDE.md`
 - `AGENTS.md`
+- `TODO.md`
 - `instructions/*.md`
 - `scripts/*.py`
+- `strategies/*.json`
 - 必要的项目配置和开发文档
 
 默认不纳入 Git 的内容：
@@ -43,15 +58,15 @@ git -C <source-repo> commit -m "..."
 - `quant/`
 - `bloom/`
 - `reports/`
-- `signals/`
-- `refer/`
+- `position/`
 - `dev_logs/`
 - `.env`
-- `tmp/`
+- `.tmp/`
+- `tmp_*/`
 
 运行模型产生的 CSV、JSON、PKL、报告文件只作为本地结果使用，除非用户明确要求提交。
 
-### 3. 改规则先改指令卡，再改脚本
+### 4. 改规则先改指令卡，再改脚本
 
 每个模型由 `instructions/` 下的指令卡定义规则，`scripts/` 下的脚本负责稳定执行。
 
@@ -65,36 +80,17 @@ git -C <source-repo> commit -m "..."
 
 不要只改脚本不改指令卡，也不要只改指令卡不更新脚本。
 
-### 4. 固定指令卡命名
+指令卡保持精简：只保留 LLM 执行所需内容（流程、规则、约束）。公式速查、报告模板、字段定义等放入配对 `*-ref.md`，按需查阅。
 
-当前已改为 Git 管理历史，不再靠文件名版本号管理。
-
-模型主指令卡保持固定文件名：
-
-- `instructions/01-pool.md`
-- `instructions/02-quant.md`
-- `instructions/03-valuation.md`
-- `instructions/03-valuation-ref.md`
-- `instructions/04-tracker.md`
-- `instructions/04-tracker-ref.md`
-
-模型四内部信号模块指令卡统一放在 `instructions/`，使用 `signal-` 前缀命名：
-
-- `instructions/signal-bloom.md`
-- 后续可新增 `instructions/signal-valuation-queue.md`
-- 后续可新增 `instructions/signal-position.md`
-
-禁止再新增 `*-dev.md`、`*-vX.Y.md` 或 `archive/` 版本副本。
-
-### 5. 临时脚本放 `tmp/`
+### 5. 临时脚本放 `.tmp/`
 
 需要临时分析或一次性脚本时，统一写到：
 
 ```text
-tmp/scripts/
+.tmp/scripts/
 ```
 
-优先使用项目已有脚本和标准命令。临时脚本用完后清理 `tmp/scripts/`，保留 `tmp/` 目录本身。
+优先使用项目已有脚本和标准命令。临时脚本用完后清理 `.tmp/scripts/`，保留 `.tmp/` 目录本身。
 
 Codex 执行时优先用 `rg`、`sed`、`python3 -m py_compile`、项目脚本等稳定命令。不要用 ad-hoc 命令污染项目根目录。
 
@@ -104,136 +100,70 @@ Codex 执行时优先用 `rg`、`sed`、`python3 -m py_compile`、项目脚本�
 quant_lab/  # Huaxin Quant 本地运行实例
 ├── instructions/      -> 云盘仓库，模型指令卡
 ├── scripts/           -> 云盘仓库，模型执行脚本
+├── strategies/         -> 云盘仓库，策略 JSON 配置
 ├── CLAUDE.md          -> 云盘仓库，Claude 工程规范
 ├── AGENTS.md          -> Codex 工程规范
+├── TODO.md            -> 云盘仓库，项目待办
 ├── dev_logs/          本地开发复盘日志（不纳入公开核心仓库）
-├── cache/             本地缓存
+├── cache/             本地缓存（daily/xuangu/financial/research 等）
 ├── pool/              模型一输出
 ├── quant/             模型二输出
-├── bloom/             模型二后花期观察状态
-├── reports/           估值报告与索引（valuation/indexes/archive）
-├── signals/           模型四信号跟踪
-├── refer/             本地参考资料
-├── tmp/               临时脚本和临时文件
+├── bloom/             Bloom 信号报告与 state/
+├── reports/           估值报告与 indexes/
+├── position/          本地持仓账本
+├── .tmp/              临时脚本和临时文件（用完清理）
 └── .env               本地密钥配置，不入 Git
 ```
 
-## 模型流水线
+## 模块使用指南
 
-### 模型一：股票池初筛
+以下只列常用命令，详细流程、规则、字段口径和输出结构见对应指令卡、策略 JSON 和脚本实现。Codex 执行或修改某个模块前，先读对应指令卡。
 
-入口：
+### 模型一：海选初筛（Pool）
+
+全市场基本面过滤 + 行业排除 + 软标签评分。执行方式参考 `instructions/01-pool.md`。
 
 ```bash
 python3 scripts/run_pool.py
-```
-
-常用参数：
-
-```bash
-python3 scripts/run_pool.py --force-refresh
 python3 scripts/run_pool.py --skip-fetch
-python3 scripts/run_pool.py --no-process
-python3 scripts/run_pool.py --dry-run
+python3 scripts/run_pool.py --force-refresh
 ```
 
-职责：
+### 模型二：VCP 精筛（Quant）
 
-- 阶段一：调用 mx-xuangu 分段拉取基础股票池。
-- 阶段二到五：调用 `process_pool.py` 做硬过滤、行业排除、软标签、CSV 输出和摘要。
-
-模型一当前硬规则包括市值 `>= 50亿`、净利润周期兼容、OCF/NP、负债率、毛利率、行业排除等。
-
-### 模型二：VCP/P2/P3 量价分析
-
-入口：
+逐只识别 VCP 收缩结构、量能趋势、风险标记。执行方式参考 `instructions/02-quant.md`。
 
 ```bash
-python3 scripts/quant_filter.py --pool pool/pool_<YYMMDD>.csv
+python3 scripts/quant_filter.py
+python3 scripts/quant_filter.py --code 603444
+python3 scripts/quant_filter.py --codes 300442,688676
 ```
 
-单股分析：
+### Bloom 信号层
+
+消费模型二 JSON，维护跨日信号生命周期，LLM 解读重点观察标的。执行方式参考 `instructions/signal-bloom.md`。
 
 ```bash
-python3 scripts/quant_filter.py --code 300604 --name 长川科技
+python3 scripts/bloom.py
+python3 scripts/bloom.py --date 260706
 ```
 
-职责：
+### 持仓管理（Position）
 
-- 拉取或复用日线行情缓存。
-- 计算均线、斜率、波动收缩、缩量、涨跌幅、位置和风险标记。
-- 输出 `P1_FORMING`、`P1_TIGHT`、`P1_HIGH`、`P2_PULLBACK`、`P3_RETEST`、`REJECT`。
-- LLM 只允许做可选解释，不参与 P1/P2/P3 判定。
+独立账本：交易流水、当前持仓、每日状态快照。执行方式参考 `instructions/signal-position.md`。
 
-### 模型三：估值分析
-
-入口脚本以当前指令卡为准，核心逻辑在 `scripts/valuate.py`、`scripts/calc_valuation.py`。
-
-职责：
-
-- 获取财务、公告、搜索、研报等信息。
-- 形成估值参数。
-- 用估值引擎计算未来年度估值锚点。
-- 输出报告和排名表。
-
-估值逻辑必须明确说明收入、利润、估值倍数和年度预测假设，禁止不解释地线性外推。
-
-### 模型四：Tracker / Bloom
-
-总控指令卡以 `instructions/04-tracker.md` 为准。当前阶段先实现 Bloom 信号层，规则在 `instructions/signal-bloom.md`，策略参数在 `strategies/04-bloom.json`。
-
-职责：
-
-- Bloom 信号层：消费模型二 JSON，维护观察状态，输出信号质量、风险阻断、估值候选和每日 Bloom 报告。
-- 估值触发层：后续独立实现。
-- 持仓管理层：后续独立实现。
-
-## 缓存和数据口径
-
-| 目录 | 用途 | 规则 |
-|---|---|---|
-| `cache/xuangu/` | 模型一选股 raw 数据 | 默认 5 天有效，超期由脚本跳过 |
-| `cache/daily/` | 模型二/四日线缓存 | 文件名含日期，跨天自动不命中 |
-| `cache/financial/` | 模型三财务缓存 | 同一报告期内可复用 |
-| `cache/calc_params/` | 估值引擎输入参数 | 按日期和股票保存 |
-| `cache/calc_results/` | 估值引擎输出结果 | 按日期和股票保存 |
-
-数据口径必须在指令卡和脚本中保持一致。模型一和模型三的财务报告期选择尤其要谨慎，避免“模型一通过、模型三发现亏损”的跨模型冲突。
-
-## 权限和配置
-
-Claude 权限配置参考：
-
-```text
-.claude/settings.local.json
+```bash
+python3 scripts/position.py add-trade --trade-date 2026-07-06 --code 688676 --name 金盘科技 --side BUY --shares 200 --price 83.89
+python3 scripts/position.py rebuild --as-of 2026-07-06
 ```
 
-Codex 权限配置参考：
+### 模型三：深度估值（Valuation）
 
-```text
-~/.codex/config.toml
+LLM 拆解业务线 + 脚本 DCF/PE 计算，按需手动触发。执行方式参考 `instructions/03-valuation.md`。
+
+```bash
+# 详见 instructions/03-valuation.md
 ```
-
-当前 Codex 项目配置应保持：
-
-```toml
-[projects."<runtime-workspace>"]
-trust_level = "trusted"
-writable_roots = [
-  "<runtime-workspace>",
-  "<source-repo>",
-]
-```
-
-Claude 和 Codex 的权限语法不同，不要求逐字一致，但能力要保持等价：
-
-- 本地工作区可读写。
-- 云盘 Git 仓库可读写。
-- 常用项目脚本可以执行。
-- 金融数据 skill 或底层脚本可调用。
-- `.env` 不提交、不展示密钥。
-
-涉及网络、跨目录写入、删除、重置仓库、安装依赖等高风险操作时，按 Codex 当前权限模型请求确认。
 
 ## 代码编辑规范
 
@@ -244,58 +174,6 @@ Claude 和 Codex 的权限语法不同，不要求逐字一致，但能力要保
 - 注释只解释不直观的业务规则或兼容逻辑。
 - 不做无关重构。
 - 不回滚用户或其他工具产生的改动。
-
-## 验证规范
-
-常用验证：
-
-```bash
-python3 -m py_compile scripts/*.py
-python3 scripts/run_pool.py --dry-run
-python3 scripts/run_pool.py --skip-fetch
-python3 scripts/quant_filter.py --code 300604 --name 长川科技
-```
-
-真实拉取数据会访问外部接口，若当前沙箱无网络权限，按 Codex 权限流程请求联网执行。
-
-验证结果要说明：
-
-- 输入文件和输入标的数量。
-- 输出文件路径。
-- 成功、失败、跳过数量。
-- 关键分层统计。
-- 发现的数据缺口或字段兼容问题。
-
-## 提交规范
-
-提交前：
-
-```bash
-git -C <source-repo> status --short
-git -C <source-repo> diff --stat
-```
-
-确认只提交源文件、指令卡和必要文档，不提交本地数据产物或密钥。
-
-提交信息使用简洁英文动词前缀：
-
-```text
-feat: ...
-fix: ...
-docs: ...
-chore: ...
-```
-
-提交后再检查工作区是否干净：
-
-```bash
-git -C <source-repo> status --short
-```
-
-## 与用户沟通
-
-- 先读代码和指令卡，再判断实现。
-- 能执行就直接执行，不停留在建议层。
-- 长任务中定期说明正在做什么、发现了什么。
-- 最终回复只讲关键结果、验证情况和残留风险。
-- 不暴露 API Key、`.env` 内容或其他敏感配置。
+- 较大改动在 Git feature 分支上直接修改活跃文件；稳定后 commit/merge 保留历史，不靠复制文件发版。
+- 每次完成一组规则变更后，更新 `TODO.md` 勾掉已完成项。
+- mx-search 等 skill 并行执行后可能遗留 `tmp_*/` 目录，每次批量估值或搜索完成后清理。

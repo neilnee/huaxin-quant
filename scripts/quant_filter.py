@@ -452,6 +452,24 @@ def volume_pattern_for_contractions(contractions, latest):
     return "mixed"
 
 
+def contraction_group_has_reset_expansion(group):
+    """Return True when a later pullback is too large to belong to the same VCP."""
+    if len(group) < 2:
+        return False
+    max_ratio = CONTRACTION_CFG.get("max_expansion_ratio")
+    min_reset_pct = CONTRACTION_CFG.get("min_expansion_reset_pct", 0)
+    if not max_ratio:
+        return False
+    for prev, cur in zip(group, group[1:]):
+        prev_abs = abs(safe_float(prev.get("pullback_pct"), 0))
+        cur_abs = abs(safe_float(cur.get("pullback_pct"), 0))
+        if prev_abs <= 0:
+            continue
+        if cur_abs > prev_abs * max_ratio and cur_abs - prev_abs >= min_reset_pct:
+            return True
+    return False
+
+
 def _check_bottom_lifting(contractions, threshold_pct=0.0):
     """检查收缩轮次的低点是否在收敛（底部不再创新低）。
 
@@ -525,6 +543,8 @@ def select_current_vcp_group(df, contractions):
     for size in range(max_size, 0, -1):
         for end in range(len(contractions), size - 1, -1):
             group = contractions[end - size:end]
+            if contraction_group_has_reset_expansion(group):
+                continue
             info = evaluate_vcp_group(df, group)
             if info["structure_valid"]:
                 decrease = contraction_decrease_status(group)
@@ -640,7 +660,7 @@ def detect_vcp_structure(df):
         post_structure_drawdown = invalid_group["post_structure_drawdown"]
 
     if contractions:
-        conditions.append(f"历史{min(len(contractions), CONTRACTION_CFG['max_recent_contractions'])}轮收缩")
+        conditions.append(f"历史扫描共{len(contractions)}轮收缩")
     if count:
         conditions.append(f"{min(count, CONTRACTION_CFG['max_recent_contractions'])}轮有效收缩")
     else:

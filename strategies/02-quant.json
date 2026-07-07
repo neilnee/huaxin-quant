@@ -1,5 +1,5 @@
 {
-  "strategy_version": "model2_quant_v3",
+  "strategy_version": "model2_quant_v4",
   "description": "Model 2 VCP structure and setup signal parameters. This file contains thresholds and weights only; algorithms stay in scripts/quant_filter.py.",
   "vcp": {
     "lookback_days": 120,
@@ -30,6 +30,8 @@
     "max_recent_contractions": 3,
     "strict_decrease_ratio": 0.9,
     "near_decrease_ratio": 1.05,
+    "max_expansion_ratio": 1.5,
+    "min_expansion_reset_pct": 5.0,
     "volume_decrease_ratio": 0.95,
     "volume_dry_up_threshold": 0.85,
     "volume_failed_ratio": 1.2

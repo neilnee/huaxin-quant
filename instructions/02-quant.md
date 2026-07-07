@@ -581,6 +581,15 @@ abs(Cn.pullback) <= abs(Cn-1.pullback) * 1.05
 组内轮次足够，但早期噪声回调不得污染主收缩序列
 ```
 
+相邻收缩轮次允许轻微扩张，但明显扩张会打断旧 VCP 组，后一轮应视为新结构的起点：
+
+```text
+abs(Cn.pullback) > abs(Cn-1.pullback) * 1.50
+且 abs(Cn.pullback) - abs(Cn-1.pullback) >= 5pct
+```
+
+交易含义：VCP 的核心是波动和抛压逐步收敛。若窄幅整理后突然出现大一级别回撤，说明旧收敛结构被破坏，不能为了凑满三段而把它和前面的窄收缩归为同一组。小幅扩张只降低结构质量，不直接重置。
+
 对每个候选 contraction group 计算：
 
 ```text

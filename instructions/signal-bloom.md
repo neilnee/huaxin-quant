@@ -281,6 +281,7 @@ days_tracked
 days_in_observation
 watch_reason
 next_watch_point
+llm_insight
 strategy_version
 ```
 
@@ -303,6 +304,13 @@ bloom/state/bloom_input_<YYMMDD>.json
 6. 数据异常
 7. 待估值候选
 
+LLM 观察要点：
+
+- Bloom 可调用 DeepSeek 为重点观察标的生成 `llm_insight`。
+- 若 LLM 未配置、调用失败或返回不完整，报告必须显式写出 LLM 状态和原因，并回退使用脚本生成的 `watch_reason`。
+- LLM 失败不得影响 Bloom 状态、事件、池子决策和报告生成。
+- 配置了 LLM 但调用失败时，脚本应在写出兜底报告后返回非 0，让执行层可以按联网权限重跑。
+
 ---
 
 ## 十、验收标准
@@ -315,3 +323,5 @@ bloom/state/bloom_input_<YYMMDD>.json
 - `EXIT` 标的必须从滚动状态表移除，后续只能由模型二重新发现并以新生命周期进入。
 - 高结构分但高风险的股票应输出 `RISK_BLOCKED`，而不是 `TRIGGERED` 的正向交易结论。
 - `valuation_candidate` 只代表送估值候选，不代表估值结论或交易建议。
+- LLM 观察要点不得静默失败；每日 summary 和 Markdown 必须能看出 LLM 是成功、部分成功、跳过还是失败。
+- 配置了 LLM 且调用失败时，Bloom 命令不得以成功状态退出。

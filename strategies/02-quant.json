@@ -1,5 +1,5 @@
 {
-  "strategy_version": "model2_quant_v4",
+  "strategy_version": "model2_quant_v5",
   "description": "Model 2 VCP structure and setup signal parameters. This file contains thresholds and weights only; algorithms stay in scripts/quant_filter.py.",
   "vcp": {
     "lookback_days": 120,
@@ -226,6 +226,16 @@
       "A": 80,
       "B": 70,
       "C": 60
+    },
+    "final_score_caps": {
+      "structure_score_lt_50": 78,
+      "structure_score_lt_60": 85,
+      "structure_score_lt_70": 92,
+      "stage_forming": 85,
+      "volume_not_healthy": 85,
+      "extended_from_ma20": 80,
+      "post_structure_gain_gt_20": 80,
+      "distance_ma20_gt_10": 85
     }
   }
 }

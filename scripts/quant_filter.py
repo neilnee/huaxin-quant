@@ -828,11 +828,54 @@ def recent_two_contractions_decreasing(structure):
     return cur_abs <= prev_abs * CONTRACTION_CFG["near_decrease_ratio"]
 
 
-def base_setup_result(hit=False, reason="", score=0, reasons=None, misses=None, **kwargs):
+def cap_setup_score(score, cap, misses, reason):
+    if cap is not None and score > cap:
+        misses.append(reason)
+        return cap
+    return score
+
+
+def finalize_setup_score(pattern_score, reasons, misses, structure, overheat, latest):
+    """Convert setup action quality into final buy-point quality."""
+    final_score = max(0, min(100, int(round(pattern_score))))
+    final_reasons = list(reasons or [])
+    final_misses = list(misses or [])
+    caps = SETUP_SCORING_CFG.get("final_score_caps", {})
+
+    structure_score = safe_float(structure.get("structure_score_estimate"))
+    if structure_score is not None:
+        if structure_score < 50:
+            final_score = cap_setup_score(final_score, caps.get("structure_score_lt_50"), final_misses, "结构分低封顶")
+        elif structure_score < 60:
+            final_score = cap_setup_score(final_score, caps.get("structure_score_lt_60"), final_misses, "结构分一般封顶")
+        elif structure_score < 70:
+            final_score = cap_setup_score(final_score, caps.get("structure_score_lt_70"), final_misses, "结构分未达高质量封顶")
+
+    if structure.get("state") == "VCP_FORMING":
+        final_score = cap_setup_score(final_score, caps.get("stage_forming"), final_misses, "结构尚未成熟封顶")
+
+    if structure.get("volume_pattern") not in {"decreasing", "drying"}:
+        final_score = cap_setup_score(final_score, caps.get("volume_not_healthy"), final_misses, "结构量能不健康封顶")
+
+    if "EXTENDED_FROM_MA20" in overheat.get("risk_flags", []):
+        final_score = cap_setup_score(final_score, caps.get("extended_from_ma20"), final_misses, "距MA20延伸风险封顶")
+
+    if safe_float(structure.get("post_structure_gain"), 0) > 20:
+        final_score = cap_setup_score(final_score, caps.get("post_structure_gain_gt_20"), final_misses, "结构后涨幅偏大封顶")
+
+    if safe_float(latest.get("distance_ma20"), 0) > 10:
+        final_score = cap_setup_score(final_score, caps.get("distance_ma20_gt_10"), final_misses, "距MA20偏离封顶")
+
+    return final_score, final_reasons, final_misses
+
+
+def base_setup_result(hit=False, reason="", score=0, reasons=None, misses=None, pattern_score=None, **kwargs):
     setup_score = max(0, min(100, int(round(score))))
+    setup_pattern_score = setup_score if pattern_score is None else max(0, min(100, int(round(pattern_score))))
     result = {
         "hit": hit,
         "reason": reason,
+        "setup_pattern_score": setup_pattern_score,
         "setup_score": setup_score,
         "setup_quality": setup_quality(setup_score),
         "setup_reasons": reasons or [],
@@ -1040,7 +1083,8 @@ def detect_pullback_buy(df, structure, overheat):
         safe_float(latest.get("MA20_slope"), 0) >= cfg["min_ma20_slope"],
         not any(flag in overheat["risk_flags"] for flag in cfg["blocked_risk_flags"]),
     ]
-    score, reasons, misses = score_pullback_setup(df, structure, volume_ok, volume_reason)
+    pattern_score, reasons, misses = score_pullback_setup(df, structure, volume_ok, volume_reason)
+    score, reasons, misses = finalize_setup_score(pattern_score, reasons, misses, structure, overheat, latest)
     hit = all(hard_conditions) and score >= cfg["min_setup_score"]
     anchor = "MA20" if near_ma20 else "MA60" if near_ma60 else ""
     support = safe_float(latest.get(anchor)) if anchor else safe_float(latest.get("MA20"))
@@ -1063,6 +1107,7 @@ def detect_pullback_buy(df, structure, overheat):
         score,
         reasons,
         misses,
+        pattern_score=pattern_score,
         anchor=anchor,
         support_price=support,
         invalid_price=invalid,
@@ -1100,7 +1145,8 @@ def detect_breakout_buy(df, structure, overheat):
         not is_long_upper_shadow(latest),
         not any(flag in overheat["risk_flags"] for flag in cfg["blocked_risk_flags"]),
     ]
-    score, reasons, misses = score_breakout_setup(df, structure, pivot)
+    pattern_score, reasons, misses = score_breakout_setup(df, structure, pivot)
+    score, reasons, misses = finalize_setup_score(pattern_score, reasons, misses, structure, overheat, latest)
     hit = all(hard_conditions) and score >= cfg["min_setup_score"]
     if latest["close"] <= pivot * cfg["close_buffer_ratio"]:
         misses.append("未有效站上pivot")
@@ -1120,6 +1166,7 @@ def detect_breakout_buy(df, structure, overheat):
         score,
         reasons,
         misses,
+        pattern_score=pattern_score,
         breakout_level=pivot,
         support_price=pivot,
         invalid_price=pivot * cfg["invalid_support_ratio"],
@@ -1192,7 +1239,8 @@ def detect_retest_buy(df, structure, overheat):
         not is_long_upper_shadow(latest),
         not any(flag in overheat["risk_flags"] for flag in cfg["blocked_risk_flags"]),
     ]
-    score, reasons, misses = score_retest_setup(df, breakout)
+    pattern_score, reasons, misses = score_retest_setup(df, breakout)
+    score, reasons, misses = finalize_setup_score(pattern_score, reasons, misses, structure, overheat, latest)
     hit = all(hard_conditions) and score >= cfg["min_setup_score"]
     if pullback_low < breakout["level"] * cfg["max_pullback_below_breakout_ratio"]:
         misses.append("回踩有效跌破突破位")
@@ -1217,6 +1265,7 @@ def detect_retest_buy(df, structure, overheat):
         score,
         reasons,
         misses,
+        pattern_score=pattern_score,
         breakout_level=breakout["level"],
         support_price=breakout["level"],
         invalid_price=breakout["level"] * cfg["invalid_support_ratio"],
@@ -1364,6 +1413,7 @@ def screen(df):
             "model2_include": False,
             "structure_score": 0,
             "structure_risk_score": 0,
+            "setup_pattern_score": 0,
             "setup_score": 0,
             "setup_quality": "D",
             "setup_reasons": [],
@@ -1394,10 +1444,11 @@ def screen(df):
 
     overheat = detect_overheat(df)
     structure = detect_vcp_structure(df)
+    score = score_setup(df, structure, {}, {}, overheat)
+    structure["structure_score_estimate"] = score["structure_score"]
     pullback = detect_pullback_buy(df, structure, overheat)
     breakout = detect_breakout_buy(df, structure, overheat)
     retest = detect_retest_buy(df, structure, overheat)
-    score = score_setup(df, structure, pullback, retest, overheat)
     structure_type, setup_signal, action_hint, suggested_position = classify_result(structure, pullback, breakout, retest, score, overheat)
     structure_stage = structure_stage_from_internal(structure.get("state"))
     setup_detail = choose_setup_detail(setup_signal, pullback, breakout, retest)
@@ -1408,7 +1459,7 @@ def screen(df):
 
     final_quality = structure.get("vcp_quality", "D")
     if setup_signal in {"PULLBACK_BUY", "BREAKOUT_BUY", "RETEST_BUY"}:
-        final_quality = "A"
+        final_quality = setup_detail.get("setup_quality", "D")
     model2_include = structure_type in {"VCP", "TREND"} and action_hint != "REJECT"
 
     return {
@@ -1420,6 +1471,7 @@ def screen(df):
         "model2_include": model2_include,
         "structure_score": score["structure_score"],
         "structure_risk_score": score["structure_risk_score"],
+        "setup_pattern_score": setup_detail.get("setup_pattern_score", setup_detail.get("setup_score", 0)),
         "setup_score": setup_detail.get("setup_score", 0),
         "setup_quality": setup_detail.get("setup_quality", "D"),
         "setup_reasons": setup_detail.get("setup_reasons", []),
@@ -1457,7 +1509,7 @@ def screen(df):
 CSV_COLUMNS = [
     "股票代码", "股票名称", "structure_type", "structure_stage", "setup_signal",
     "action_hint", "suggested_position", "model2_include", "structure_score", "structure_risk_score",
-    "setup_score", "setup_quality", "setup_reasons", "setup_misses",
+    "setup_pattern_score", "setup_score", "setup_quality", "setup_reasons", "setup_misses",
     "structure_risk_flags", "support_price", "invalid_price", "breakout_level",
     "contraction_count", "contraction_pcts", "contraction_days", "volume_pattern",
     "pivot_price", "structure_pivot", "market_pivot", "pivot_distance", "last_contraction_low",
@@ -1524,6 +1576,7 @@ def write_csv(results, quant_path):
                 r["model2_include"],
                 r["structure_score"],
                 r["structure_risk_score"],
+                r["setup_pattern_score"],
                 r["setup_score"],
                 r["setup_quality"],
                 ";".join(r["setup_reasons"]),
@@ -1583,7 +1636,7 @@ def print_single_summary(result):
     print("=" * 70)
     print(f"结构: {result['structure_type']} | {result['structure_stage']} | 分数 {result['structure_score']} / 风险 {result['structure_risk_score']}")
     print(f"触发: {result['setup_signal']} | model2_include={result['model2_include']}")
-    print(f"买点质量: {result['setup_score']} / {result['setup_quality']} | 加分 {result['setup_reasons']} | 扣分 {result['setup_misses']}")
+    print(f"买点质量: {result['setup_score']} / {result['setup_quality']} | 动作分 {result['setup_pattern_score']} | 加分 {result['setup_reasons']} | 扣分 {result['setup_misses']}")
     print(f"动作: {result['action_hint']} | 建议仓位 {result['suggested_position']}")
     print(f"VCP: {result['structure_stage']} | 轮次 {result['contraction_count']} | 收缩 {result['contraction_pcts']} | 量能 {result['volume_pattern']}")
     print(f"Pivot: {result['pivot_price']} | 距pivot {result['pivot_distance']}% | 年龄 {result['structure_age_days']}天 | 有效 {result['structure_valid']}")

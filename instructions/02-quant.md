@@ -374,10 +374,12 @@ TREND_REBUILD
 | `RETEST_BUY` | 突破后回踩确认买点，确认度高于 PULLBACK_BUY |
 
 `setup_signal` 必须建立在 `structure_stage` 之上。它不是独立形态，而是“结构阶段 + 当日量价触发条件”的结果。
-模型二使用两层判断：硬条件只判断买点形态是否成立；`setup_score` 判断买点质量。天数、短期涨幅、距 MA20、量能强弱等偏主观条件不得单独一票否决形态，应进入买点质量评分。
+模型二使用三层判断：硬条件只判断买点形态是否成立；`setup_pattern_score` 判断买点动作质量；`setup_score` 在动作分基础上叠加结构质量修正，表示最终买点质量。天数、短期涨幅、距 MA20、量能强弱等偏主观条件不得单独一票否决形态，应进入买点质量评分。
 
 ```text
 setup_signal = structure_stage + trigger_conditions
+setup_pattern_score = trigger_action_score
+setup_score = setup_pattern_score after structure/risk caps
 setup_quality = setup_signal + setup_score
 ```
 
@@ -416,6 +418,26 @@ RETEST_BUY
 - 交易含义：突破已经发生并经回踩确认，确定性高于 PULLBACK_BUY。
 - 模型二量价侧建议：BUY_STANDARD；`setup_score>=80` 参考仓位 60%-80%，`70<=setup_score<80` 参考仓位 40%-50%。
 ```
+
+买点评分修正：
+
+```text
+setup_pattern_score 只评价触发动作本身，例如回踩是否贴近突破位、是否收回突破位、是否缩量。
+setup_score 是最终买点分，必须兼顾底层 VCP 结构质量。
+```
+
+当动作分较高但结构质量不足时，最终买点分按配置封顶：
+
+```text
+structure_score < 50 / < 60 / < 70
+structure_stage 仅为 VCP_FORMING
+volume_pattern 不是 decreasing / drying
+存在 EXTENDED_FROM_MA20
+post_structure_gain > 20%
+distance_ma20 > 10%
+```
+
+交易含义：动作标准但结构一般时，可以识别买点，但不得给出满分或高仓位。例如标准 RETEST 动作若建立在两段 FORMING、量能 mixed、价格远离 MA20 的结构上，应降为 B 级或轻仓确认，而不是 A/100。
 
 模型二只判断量价触发是否成立；模型三估值是否支持、模型四是否实际给买入建议，需要在模型四中决定。
 
@@ -477,7 +499,7 @@ DATA_SKIP
 ```text
 structure_type / structure_stage / setup_signal
 structure_score / structure_risk_flags / structure_risk_score
-setup_score / setup_quality / setup_reasons / setup_misses
+setup_pattern_score / setup_score / setup_quality / setup_reasons / setup_misses
 support_price / invalid_price / breakout_level
 ```
 
@@ -836,6 +858,7 @@ model2_include
 structure_score
 structure_risk_score
 structure_risk_flags
+setup_pattern_score
 setup_score
 setup_quality
 setup_reasons

@@ -12,6 +12,7 @@ import csv
 import json
 import os
 import re
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +34,7 @@ BLOOM_STATE_PATH = Path(PROJECT_ROOT) / CONFIG["inputs"]["state_path"]
 BLOOM_EVENTS_PATH = Path(PROJECT_ROOT) / CONFIG["inputs"]["events_path"]
 BLOOM_INPUT_DIR = Path(PROJECT_ROOT) / CONFIG["outputs"]["review_input_dir"]
 BLOOM_REPORT_DIR = Path(PROJECT_ROOT) / CONFIG["outputs"]["daily_report_dir"]
+BLOOM_STATE_SNAPSHOT_DIR = BLOOM_STATE_PATH.parent / "snapshots"
 
 LEGACY_STATE_PATH = Path(PROJECT_ROOT) / "bloom" / "bloom_state.csv"
 
@@ -91,6 +93,7 @@ def ensure_dirs():
     BLOOM_EVENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
     BLOOM_INPUT_DIR.mkdir(parents=True, exist_ok=True)
     BLOOM_REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    BLOOM_STATE_SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def normalize_date_arg(value):
@@ -323,6 +326,37 @@ def read_state_before(date_iso):
         code: row for code, row in rows.items()
         if (row.get("last_seen") or "") < date_iso
     }
+
+
+def state_snapshot_path(date_iso):
+    safe_date = date_iso.replace("-", "")
+    return BLOOM_STATE_SNAPSHOT_DIR / f"bloom_state_before_{safe_date}.csv"
+
+
+def read_state_snapshot_before(date_iso):
+    path = state_snapshot_path(date_iso)
+    if not path.exists():
+        return {}
+    rows = {}
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        for row in csv.DictReader(f):
+            code = normalize_code(row.get("code"))
+            if not code:
+                continue
+            row["code"] = code
+            row["bloom_status"] = normalize_status(row.get("bloom_status"))
+            rows[code] = row
+    return rows
+
+
+def write_state_snapshot_before(date_iso):
+    if not BLOOM_STATE_PATH.exists():
+        return None
+    path = state_snapshot_path(date_iso)
+    if path.exists():
+        return path
+    shutil.copy2(BLOOM_STATE_PATH, path)
+    return path
 
 
 def write_state(rows):
@@ -950,7 +984,7 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False):
         raise RuntimeError(f"Bloom requires full quant run, got mode={mode!r}; use --allow-partial to bypass")
 
     results = payload.get("results", [])
-    prev_state = read_state_before(run_date)
+    prev_state = read_state_snapshot_before(run_date) or read_state_before(run_date)
     if not prev_state and previous_payload:
         prev_date = previous_payload.get("meta", {}).get("run_date") or ""
         prev_state = state_from_quant_results(previous_payload.get("results", []), prev_date)
@@ -1105,6 +1139,31 @@ def _format_contraction_detail(cc, pcts, days):
     return f"↳ {cc}段：" + " -> ".join(segments)
 
 
+def append_compact_stock_table(lines, title, rows, empty_text, cols_per_row=8):
+    if not rows:
+        lines.extend(["", empty_text, ""])
+        return
+
+    lines.append(f"**{title} {len(rows)} 只**")
+    lines.append("")
+    header = "| " + " | ".join([""] * cols_per_row) + " |"
+    sep = "| " + " | ".join(["---"] * cols_per_row) + " |"
+    lines.append(header)
+    lines.append(sep)
+    for i in range(0, len(rows), cols_per_row):
+        chunk = rows[i:i + cols_per_row]
+        cells = []
+        for r in chunk:
+            code = r.get("code", "")
+            name = r.get("name", "")
+            status = r.get("bloom_status", "")
+            cells.append(f"`{code}` {name}<br>{status}")
+        while len(cells) < cols_per_row:
+            cells.append("")
+        lines.append("| " + " | ".join(cells) + " |")
+    lines.append("")
+
+
 def build_markdown(bloom):
     summary = bloom["summary"]
     sections = bloom["sections"]
@@ -1193,35 +1252,8 @@ def build_markdown(bloom):
     new_entries = sections.get("new_entries", [])
     exits = sections.get("exits", [])
 
-    if new_entries:
-        lines.append(f"**新进入 {len(new_entries)} 只**")
-        lines.append("")
-        cols_per_row = 8
-        header = "| " + " | ".join(["股票"] * cols_per_row) + " |"
-        sep = "| " + " | ".join(["---"] * cols_per_row) + " |"
-        lines.append(header)
-        lines.append(sep)
-        for i in range(0, len(new_entries), cols_per_row):
-            chunk = new_entries[i:i + cols_per_row]
-            cells = []
-            for r in chunk:
-                code = r.get("code", "")
-                name = r.get("name", "")
-                status = r.get("bloom_status", "")
-                cells.append(f"`{code}` {name}<br>{status}")
-            while len(cells) < cols_per_row:
-                cells.append("")
-            lines.append("| " + " | ".join(cells) + " |")
-        lines.append("")
-    else:
-        lines.extend(["", "*无新进入*", ""])
-
-    if exits:
-        exit_list = [f"`{r['code']}` {r['name']}" for r in exits]
-        lines.append(f"**移出 {len(exits)} 只**：{'、'.join(exit_list)}")
-    else:
-        lines.append("**移出**：无")
-    lines.append("")
+    append_compact_stock_table(lines, "新进入", new_entries, "*无新进入*")
+    append_compact_stock_table(lines, "移出", exits, "*无移出*")
 
     # ── 📖 字段说明 ──
     lines.extend([
@@ -1298,8 +1330,11 @@ def main():
         sys.exit(1)
 
     if not args.no_state_update:
+        snapshot_path = write_state_snapshot_before(bloom["summary"]["date"])
         write_state(new_state)
         write_events(bloom["summary"]["date"], events)
+    else:
+        snapshot_path = None
 
     input_path = write_bloom_input(date_yy, bloom)
     report_path = write_markdown(date_yy, build_markdown(bloom))
@@ -1312,6 +1347,7 @@ def main():
     print(f"bloom input: {input_path}")
     print(f"bloom report: {report_path}")
     print(f"bloom state: {BLOOM_STATE_PATH}")
+    print(f"state snapshot: {snapshot_path if snapshot_path else 'none'}")
     print(f"bloom events: {BLOOM_EVENTS_PATH}")
     print(f"summary: {bloom['summary']}")
 

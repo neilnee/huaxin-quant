@@ -292,7 +292,10 @@ bloom/bloom_<YYMMDD>.md
 bloom/state/bloom_state.csv
 bloom/state/bloom_events.jsonl
 bloom/state/bloom_input_<YYMMDD>.json
+bloom/state/snapshots/bloom_state_before_<YYYYMMDD>.csv
 ```
+
+`bloom_state_before_<YYYYMMDD>.csv` 是当日首次写入前的状态快照，用于同日重复运行时保持 `consecutive_reject`、`days_tracked` 等生命周期字段的判断基准稳定。重复运行同一天时必须优先读取该快照，避免已写入的当日 state 覆盖昨日累计状态，导致 `EXIT` 判断被冲掉。
 
 报告分区：
 
@@ -303,6 +306,8 @@ bloom/state/bloom_input_<YYMMDD>.json
 5. 冷却与准备移出
 6. 数据异常
 7. 待估值候选
+
+Markdown 的“池子变化”分区中，“今日新进入”和“移出”都使用紧凑多列表格展示，表头保持为空，单元格包含股票代码、名称和 Bloom 状态；不得把大量移出标的拼成单行长文本。
 
 LLM 观察要点：
 

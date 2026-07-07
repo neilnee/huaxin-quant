@@ -1,7 +1,7 @@
 # 模型二：量价精筛模型（自执行指令）
 
 - **版本管理**: 由 Git 分支与提交历史管理，文件名不再携带版本号
-- **最近更新**: 2026-07-05
+- **最近更新**: 2026-07-08
 - **核心目标**: 在模型一基本面候选池中，寻找 VCP 蓄力结构和可交易触发，输出可复现、可回测、可供模型三/四复用的结构化量价结果。
 - **核心哲学**: 基本面先过滤烂公司，模型二只判断资金行为和价格位置。脚本负责确定性计算，LLM 只做可选解释，不参与结构阶段或交易触发判定。
 - **输入**: `pool/pool_<YYMMDD>.csv`，或命令行指定 `--code/--codes`
@@ -77,7 +77,7 @@ classification
 - 结构有效期、pivot 距离、突破后延伸/回撤失效阈值。
 - 收缩递减比例、量能递减/缩量/失败阈值。
 - 阶段判定所需收缩轮数、紧致结构阈值。
-- `PULLBACK_BUY` / `RETEST_BUY` 触发信号参数。
+- `PULLBACK_BUY` / `BREAKOUT_BUY` / `RETEST_BUY` 触发信号参数。
 - 结构评分、量能评分、趋势评分、位置评分和风险分数。
 - 触发信号对应的模型二建议仓位文本。
 
@@ -137,6 +137,26 @@ VCP 结构已经成立
 20%-30%
 ```
 
+### BREAKOUT_BUY：VCP 枢轴突破参与
+
+`BREAKOUT_BUY` 是 VCP 成熟后收盘有效站上 pivot 的突破参与点。
+
+```text
+VCP_MATURE / VCP_TIGHT 结构已经成立
+收盘价站上 structure_pivot × 1.01
+当日量能恢复，至少不低于 vol_ma20 或 vol_ma5
+突破日无明显长上影或放量滞涨
+距离 MA20 不过度乖离，短期没有过热
+```
+
+`BREAKOUT_BUY` 买的是启动确认，确定性低于突破后回踩确认，但能避免强势股突破后不回踩导致完全踏空。
+
+仓位建议：
+
+```text
+40%-50%
+```
+
 ### RETEST_BUY：突破后回踩确认
 
 `RETEST_BUY` 是 VCP 突破后的确认买点。
@@ -160,7 +180,7 @@ VCP 结构已经成立
 
 ```text
 PULLBACK_BUY 买入 20%-30%
-→ 若直接上涨但不给 RETEST_BUY：不追满，只持有已有仓位
+→ 若直接突破且触发 BREAKOUT_BUY：加至 40%-50%
 → 若突破后回踩确认：RETEST_BUY 加至 60%-80%
 → 若跌破失效位：减仓或退出
 ```
@@ -350,6 +370,7 @@ TREND_REBUILD
 |--------------|------|
 | `NONE` | 没有交易触发 |
 | `PULLBACK_BUY` | VCP 结构内缩量回踩买点，适合轻仓试探 |
+| `BREAKOUT_BUY` | VCP 成熟后枢轴突破参与点，适合半仓参与 |
 | `RETEST_BUY` | 突破后回踩确认买点，确认度高于 PULLBACK_BUY |
 
 `setup_signal` 必须建立在 `structure_stage` 之上。它不是独立形态，而是“结构阶段 + 当日量价触发条件”的结果。
@@ -370,8 +391,17 @@ PULLBACK_BUY
 - 结构内缩量回踩买点。
 - 前提阶段：VCP_FORMING / VCP_MATURE / VCP_TIGHT。
 - 触发条件：缩量回踩 MA20 / MA60 / 收敛下沿，最近收缩低点不破，MA20 斜率未明显走坏，短期不过热，无放量长上影。
+- 缩量确认：`volume_dry_up < 0.80`，或收缩段均量逐轮递减且当前 1-3 日量能仍处于最近收缩段低量区。单日地量只能作为确认，不得单独触发买点。
 - 交易含义：低吸试探，风险收益比优先，确定性低于 RETEST_BUY。
 - 模型二量价侧建议：BUY_LIGHT，参考仓位 20%-30%。
+
+BREAKOUT_BUY
+- VCP 枢轴突破参与点。
+- 前提形态：当前存在有效 VCP 结构，且 `structure_stage` 只能是 `VCP_MATURE` / `VCP_TIGHT`。
+- 排除条件：`structure_valid=false`、`POST_BREAKOUT`、`TREND_REBUILD`、`TREND_WATCH`、`NONE`、`DATA_ISSUE`，以及硬风险标记（`OVERHEAT_CHG5`、`OVERHEAT_CHG20`、`DOWNTREND`、`DEEP_FALL`）均不得触发 `BREAKOUT_BUY`。
+- 触发条件：最新收盘站上 `structure_pivot × 1.01`，当日成交量高于 `vol_ma20` 或 `vol_ma5`，突破日无明显长上影/放量滞涨，距离 MA20 不过度乖离，短期不过热。
+- 交易含义：突破正在发生，可以参与但尚未经过回踩验证，确定性低于 RETEST_BUY。
+- 模型二量价侧建议：BUY_BREAKOUT，参考仓位 40%-50%。
 
 RETEST_BUY
 - 突破后回踩确认买点。
@@ -390,6 +420,7 @@ RETEST_BUY
 |-------------|------|
 | `WATCH` | 只观察，不给买入动作 |
 | `BUY_LIGHT` | 缩量回踩触发，量价侧允许轻仓试探 |
+| `BUY_BREAKOUT` | 枢轴突破触发，量价侧允许半仓参与 |
 | `BUY_STANDARD` | 突破回踩确认，量价侧允许标准仓位 |
 | `AVOID_CHASE` | 结构已突破延伸或位置过热，不追高 |
 | `WAIT_REBUILD` | 旧结构失效，等待重新形成 |
@@ -408,6 +439,11 @@ BUY_LIGHT
 - setup_signal=PULLBACK_BUY。
 - 说明量价侧出现结构内缩量回踩，适合小仓位试探。
 - 模型四仍需检查估值安全边际和账户已有仓位。
+
+BUY_BREAKOUT
+- setup_signal=BREAKOUT_BUY。
+- 说明量价侧出现 VCP 枢轴突破，但尚未经过回踩确认。
+- 模型四可在估值支持时给出半仓参与建议；若已持有 PULLBACK_BUY 仓位，则可考虑加至 40%-50%。
 
 BUY_STANDARD
 - setup_signal=RETEST_BUY。
@@ -491,7 +527,7 @@ VCP 不再使用 `range_10/range_20/range_60` 等截面指标做 `6选3` 判定�
 ```text
 从局部高点回撤到后续局部低点
 回撤幅度 >= 4%
-持续时间 3-45 个交易日
+持续时间 3-45 个交易日，按包含首尾的 K 线数量计算
 低点后有一定修复，不能是单边下跌未止
 ```
 
@@ -505,6 +541,8 @@ duration_days
 avg_volume
 recovery_pct
 ```
+
+`duration_days = low_idx - high_idx + 1`，与 `avg_volume` 的取样区间一致，均包含局部高点日和局部低点日。
 
 ### 1.2 收缩递减
 
@@ -526,6 +564,16 @@ abs(Cn.pullback) <= abs(Cn-1.pullback) * 1.05
 ### 1.3 当前有效性
 
 模型二只识别**当前正在形成**的 VCP，不追认已经走完或已经被大幅突破的历史结构。收缩轮次必须组成一个当前有效的 contraction group。
+
+当前 VCP 结构组不能机械取最近三轮 contraction。脚本必须枚举最近候选组，并优先选择更符合当前主结构的 group：
+
+```text
+收缩幅度递减或接近递减
+量能逐轮下降或近期 drying
+当前价格接近 structure_pivot
+最后一轮收缩距离当前更近
+组内轮次足够，但早期噪声回调不得污染主收缩序列
+```
 
 对每个候选 contraction group 计算：
 
@@ -596,11 +644,27 @@ vol_ma20 < vol_ma60
 
 ```text
 volume_dry_up < 0.80
+或：收缩段 avg_volume 逐轮下降，且最近 1-3 日均量 <= 最近收缩段 avg_volume × 1.10
 distance_ma20 在 [-4%, +3%]，或 distance_ma60 在 [-5%, +5%]
 close > 最近一轮 contraction low × 1.02
 MA20_slope >= -0.03%/日
 近 5 日涨幅 < 12%
 无放量长阴
+```
+
+### BREAKOUT_BUY：VCP 枢轴突破
+
+必须先有 `VCP_MATURE` 或 `VCP_TIGHT`，`VCP_EARLY` / `VCP_FORMING` 只观察，不触发 `BREAKOUT_BUY`。
+
+```text
+structure_valid = true
+close > structure_pivot × 1.01
+当日成交量 > vol_ma20 × 1.0，或当日成交量 > vol_ma5 × 1.0
+distance_ma20 <= 20%
+近 5 日涨幅 < 20%
+无明显长上影
+无放量滞涨
+无硬风险标记
 ```
 
 ### RETEST_BUY：突破后回踩确认

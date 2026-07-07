@@ -375,7 +375,7 @@ def detect_contractions(df):
             continue
         high = swing
         low = swings[i + 1]
-        duration = low["idx"] - high["idx"]
+        duration = low["idx"] - high["idx"] + 1
         if duration < VCP_MIN_PULLBACK_DAYS or duration > VCP_MAX_PULLBACK_DAYS:
             continue
 
@@ -515,6 +515,8 @@ def select_current_vcp_group(df, contractions):
     if not contractions:
         return None, None
 
+    latest = df.iloc[-1]
+    candidates = []
     best_invalid = None
     max_size = min(CONTRACTION_CFG["max_recent_contractions"], len(contractions))
     for size in range(max_size, 0, -1):
@@ -522,9 +524,38 @@ def select_current_vcp_group(df, contractions):
             group = contractions[end - size:end]
             info = evaluate_vcp_group(df, group)
             if info["structure_valid"]:
-                return info, None
+                decrease = contraction_decrease_status(group)
+                volume_pattern = volume_pattern_for_contractions(group, latest)
+                pivot_distance = safe_float(info.get("pivot_distance"), -99)
+                structure_age_days = safe_float(info.get("structure_age_days"), 999)
+                score = 0
+                if len(group) >= 2:
+                    score += 30
+                score += len(group) * 4
+                if decrease["is_strict"]:
+                    score += 60
+                elif decrease["is_near"]:
+                    score += 35
+                if volume_pattern == "decreasing":
+                    score += 25
+                elif volume_pattern == "drying":
+                    score += 12
+                if pivot_distance >= BASE_CFG["near_pivot_distance_pct"]:
+                    score += 15
+                if pivot_distance >= STAGE_CFG["tight_min_pivot_distance_pct"]:
+                    score += 10
+                score -= structure_age_days * 0.5
+                # Prefer current groups, but do not let a nearby noisy pullback
+                # override a cleaner VCP sequence.
+                score += group[-1]["end_idx"] * 0.01
+                candidates.append((score, info))
+                continue
             if best_invalid is None or info["structure_age_days"] < best_invalid["structure_age_days"]:
                 best_invalid = info
+
+    if candidates:
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1], None
     return None, best_invalid
 
 
@@ -723,6 +754,33 @@ def detect_vcp_structure(df):
     }
 
 
+def pullback_volume_confirmed(df, structure, cfg):
+    latest = df.iloc[-1]
+    if safe_float(latest.get("volume_dry_up"), 999) < cfg["volume_dry_up_lt"]:
+        return True, "fixed_window"
+
+    allowed_patterns = set(cfg.get("segment_volume_patterns", []))
+    if structure.get("volume_pattern") not in allowed_patterns:
+        return False, "insufficient_dry_up"
+
+    group = structure.get("contraction_group") or []
+    if not group:
+        return False, "no_contraction_group"
+
+    last_avg_volume = safe_float(group[-1].get("avg_volume"))
+    if not last_avg_volume or last_avg_volume <= 0:
+        return False, "no_segment_volume"
+
+    days = max(1, int(cfg.get("current_low_volume_days", 3)))
+    recent_avg_volume = safe_float(df["volume"].tail(days).mean())
+    if recent_avg_volume is None:
+        return False, "no_recent_volume"
+
+    if recent_avg_volume <= last_avg_volume * cfg.get("current_low_volume_ratio", 1.0):
+        return True, "segment_low_volume"
+    return False, "recent_volume_not_low"
+
+
 def detect_pullback_buy(df, structure, overheat):
     latest = df.iloc[-1]
     cfg = SETUP_CFG["pullback_buy"]
@@ -737,8 +795,9 @@ def detect_pullback_buy(df, structure, overheat):
     near_ma60 = pd.notna(latest.get("distance_ma60")) and ma60_min <= latest["distance_ma60"] <= ma60_max
     low20 = latest.get("low_20")
     last_low = structure.get("last_contraction_low")
+    volume_ok, volume_reason = pullback_volume_confirmed(df, structure, cfg)
     conditions = [
-        safe_float(latest.get("volume_dry_up"), 999) < cfg["volume_dry_up_lt"],
+        volume_ok,
         near_ma20 or near_ma60,
         last_low is not None and latest["close"] > last_low * (1 + cfg["last_low_buffer_pct"] / 100),
         safe_float(latest.get("MA20_slope"), 0) >= cfg["min_ma20_slope"],
@@ -756,7 +815,49 @@ def detect_pullback_buy(df, structure, overheat):
         "anchor": anchor,
         "support_price": support,
         "invalid_price": invalid,
+        "volume_confirmation": volume_reason,
         "reason": f"缩量回踩{anchor}" if hit else "缩量回踩触发条件不足",
+    }
+
+
+def detect_breakout_buy(df, structure, overheat):
+    latest = df.iloc[-1]
+    cfg = SETUP_CFG["breakout_buy"]
+    if overheat["hard_reject"]:
+        return {"hit": False, "reason": "风险硬排除"}
+    if not structure.get("structure_valid"):
+        return {"hit": False, "reason": "无当前有效VCP结构"}
+    if structure.get("state") not in set(cfg["allowed_stages"]):
+        return {"hit": False, "reason": "结构阶段未达到突破前提"}
+
+    pivot = safe_float(structure.get("structure_pivot"))
+    if not pivot:
+        return {"hit": False, "reason": "缺少结构pivot"}
+
+    vol_ma20 = safe_float(latest.get("vol_ma20"))
+    vol_ma5 = safe_float(latest.get("vol_ma5"))
+    volume = safe_float(latest.get("volume"), 0)
+    volume_ok = False
+    if vol_ma20 and vol_ma20 > 0 and volume > vol_ma20 * cfg["volume_ma20_ratio"]:
+        volume_ok = True
+    if vol_ma5 and vol_ma5 > 0 and volume > vol_ma5 * cfg["volume_ma5_ratio"]:
+        volume_ok = True
+
+    conditions = [
+        latest["close"] > pivot * cfg["close_buffer_ratio"],
+        volume_ok,
+        safe_float(latest.get("distance_ma20"), 999) <= cfg["max_distance_ma20_pct"],
+        safe_float(latest.get("chg_5"), 999) < cfg["max_chg_5_pct"],
+        not is_long_upper_shadow(latest),
+        not any(flag in overheat["risk_flags"] for flag in cfg["blocked_risk_flags"]),
+    ]
+    hit = all(conditions)
+    return {
+        "hit": hit,
+        "breakout_level": pivot,
+        "support_price": pivot,
+        "invalid_price": pivot * cfg["invalid_support_ratio"],
+        "reason": "VCP枢轴突破" if hit else "枢轴突破触发条件不足",
     }
 
 
@@ -899,10 +1000,12 @@ def structure_stage_from_internal(state):
     return stage_map.get(state, "NONE")
 
 
-def classify_result(structure, pullback, retest, score, overheat):
+def classify_result(structure, pullback, breakout, retest, score, overheat):
     internal_stage = structure.get("state")
     if retest.get("hit"):
         return "VCP", "RETEST_BUY", "BUY_STANDARD", CLASSIFICATION_CFG["retest_buy_position"]
+    if breakout.get("hit"):
+        return "VCP", "BREAKOUT_BUY", "BUY_BREAKOUT", CLASSIFICATION_CFG["breakout_buy_position"]
     if pullback.get("hit"):
         return "VCP", "PULLBACK_BUY", "BUY_LIGHT", CLASSIFICATION_CFG["pullback_buy_position"]
     if internal_stage in ["VCP_TIGHT", "VCP_MATURE", "VCP_FORMING", "VCP_EARLY"]:
@@ -916,9 +1019,11 @@ def classify_result(structure, pullback, retest, score, overheat):
     return "NONE", "NONE", "REJECT", CLASSIFICATION_CFG["no_position"]
 
 
-def build_reason(structure, pullback, retest, overheat):
+def build_reason(structure, pullback, breakout, retest, overheat):
     if retest.get("hit"):
         return retest["reason"]
+    if breakout.get("hit"):
+        return breakout["reason"]
     if pullback.get("hit"):
         return pullback["reason"]
     if structure.get("state") == "TREND_WATCH":
@@ -973,17 +1078,18 @@ def screen(df):
     overheat = detect_overheat(df)
     structure = detect_vcp_structure(df)
     pullback = detect_pullback_buy(df, structure, overheat)
+    breakout = detect_breakout_buy(df, structure, overheat)
     retest = detect_retest_buy(df, structure, overheat)
     score = score_setup(df, structure, pullback, retest, overheat)
-    structure_type, setup_signal, action_hint, suggested_position = classify_result(structure, pullback, retest, score, overheat)
+    structure_type, setup_signal, action_hint, suggested_position = classify_result(structure, pullback, breakout, retest, score, overheat)
     structure_stage = structure_stage_from_internal(structure.get("state"))
 
-    support = retest.get("support_price") or pullback.get("support_price")
-    invalid = retest.get("invalid_price") or pullback.get("invalid_price")
-    breakout = retest.get("breakout_level")
+    support = retest.get("support_price") or breakout.get("support_price") or pullback.get("support_price")
+    invalid = retest.get("invalid_price") or breakout.get("invalid_price") or pullback.get("invalid_price")
+    breakout_level = retest.get("breakout_level") or breakout.get("breakout_level")
 
     final_quality = structure.get("vcp_quality", "D")
-    if setup_signal in {"PULLBACK_BUY", "RETEST_BUY"}:
+    if setup_signal in {"PULLBACK_BUY", "BREAKOUT_BUY", "RETEST_BUY"}:
         final_quality = "A"
     model2_include = structure_type in {"VCP", "TREND"} and action_hint != "REJECT"
 
@@ -998,8 +1104,8 @@ def screen(df):
         "structure_risk_score": score["structure_risk_score"],
         "support_price": round_or_none(support),
         "invalid_price": round_or_none(invalid),
-        "breakout_level": round_or_none(breakout),
-        "reason": build_reason(structure, pullback, retest, overheat),
+        "breakout_level": round_or_none(breakout_level),
+        "reason": build_reason(structure, pullback, breakout, retest, overheat),
         "structure_risk_flags": overheat["risk_flags"],
         "score_components": score["components"],
         "structure_conditions": structure.get("conditions", []),

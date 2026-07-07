@@ -1,5 +1,5 @@
 {
-  "strategy_version": "model2_quant_v2",
+  "strategy_version": "model2_quant_v3",
   "description": "Model 2 VCP structure and setup signal parameters. This file contains thresholds and weights only; algorithms stay in scripts/quant_filter.py.",
   "vcp": {
     "lookback_days": 120,
@@ -86,6 +86,7 @@
         "VCP_MATURE",
         "VCP_TIGHT"
       ],
+      "min_setup_score": 70,
       "volume_dry_up_lt": 0.8,
       "segment_volume_patterns": [
         "decreasing"
@@ -105,21 +106,32 @@
       "max_chg_5_pct": 12.0,
       "invalid_support_ratio": 0.97,
       "invalid_low20_ratio": 0.98,
+      "hard_risk_flags": [
+        "DOWNTREND",
+        "DEEP_FALL"
+      ],
       "blocked_risk_flags": [
         "LONG_UPPER_SHADOW"
       ]
     },
     "breakout_buy": {
       "allowed_stages": [
+        "VCP_FORMING",
         "VCP_MATURE",
         "VCP_TIGHT"
       ],
+      "min_setup_score": 70,
       "close_buffer_ratio": 1.01,
+      "max_close_extension_ratio": 1.08,
       "volume_ma20_ratio": 1.0,
       "volume_ma5_ratio": 1.0,
       "max_distance_ma20_pct": 20.0,
       "max_chg_5_pct": 20.0,
       "invalid_support_ratio": 0.97,
+      "hard_risk_flags": [
+        "DOWNTREND",
+        "DEEP_FALL"
+      ],
       "blocked_risk_flags": [
         "LONG_UPPER_SHADOW",
         "VOLUME_STALL"
@@ -127,14 +139,30 @@
     },
     "retest_buy": {
       "lookback_days": 12,
+      "allowed_stages": [
+        "VCP_FORMING",
+        "VCP_MATURE",
+        "VCP_TIGHT"
+      ],
+      "min_setup_score": 70,
       "min_days_after_breakout": 3,
       "max_days_after_breakout": 10,
+      "max_allowed_days_after_breakout": 15,
       "breakout_lookback_high_days": 60,
       "breakout_close_buffer_ratio": 1.01,
-      "breakout_volume_ratio": 1.5,
+      "breakout_volume_ratio": 1.0,
+      "max_pullback_above_breakout_ratio": 1.005,
       "max_pullback_below_breakout_ratio": 0.97,
       "volume_compare_days": 5,
-      "invalid_support_ratio": 0.97
+      "invalid_support_ratio": 0.97,
+      "hard_risk_flags": [
+        "DOWNTREND",
+        "DEEP_FALL"
+      ],
+      "blocked_risk_flags": [
+        "LONG_UPPER_SHADOW",
+        "VOLUME_STALL"
+      ]
     }
   },
   "scores": {
@@ -187,7 +215,15 @@
   "classification": {
     "pullback_buy_position": "20%-30%",
     "breakout_buy_position": "40%-50%",
+    "retest_buy_light_position": "40%-50%",
     "retest_buy_position": "60%-80%",
     "no_position": "0"
+  },
+  "setup_scoring": {
+    "quality_thresholds": {
+      "A": 80,
+      "B": 70,
+      "C": 60
+    }
   }
 }

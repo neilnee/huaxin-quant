@@ -374,9 +374,11 @@ TREND_REBUILD
 | `RETEST_BUY` | 突破后回踩确认买点，确认度高于 PULLBACK_BUY |
 
 `setup_signal` 必须建立在 `structure_stage` 之上。它不是独立形态，而是“结构阶段 + 当日量价触发条件”的结果。
+模型二使用两层判断：硬条件只判断买点形态是否成立；`setup_score` 判断买点质量。天数、短期涨幅、距 MA20、量能强弱等偏主观条件不得单独一票否决形态，应进入买点质量评分。
 
 ```text
 setup_signal = structure_stage + trigger_conditions
+setup_quality = setup_signal + setup_score
 ```
 
 触发定义：
@@ -390,26 +392,29 @@ NONE
 PULLBACK_BUY
 - 结构内缩量回踩买点。
 - 前提阶段：VCP_FORMING / VCP_MATURE / VCP_TIGHT。
-- 触发条件：缩量回踩 MA20 / MA60 / 收敛下沿，最近收缩低点不破，MA20 斜率未明显走坏，短期不过热，无放量长上影。
+- 硬条件：回踩 MA20 / MA60 / 收敛下沿，最近收缩低点不破，MA20 斜率未明显走坏，无放量长上影，无趋势硬风险。
+- 评分项：缩量程度、结构成熟度、是否在 MA20 上方回踩、近 5 日涨幅。
 - 缩量确认：`volume_dry_up < 0.80`，或收缩段均量逐轮递减且当前 1-3 日量能仍处于最近收缩段低量区。单日地量只能作为确认，不得单独触发买点。
 - 交易含义：低吸试探，风险收益比优先，确定性低于 RETEST_BUY。
 - 模型二量价侧建议：BUY_LIGHT，参考仓位 20%-30%。
 
 BREAKOUT_BUY
 - VCP 枢轴突破参与点。
-- 前提形态：当前存在有效 VCP 结构，且 `structure_stage` 只能是 `VCP_MATURE` / `VCP_TIGHT`。
-- 排除条件：`structure_valid=false`、`POST_BREAKOUT`、`TREND_REBUILD`、`TREND_WATCH`、`NONE`、`DATA_ISSUE`，以及硬风险标记（`OVERHEAT_CHG5`、`OVERHEAT_CHG20`、`DOWNTREND`、`DEEP_FALL`）均不得触发 `BREAKOUT_BUY`。
-- 触发条件：最新收盘站上 `structure_pivot × 1.01`，当日成交量高于 `vol_ma20` 或 `vol_ma5`，突破日无明显长上影/放量滞涨，距离 MA20 不过度乖离，短期不过热。
+- 前提形态：当前存在有效 VCP 结构，`structure_stage` 至少为 `VCP_FORMING`，且两轮以上主收缩结构质量需由评分确认。
+- 硬条件：最新收盘站上 `structure_pivot × 1.01`，当日成交量高于 `vol_ma20` 或 `vol_ma5`，突破日无明显长上影/放量滞涨，无趋势硬风险。
+- 初始突破边界：最新收盘不得高于 `structure_pivot × 1.08`，否则视为突破后延伸，不再触发 `BREAKOUT_BUY`。
+- 评分项：VCP 成熟度、最近两轮是否递减、量能是否逐轮下降、站上 pivot 幅度、距 MA20、近 5 日涨幅。
 - 交易含义：突破正在发生，可以参与但尚未经过回踩验证，确定性低于 RETEST_BUY。
 - 模型二量价侧建议：BUY_BREAKOUT，参考仓位 40%-50%。
 
 RETEST_BUY
 - 突破后回踩确认买点。
-- 前提形态：当前存在有效 VCP 结构，且 `structure_stage` 只能是 `VCP_MATURE` / `VCP_TIGHT`。
-- 排除条件：`structure_valid=false`、`POST_BREAKOUT`、`TREND_REBUILD`、`TREND_WATCH`、`NONE`、`DATA_ISSUE`，以及硬风险标记（`OVERHEAT_CHG5`、`OVERHEAT_CHG20`、`DOWNTREND`、`DEEP_FALL`）均不得触发 `RETEST_BUY`。
-- 触发条件：先放量突破关键位（突破日不能是放量长上影），随后 3-10 个交易日内缩量回踩，回踩不跌破突破位，最新收盘重新站回突破位或 MA10。
+- 前提形态：当前存在有效 VCP 结构，`structure_stage` 至少为 `VCP_FORMING`。
+- 排除条件：`structure_valid=false`、`POST_BREAKOUT`、`TREND_REBUILD`、`TREND_WATCH`、`NONE`、`DATA_ISSUE`，以及趋势硬风险标记（`DOWNTREND`、`DEEP_FALL`）均不得触发 `RETEST_BUY`；短期过热只影响 `setup_score`。
+- 硬条件：先有效突破关键位（突破日不能是放量长上影），随后缩量回踩，回踩不有效跌破突破位，最新收盘重新站回突破位或 MA10，无趋势硬风险。
+- 评分项：突破后天数、回踩贴近突破位程度、回踩缩量程度、收回突破位强度、距 MA20、近 5 日涨幅。
 - 交易含义：突破已经发生并经回踩确认，确定性高于 PULLBACK_BUY。
-- 模型二量价侧建议：BUY_STANDARD，参考仓位 60%-80%。
+- 模型二量价侧建议：BUY_STANDARD；`setup_score>=80` 参考仓位 60%-80%，`70<=setup_score<80` 参考仓位 40%-50%。
 ```
 
 模型二只判断量价触发是否成立；模型三估值是否支持、模型四是否实际给买入建议，需要在模型四中决定。
@@ -472,6 +477,7 @@ DATA_SKIP
 ```text
 structure_type / structure_stage / setup_signal
 structure_score / structure_risk_flags / structure_risk_score
+setup_score / setup_quality / setup_reasons / setup_misses
 support_price / invalid_price / breakout_level
 ```
 
@@ -648,23 +654,23 @@ volume_dry_up < 0.80
 distance_ma20 在 [-4%, +3%]，或 distance_ma60 在 [-5%, +5%]
 close > 最近一轮 contraction low × 1.02
 MA20_slope >= -0.03%/日
-近 5 日涨幅 < 12%
 无放量长阴
+setup_score >= 70
 ```
 
 ### BREAKOUT_BUY：VCP 枢轴突破
 
-必须先有 `VCP_MATURE` 或 `VCP_TIGHT`，`VCP_EARLY` / `VCP_FORMING` 只观察，不触发 `BREAKOUT_BUY`。
+必须先有 `VCP_FORMING`、`VCP_MATURE` 或 `VCP_TIGHT`，`VCP_EARLY` 只观察，不触发 `BREAKOUT_BUY`。
 
 ```text
 structure_valid = true
 close > structure_pivot × 1.01
+close <= structure_pivot × 1.08
 当日成交量 > vol_ma20 × 1.0，或当日成交量 > vol_ma5 × 1.0
-distance_ma20 <= 20%
-近 5 日涨幅 < 20%
 无明显长上影
 无放量滞涨
-无硬风险标记
+无 DOWNTREND / DEEP_FALL
+setup_score >= 70
 ```
 
 ### RETEST_BUY：突破后回踩确认
@@ -674,17 +680,18 @@ distance_ma20 <= 20%
 ```text
 breakout_level = 最近 60 日箱体上沿/突破前高
 突破日收盘价 > breakout_level × 1.01
-突破日成交量 > vol_ma20 × 1.5
+突破日成交量 > vol_ma20 × 1.0
 突破日无明显长上影
 ```
 
 回踩确认：
 
 ```text
-突破后 3-10 个交易日内
-回踩低点 >= breakout_level × 0.97
+突破后 1-15 个交易日内；3-10 日为标准时间窗，1-2 日早期回踩降低评分
+回踩低点在 breakout_level × 0.97 至 breakout_level × 1.005 区间内
 回踩期缩量
 最新收盘重新站回 breakout_level 或 MA10
+setup_score >= 70
 ```
 
 ---
@@ -820,6 +827,10 @@ model2_include
 structure_score
 structure_risk_score
 structure_risk_flags
+setup_score
+setup_quality
+setup_reasons
+setup_misses
 
 support_price
 invalid_price

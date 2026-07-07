@@ -12,6 +12,7 @@ import csv
 import json
 import os
 import re
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +34,7 @@ BLOOM_STATE_PATH = Path(PROJECT_ROOT) / CONFIG["inputs"]["state_path"]
 BLOOM_EVENTS_PATH = Path(PROJECT_ROOT) / CONFIG["inputs"]["events_path"]
 BLOOM_INPUT_DIR = Path(PROJECT_ROOT) / CONFIG["outputs"]["review_input_dir"]
 BLOOM_REPORT_DIR = Path(PROJECT_ROOT) / CONFIG["outputs"]["daily_report_dir"]
+BLOOM_STATE_SNAPSHOT_DIR = BLOOM_STATE_PATH.parent / "snapshots"
 
 LEGACY_STATE_PATH = Path(PROJECT_ROOT) / "bloom" / "bloom_state.csv"
 
@@ -91,6 +93,7 @@ def ensure_dirs():
     BLOOM_EVENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
     BLOOM_INPUT_DIR.mkdir(parents=True, exist_ok=True)
     BLOOM_REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    BLOOM_STATE_SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def normalize_date_arg(value):
@@ -323,6 +326,37 @@ def read_state_before(date_iso):
         code: row for code, row in rows.items()
         if (row.get("last_seen") or "") < date_iso
     }
+
+
+def state_snapshot_path(date_iso):
+    safe_date = date_iso.replace("-", "")
+    return BLOOM_STATE_SNAPSHOT_DIR / f"bloom_state_before_{safe_date}.csv"
+
+
+def read_state_snapshot_before(date_iso):
+    path = state_snapshot_path(date_iso)
+    if not path.exists():
+        return {}
+    rows = {}
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        for row in csv.DictReader(f):
+            code = normalize_code(row.get("code"))
+            if not code:
+                continue
+            row["code"] = code
+            row["bloom_status"] = normalize_status(row.get("bloom_status"))
+            rows[code] = row
+    return rows
+
+
+def write_state_snapshot_before(date_iso):
+    if not BLOOM_STATE_PATH.exists():
+        return None
+    path = state_snapshot_path(date_iso)
+    if path.exists():
+        return path
+    shutil.copy2(BLOOM_STATE_PATH, path)
+    return path
 
 
 def write_state(rows):
@@ -842,14 +876,27 @@ def call_llm_insights(watching_rows, quant_results=None):
     """为每只重点观察标的生成自然语言解读。
 
     调用 DeepSeek API，先将内部编码翻译为中文术语再传入，
-    返回 {code: insight_text} 字典。API 不可用时返回空字典。
+    返回 ({code: insight_text}, status)；API 不可用时返回空字典和失败原因。
     """
     api_key = os.environ.get("DEEPSEEK_API_KEY")
     if not api_key:
-        return {}
+        return {}, {
+            "status": "skipped",
+            "reason": "DEEPSEEK_API_KEY missing",
+            "requested": len(watching_rows),
+            "returned": 0,
+        }
 
     model = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
     base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
+    status = {
+        "status": "pending",
+        "provider": "deepseek",
+        "model": model,
+        "base_url": base_url,
+        "requested": len(watching_rows),
+        "returned": 0,
+    }
 
     # 建立 code → contractions 的查找表（从 quant 原始结果中取）
     contractions_by_code = {}
@@ -913,9 +960,20 @@ def call_llm_insights(watching_rows, quant_results=None):
         data = resp.json()
         content = data["choices"][0]["message"].get("content", "")
         parsed = json.loads(content)
-        return {item["code"]: item["insight"] for item in parsed.get("insights", [])}
-    except Exception:
-        return {}
+        insights = {
+            item["code"]: item["insight"]
+            for item in parsed.get("insights", [])
+            if item.get("code") and item.get("insight")
+        }
+        status["returned"] = len(insights)
+        status["status"] = "success" if len(insights) == len(watching_rows) else "partial"
+        if status["status"] == "partial":
+            status["reason"] = f"returned {len(insights)} of {len(watching_rows)} insights"
+        return insights, status
+    except Exception as exc:
+        status["status"] = "failed"
+        status["reason"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+        return {}, status
 
 
 def build_bloom(payload, previous_payload, date_yy, allow_partial=False):
@@ -926,7 +984,7 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False):
         raise RuntimeError(f"Bloom requires full quant run, got mode={mode!r}; use --allow-partial to bypass")
 
     results = payload.get("results", [])
-    prev_state = read_state_before(run_date)
+    prev_state = read_state_snapshot_before(run_date) or read_state_before(run_date)
     if not prev_state and previous_payload:
         prev_date = previous_payload.get("meta", {}).get("run_date") or ""
         prev_state = state_from_quant_results(previous_payload.get("results", []), prev_date)
@@ -987,8 +1045,14 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False):
 
     # ── LLM 解读：为重点观察标的生成自然语言洞察 ──
     watching = sections.get("watching", [])
+    llm_status = {
+        "status": "skipped",
+        "reason": "no watching rows",
+        "requested": 0,
+        "returned": 0,
+    }
     if watching:
-        insights = call_llm_insights(watching, results)
+        insights, llm_status = call_llm_insights(watching, results)
         for r in watching:
             code = r.get("code", "")
             if code in insights:
@@ -1017,6 +1081,7 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False):
         "strategy_version": STRATEGY_VERSION,
         "strategy_file": STRATEGY_PATH,
         "quant_stats": payload.get("stats", {}),
+        "llm": llm_status,
     }
 
     bloom = {
@@ -1074,6 +1139,31 @@ def _format_contraction_detail(cc, pcts, days):
     return f"↳ {cc}段：" + " -> ".join(segments)
 
 
+def append_compact_stock_table(lines, title, rows, empty_text, cols_per_row=8):
+    if not rows:
+        lines.extend(["", empty_text, ""])
+        return
+
+    lines.append(f"**{title} {len(rows)} 只**")
+    lines.append("")
+    header = "| " + " | ".join([""] * cols_per_row) + " |"
+    sep = "| " + " | ".join(["---"] * cols_per_row) + " |"
+    lines.append(header)
+    lines.append(sep)
+    for i in range(0, len(rows), cols_per_row):
+        chunk = rows[i:i + cols_per_row]
+        cells = []
+        for r in chunk:
+            code = r.get("code", "")
+            name = r.get("name", "")
+            status = r.get("bloom_status", "")
+            cells.append(f"`{code}` {name}<br>{status}")
+        while len(cells) < cols_per_row:
+            cells.append("")
+        lines.append("| " + " | ".join(cells) + " |")
+    lines.append("")
+
+
 def build_markdown(bloom):
     summary = bloom["summary"]
     sections = bloom["sections"]
@@ -1097,6 +1187,20 @@ def build_markdown(bloom):
     if blocked_n:
         alert_parts.append(f"{blocked_n} 只风险阻断")
     alert_text = "，".join(alert_parts) if alert_parts else "无触发或阻断"
+    llm = summary.get("llm") or {}
+    llm_status = llm.get("status", "unknown")
+    llm_requested = llm.get("requested", 0)
+    llm_returned = llm.get("returned", 0)
+    if llm_status == "success":
+        llm_text = f"LLM 观察要点已生成 {llm_returned}/{llm_requested}。"
+    elif llm_status == "partial":
+        llm_text = f"LLM 观察要点部分生成 {llm_returned}/{llm_requested}，其余使用规则兜底。"
+    elif llm_status == "failed":
+        llm_text = f"LLM 观察要点生成失败，已使用规则兜底（{llm.get('reason', 'unknown')}）。"
+    elif llm_status == "skipped":
+        llm_text = f"LLM 观察要点已跳过，使用规则兜底（{llm.get('reason', 'unknown')}）。"
+    else:
+        llm_text = f"LLM 观察要点状态未知，使用规则兜底。"
 
     lines.extend([
         "## 📊 今日概要",
@@ -1104,6 +1208,7 @@ def build_markdown(bloom):
         f"模型二扫描 {summary.get('input_total')} 只 → 产出 {summary.get('result_total')} 只。"
         f"Bloom 活跃观察 **{active}** 只，{alert_text}。"
         f"新进入 {new_n} 只，移出 {exit_n} 只。",
+        llm_text,
         "",
     ])
 
@@ -1147,35 +1252,8 @@ def build_markdown(bloom):
     new_entries = sections.get("new_entries", [])
     exits = sections.get("exits", [])
 
-    if new_entries:
-        lines.append(f"**新进入 {len(new_entries)} 只**")
-        lines.append("")
-        cols_per_row = 8
-        header = "| " + " | ".join(["股票"] * cols_per_row) + " |"
-        sep = "| " + " | ".join(["---"] * cols_per_row) + " |"
-        lines.append(header)
-        lines.append(sep)
-        for i in range(0, len(new_entries), cols_per_row):
-            chunk = new_entries[i:i + cols_per_row]
-            cells = []
-            for r in chunk:
-                code = r.get("code", "")
-                name = r.get("name", "")
-                status = r.get("bloom_status", "")
-                cells.append(f"`{code}` {name}<br>{status}")
-            while len(cells) < cols_per_row:
-                cells.append("")
-            lines.append("| " + " | ".join(cells) + " |")
-        lines.append("")
-    else:
-        lines.extend(["", "*无新进入*", ""])
-
-    if exits:
-        exit_list = [f"`{r['code']}` {r['name']}" for r in exits]
-        lines.append(f"**移出 {len(exits)} 只**：{'、'.join(exit_list)}")
-    else:
-        lines.append("**移出**：无")
-    lines.append("")
+    append_compact_stock_table(lines, "新进入", new_entries, "*无新进入*")
+    append_compact_stock_table(lines, "移出", exits, "*无移出*")
 
     # ── 📖 字段说明 ──
     lines.extend([
@@ -1252,8 +1330,11 @@ def main():
         sys.exit(1)
 
     if not args.no_state_update:
+        snapshot_path = write_state_snapshot_before(bloom["summary"]["date"])
         write_state(new_state)
         write_events(bloom["summary"]["date"], events)
+    else:
+        snapshot_path = None
 
     input_path = write_bloom_input(date_yy, bloom)
     report_path = write_markdown(date_yy, build_markdown(bloom))
@@ -1266,8 +1347,13 @@ def main():
     print(f"bloom input: {input_path}")
     print(f"bloom report: {report_path}")
     print(f"bloom state: {BLOOM_STATE_PATH}")
+    print(f"state snapshot: {snapshot_path if snapshot_path else 'none'}")
     print(f"bloom events: {BLOOM_EVENTS_PATH}")
     print(f"summary: {bloom['summary']}")
+
+    llm_status = (bloom.get("summary", {}).get("llm") or {}).get("status")
+    if llm_status == "failed":
+        sys.exit(3)
 
 
 if __name__ == "__main__":

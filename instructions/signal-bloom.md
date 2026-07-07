@@ -281,6 +281,7 @@ days_tracked
 days_in_observation
 watch_reason
 next_watch_point
+llm_insight
 strategy_version
 ```
 
@@ -291,7 +292,10 @@ bloom/bloom_<YYMMDD>.md
 bloom/state/bloom_state.csv
 bloom/state/bloom_events.jsonl
 bloom/state/bloom_input_<YYMMDD>.json
+bloom/state/snapshots/bloom_state_before_<YYYYMMDD>.csv
 ```
+
+`bloom_state_before_<YYYYMMDD>.csv` 是当日首次写入前的状态快照，用于同日重复运行时保持 `consecutive_reject`、`days_tracked` 等生命周期字段的判断基准稳定。重复运行同一天时必须优先读取该快照，避免已写入的当日 state 覆盖昨日累计状态，导致 `EXIT` 判断被冲掉。
 
 报告分区：
 
@@ -302,6 +306,15 @@ bloom/state/bloom_input_<YYMMDD>.json
 5. 冷却与准备移出
 6. 数据异常
 7. 待估值候选
+
+Markdown 的“池子变化”分区中，“今日新进入”和“移出”都使用紧凑多列表格展示，表头保持为空，单元格包含股票代码、名称和 Bloom 状态；不得把大量移出标的拼成单行长文本。
+
+LLM 观察要点：
+
+- Bloom 可调用 DeepSeek 为重点观察标的生成 `llm_insight`。
+- 若 LLM 未配置、调用失败或返回不完整，报告必须显式写出 LLM 状态和原因，并回退使用脚本生成的 `watch_reason`。
+- LLM 失败不得影响 Bloom 状态、事件、池子决策和报告生成。
+- 配置了 LLM 但调用失败时，脚本应在写出兜底报告后返回非 0，让执行层可以按联网权限重跑。
 
 ---
 
@@ -315,3 +328,5 @@ bloom/state/bloom_input_<YYMMDD>.json
 - `EXIT` 标的必须从滚动状态表移除，后续只能由模型二重新发现并以新生命周期进入。
 - 高结构分但高风险的股票应输出 `RISK_BLOCKED`，而不是 `TRIGGERED` 的正向交易结论。
 - `valuation_candidate` 只代表送估值候选，不代表估值结论或交易建议。
+- LLM 观察要点不得静默失败；每日 summary 和 Markdown 必须能看出 LLM 是成功、部分成功、跳过还是失败。
+- 配置了 LLM 且调用失败时，Bloom 命令不得以成功状态退出。

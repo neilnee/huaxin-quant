@@ -31,4 +31,4 @@ tmp_*/
 
 # Local development notes are not part of the public core release
 dev_logs/
-TODO.md
+# TODO.md is now tracked — requirements doc managed with the codebase

@@ -4,6 +4,7 @@
 
 用法:
   python3 scripts/quant_filter.py
+  python3 scripts/quant_filter.py --date 260707
   python3 scripts/quant_filter.py --pool pool/pool_260703.csv
   python3 scripts/quant_filter.py --code 300604 --name 长川科技
   python3 scripts/quant_filter.py --codes 300604,300442
@@ -71,6 +72,22 @@ SETUP_QUALITY_THRESHOLDS = SETUP_SCORING_CFG.get("quality_thresholds", {"A": 80,
 
 
 # ===================== 通用工具 =====================
+
+def normalize_run_date(value):
+    """Normalize an optional CLI date to YYYY-MM-DD."""
+    if not value:
+        return expected_trade_date()
+
+    raw = value.strip()
+    if len(raw) == 6 and raw.isdigit():
+        parsed = datetime.strptime(raw, "%y%m%d")
+        return expected_trade_date(parsed.strftime("%Y-%m-%d"))
+    if len(raw) == 10:
+        parsed = datetime.strptime(raw, "%Y-%m-%d")
+        return expected_trade_date(parsed.strftime("%Y-%m-%d"))
+
+    raise ValueError("日期格式必须为 YYMMDD 或 YYYY-MM-DD")
+
 
 def safe_float(value, default=None):
     try:
@@ -1875,6 +1892,7 @@ def main():
     load_local_env()
 
     parser = argparse.ArgumentParser(description="模型二：VCP 结构与触发信号精筛")
+    parser.add_argument("--date", help="运行交易日，支持 YYMMDD 或 YYYY-MM-DD，默认取预期最近交易日")
     parser.add_argument("--pool", help="模型一池文件路径（默认取当天 pool/pool_YYMMDD.csv）")
     parser.add_argument("--code", help="单只股票代码")
     parser.add_argument("--codes", help="多只股票代码，逗号分隔")
@@ -1890,7 +1908,11 @@ def main():
     parser.add_argument("--llm-top", type=int, default=10, help="LLM 解释 Top N，默认 10")
     args = parser.parse_args()
 
-    trade_date = expected_trade_date()
+    try:
+        trade_date = normalize_run_date(args.date)
+    except ValueError as exc:
+        print(f"错误: {exc}")
+        sys.exit(1)
     today_yy = trade_date.replace("-", "")[2:]
     run_date = trade_date
     use_cache = not args.no_cache

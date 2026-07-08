@@ -1,7 +1,7 @@
 # Signal Bloom：模型四 Bloom 信号层指令卡
 
 - **版本管理**: 由 Git 分支与提交历史管理
-- **最近更新**: 2026-07-05
+- **最近更新**: 2026-07-08
 - **所属模型**: 模型四 Tracker
 - **策略配置**: `strategies/04-bloom.json`
 - **核心目标**: 对模型二发现的股票进行信号质量判断和跨日生命周期跟踪，输出观察状态、风险阻断、估值候选和下一步观察点。
@@ -49,6 +49,10 @@ structure_stage
 setup_signal
 action_hint
 suggested_position
+setup_score
+setup_quality
+setup_reasons
+setup_misses
 structure_score
 structure_risk_score
 structure_risk_flags
@@ -117,7 +121,7 @@ Bloom 不重新计算模型二，但会使用模型二已输出或可直接读�
 | `EARLY` | 早期结构，低优先级观察 |
 | `FORMING` | 结构形成中，正常观察 |
 | `MATURE` | 结构成熟或紧致，重点观察 |
-| `TRIGGERED` | 模型二出现 `PULLBACK_BUY` / `RETEST_BUY` |
+| `TRIGGERED` | 模型二出现 `PULLBACK_BUY` / `BREAKOUT_BUY` / `RETEST_BUY` |
 | `RISK_BLOCKED` | 结构存在，但当前风险过高 |
 | `COOLDOWN` | 模型二临时出局，仍在观察保留期 |
 | `INVALID` | 结构失效或等待重建 |
@@ -129,6 +133,7 @@ Bloom 不重新计算模型二，但会使用模型二已输出或可直接读�
 | 模型二字段 | Bloom 状态 |
 |------------|------------|
 | `setup_signal=PULLBACK_BUY` | `TRIGGERED` |
+| `setup_signal=BREAKOUT_BUY` | `TRIGGERED` |
 | `setup_signal=RETEST_BUY` | `TRIGGERED` |
 | `structure_stage=VCP_TIGHT` | `MATURE` |
 | `structure_stage=VCP_MATURE` | `MATURE` |
@@ -153,7 +158,7 @@ Bloom 不重新计算模型二，但会使用模型二已输出或可直接读�
 | `NEW_ENTRY` | 昨日不在 Bloom 池，今日进入有效观察状态 |
 | `UPGRADE` | 状态等级上升，或结构分明显改善 |
 | `DOWNGRADE` | 状态等级下降，或结构分明显恶化 |
-| `SETUP_TRIGGER` | `setup_signal=PULLBACK_BUY/RETEST_BUY` |
+| `SETUP_TRIGGER` | `setup_signal=PULLBACK_BUY/BREAKOUT_BUY/RETEST_BUY` |
 | `RISK_BLOCK` | 高风险分或硬风险标记触发 |
 | `COOLDOWN` | 当日不再满足模型二观察条件，但仍在保留期 |
 | `EXIT` | 连续无效或结构失效超过规则，移出 Bloom 池 |
@@ -267,9 +272,14 @@ valuation_priority
 model2_stage
 model2_setup_signal
 model2_action_hint
+suggested_position
 structure_score
 structure_risk_score
 structure_risk_flags
+setup_score
+setup_quality
+setup_reasons
+setup_misses
 close
 MA20
 MA60
@@ -309,9 +319,22 @@ bloom/state/snapshots/bloom_state_before_<YYYYMMDD>.csv
 
 Markdown 的“池子变化”分区中，“今日新进入”和“移出”都使用紧凑多列表格展示，表头保持为空，单元格包含股票代码、名称和 Bloom 状态；不得把大量移出标的拼成单行长文本。
 
+Markdown 的“重点观察”表格列为：
+
+```text
+代码 | 名称 | 结构 | Bloom | 买点 | 风险 | 观察要点
+```
+
+- `结构` 列格式为 `model2_stage/structure_score分`，例如 `VCP_FORMING/62分`。
+- `买点` 列格式为 `setup_signal setup_quality/setup_score suggested_position`，例如 `BREAKOUT_BUY B/70 40%-50%`；无买点时填 `-`。
+- 不单独设置“收缩”列；收缩明细保留在该股票下方的缩进详情行中，且必须优先使用模型二 `contraction_group` 表示当前 VCP 结构，不得从全部历史 `contractions` 机械截取最近 N 段。
+- `Bloom` 列只表示生命周期状态，不得替代或吞掉模型二买点类型。
+
 LLM 观察要点：
 
 - Bloom 可调用 DeepSeek 为重点观察标的生成 `llm_insight`。
+- 传给 LLM 的上下文必须包含 `model2_setup_signal`、`setup_score`、`setup_quality`、`setup_reasons`、`setup_misses` 和 `suggested_position`，观察要点应考虑买点类型与质量。
+- LLM 观察要点按单只股票逐个请求，避免批量 JSON 截断或单个返回异常影响全部标的。
 - 若 LLM 未配置、调用失败或返回不完整，报告必须显式写出 LLM 状态和原因，并回退使用脚本生成的 `watch_reason`。
 - LLM 失败不得影响 Bloom 状态、事件、池子决策和报告生成。
 - 配置了 LLM 但调用失败时，脚本应在写出兜底报告后返回非 0，让执行层可以按联网权限重跑。

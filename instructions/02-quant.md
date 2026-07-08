@@ -29,12 +29,15 @@
 
 ```bash
 python3 scripts/quant_filter.py
+python3 scripts/quant_filter.py --date 260707
 python3 scripts/quant_filter.py --pool pool/pool_260703.csv
 python3 scripts/quant_filter.py --code 300604 --name 长川科技
 python3 scripts/quant_filter.py --codes 300604,300442
 python3 scripts/quant_filter.py --code 300604 --with-llm
 python3 scripts/quant_filter.py --code 300604 --json
 ```
+
+`--date` 用于回测或复盘指定交易日，支持 `YYMMDD` 与 `YYYY-MM-DD` 两种格式；未指定时按共享数据层的预期最近交易日运行。脚本会据此读取 `pool/pool_<YYMMDD>.csv`、日线缓存，并写出同日期的 `quant/` 与 `cache/quant_runs/` 文件。
 
 ### 职责边界
 

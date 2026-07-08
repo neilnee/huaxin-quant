@@ -42,6 +42,12 @@ STATUS_RANK = CONFIG["statuses"]["rank"]
 ACTIVE_STATUSES = set(CONFIG["statuses"]["active"])
 HOLD_STATUSES = set(CONFIG["statuses"]["hold"])
 HARD_RISK_FLAGS = set(CONFIG["risk_rules"]["hard_flags"])
+MODEL2_STAGE_RANK = {
+    "VCP_TIGHT": 4,
+    "VCP_MATURE": 3,
+    "VCP_FORMING": 2,
+    "VCP_EARLY": 1,
+}
 
 STATE_FIELDS = [
     "code",
@@ -64,9 +70,14 @@ STATE_FIELDS = [
     "model2_stage",
     "model2_setup_signal",
     "model2_action_hint",
+    "suggested_position",
     "structure_score",
     "structure_risk_score",
     "structure_risk_flags",
+    "setup_score",
+    "setup_quality",
+    "setup_reasons",
+    "setup_misses",
     "close",
     "MA20",
     "MA60",
@@ -200,8 +211,56 @@ def quant_action(row):
     return row.get("action_hint") or row.get("pool_type") or ""
 
 
+def quant_suggested_position(row):
+    return row.get("suggested_position", "")
+
+
 def quant_score(row):
     return row.get("structure_score", row.get("setup_score"))
+
+
+def quant_setup_score(row):
+    return row.get("setup_score", "")
+
+
+def quant_setup_quality(row):
+    return row.get("setup_quality", "")
+
+
+def quant_setup_reasons(row):
+    value = row.get("setup_reasons", "")
+    if isinstance(value, list):
+        return [str(v) for v in value if str(v)]
+    return [s.strip() for s in str(value or "").split(";") if s.strip()]
+
+
+def quant_setup_misses(row):
+    value = row.get("setup_misses", "")
+    if isinstance(value, list):
+        return [str(v) for v in value if str(v)]
+    return [s.strip() for s in str(value or "").split(";") if s.strip()]
+
+
+def quant_contraction_group(row):
+    group = row.get("contraction_group")
+    return group if isinstance(group, list) else []
+
+
+def contraction_display_fields(row):
+    group = quant_contraction_group(row)
+    if group:
+        return {
+            "count": str(len(group)),
+            "pcts": " -> ".join(f'{safe_float(c.get("pullback_pct")):.2f}%' for c in group),
+            "days": " -> ".join(str(c.get("duration_days", "")) for c in group),
+            "group": group,
+        }
+    return {
+        "count": str(row.get("contraction_count", "")),
+        "pcts": str(row.get("contraction_pcts", "")),
+        "days": str(row.get("contraction_days", "")),
+        "group": [],
+    }
 
 
 def quant_risk_score(row):
@@ -254,6 +313,34 @@ def normalize_status(value):
 
 def is_active_status(status):
     return status in ACTIVE_STATUSES
+
+
+def has_setup_trigger(row):
+    return row.get("model2_setup_signal") in {"PULLBACK_BUY", "BREAKOUT_BUY", "RETEST_BUY"}
+
+
+def is_watching_row(row):
+    if row.get("bloom_status") == "TRIGGERED" or has_setup_trigger(row):
+        return True
+
+    stage = row.get("model2_stage")
+    if stage in {"VCP_MATURE", "VCP_TIGHT"}:
+        return True
+
+    min_scores = CONFIG.get("reporting", {}).get("watching_min_scores", {})
+    if stage in min_scores:
+        return safe_float(row.get("structure_score")) >= safe_float(min_scores.get(stage), 0)
+
+    return False
+
+
+def watch_sort_key(row):
+    return (
+        0 if row.get("bloom_status") == "TRIGGERED" or has_setup_trigger(row) else 1,
+        -MODEL2_STAGE_RANK.get(row.get("model2_stage"), 0),
+        -safe_float(row.get("structure_score")),
+        row.get("code", ""),
+    )
 
 
 def status_rank(status):
@@ -539,7 +626,7 @@ def watch_text(status, signal, row, risk):
     if status == "MATURE":
         return (
             f"结构成熟: {stage}",
-            "观察是否出现 PULLBACK_BUY 或 RETEST_BUY",
+            "观察是否出现 PULLBACK_BUY、BREAKOUT_BUY 或 RETEST_BUY",
         )
     if status == "FORMING":
         return (
@@ -580,6 +667,7 @@ def state_row(prev_row, row, date_iso, status):
     score = safe_float(quant_score(row), 0.0)
     risk_score = safe_float(quant_risk_score(row), 0.0)
     risk = risk_level(row)
+    contraction_display = contraction_display_fields(row)
     status = apply_exit_rules(prev_row, status)
     event_type = lifecycle_event(prev_row, status)
     signal = bloom_signal(row, status, event_type, delta)
@@ -632,9 +720,14 @@ def state_row(prev_row, row, date_iso, status):
         "model2_stage": quant_stage(row),
         "model2_setup_signal": quant_signal(row),
         "model2_action_hint": quant_action(row),
+        "suggested_position": quant_suggested_position(row),
         "structure_score": fmt_num(score),
         "structure_risk_score": fmt_num(risk_score),
         "structure_risk_flags": ";".join(quant_risk_flags(row)),
+        "setup_score": fmt_num(quant_setup_score(row)),
+        "setup_quality": quant_setup_quality(row),
+        "setup_reasons": ";".join(quant_setup_reasons(row)),
+        "setup_misses": ";".join(quant_setup_misses(row)),
         "close": fmt_num(row.get("close")),
         "MA20": fmt_num(row.get("MA20")),
         "MA60": fmt_num(row.get("MA60")),
@@ -647,9 +740,10 @@ def state_row(prev_row, row, date_iso, status):
         "best_date": best_date,
         "watch_reason": watch_reason,
         "next_watch_point": next_watch_point,
-        "contraction_count": str(row.get("contraction_count", "")),
-        "contraction_pcts": str(row.get("contraction_pcts", "")),
-        "contraction_days": str(row.get("contraction_days", "")),
+        "contraction_count": contraction_display["count"],
+        "contraction_pcts": contraction_display["pcts"],
+        "contraction_days": contraction_display["days"],
+        "contraction_group": contraction_display["group"],
         "volume_pattern": str(row.get("volume_pattern", "")),
         "strategy_version": STRATEGY_VERSION,
     }
@@ -669,6 +763,9 @@ def row_event(row, date_iso):
         "risk_level": row["risk_level"],
         "valuation_candidate": row["valuation_candidate"],
         "valuation_priority": row["valuation_priority"],
+        "model2_setup_signal": row.get("model2_setup_signal", ""),
+        "setup_score": safe_float(row.get("setup_score")),
+        "setup_quality": row.get("setup_quality", ""),
         "watch_reason": row["watch_reason"],
         "next_watch_point": row["next_watch_point"],
         "strategy_version": STRATEGY_VERSION,
@@ -855,6 +952,23 @@ def _build_stock_context(r: dict, contractions: list = None) -> dict:
 
     # 量能趋势：用逐轮明细替代 volume_pattern 标签
     volume_detail = _describe_volume_trend(contractions) if contractions else "量能数据暂缺"
+    setup_signal = r.get("model2_setup_signal", "")
+    setup_score = r.get("setup_score", "")
+    setup_quality = r.get("setup_quality", "")
+    setup_position = r.get("suggested_position", "")
+    setup_reasons = r.get("setup_reasons", "")
+    setup_misses = r.get("setup_misses", "")
+    if setup_signal and setup_signal != "NONE":
+        setup_context = (
+            f"{setup_signal}，质量{setup_quality or '未分级'}，评分{setup_score or '无'}，"
+            f"模型二参考仓位{setup_position or '无'}；"
+            f"加分原因：{setup_reasons or '无'}；扣分/风险：{setup_misses or '无'}"
+        )
+    else:
+        setup_context = (
+            f"未触发买点；最高候选质量{setup_quality or '无'}，评分{setup_score or '无'}；"
+            f"未触发原因：{setup_misses or '无'}"
+        )
 
     return {
         "code": r.get("code", ""),
@@ -864,6 +978,7 @@ def _build_stock_context(r: dict, contractions: list = None) -> dict:
         "综合评分": f"{r.get('structure_score', '')}分",
         "风险等级": _RISK_LEVEL_CN.get(risk_raw, risk_raw),
         "风险标记": flags_cn,
+        "买点信号": setup_context,
         "收缩与量能": (
             f"{r.get('contraction_count', '')}轮收缩，幅度{r.get('contraction_pcts', '')}；"
             f"量能趋势：{volume_detail}"
@@ -911,21 +1026,22 @@ def call_llm_insights(watching_rows, quant_results=None):
     stocks_data = []
     for r in watching_rows:
         code = r.get("code", "")
-        all_cs = contractions_by_code.get(code, [])
-        # 只取 VCP 有效收缩轮次（与 contraction_count 对齐）
-        cc = int(r.get("contraction_count", 0)) if r.get("contraction_count") else 0
-        if cc > 0 and len(all_cs) >= cc:
-            contractions = all_cs[-cc:]
-        else:
-            contractions = all_cs
+        contractions = quant_contraction_group(r)
+        if not contractions:
+            all_cs = contractions_by_code.get(code, [])
+            cc = int(r.get("contraction_count", 0)) if r.get("contraction_count") else 0
+            if cc > 0 and len(all_cs) >= cc:
+                contractions = all_cs[-cc:]
+            else:
+                contractions = all_cs
         stocks_data.append(_build_stock_context(r, contractions))
 
     system_prompt = (
         "你是A股量价形态（VCP）解读助手。根据每只股票的结构化数据，"
         "生成一句简洁的中文解读（40-60字），涵盖三个要点：\n"
         "① 结构状态——收缩是否收敛、量能是否衰竭\n"
-        "② 关键位置——与枢轴、均线的关系\n"
-        "③ 观察方向——等突破确认 / 等风险释放 / 等结构改善\n\n"
+        "② 买点信号——若有 PULLBACK_BUY / BREAKOUT_BUY / RETEST_BUY，说明买点类型和质量\n"
+        "③ 观察方向——结合枢轴/均线位置，说明等确认、等风险释放或等结构改善\n\n"
         "术语参考：\n"
         "- VCP（波动收缩形态）：上升趋势中多轮回调，每轮波幅递减、量能萎缩，"
         "表明卖压衰竭、筹码锁定，是潜在突破前兆\n"
@@ -934,46 +1050,60 @@ def call_llm_insights(watching_rows, quant_results=None):
         "- 逐轮缩量：每轮收缩的成交量递减，筹码趋于锁定\n"
         "- 均线空排：短期均线在长期均线下方，处于下跌趋势中\n"
         "- 短期过热：近期涨幅过大，追涨风险高，需等待回调\n\n"
+        "买点术语：PULLBACK_BUY=结构内回踩低吸；BREAKOUT_BUY=枢轴突破参与；"
+        "RETEST_BUY=突破后回踩确认。A/B/C 为模型二买点质量分级。\n\n"
         "规则：只使用输入中已有的数据，不得引入未提供的外部事实。"
         "必须输出合法 JSON 对象，格式为："
         '{"insights":[{"code":"...","insight":"..."}]}'
     )
 
-    try:
-        resp = requests.post(
-            f"{base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": json.dumps(stocks_data, ensure_ascii=False)},
-                ],
-                "response_format": {"type": "json_object"},
-                "stream": False,
-                "temperature": 0.3,
-                "max_tokens": 2000,
-            },
-            timeout=60,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        content = data["choices"][0]["message"].get("content", "")
-        parsed = json.loads(content)
-        insights = {
-            item["code"]: item["insight"]
-            for item in parsed.get("insights", [])
-            if item.get("code") and item.get("insight")
-        }
-        status["returned"] = len(insights)
-        status["status"] = "success" if len(insights) == len(watching_rows) else "partial"
-        if status["status"] == "partial":
-            status["reason"] = f"returned {len(insights)} of {len(watching_rows)} insights"
-        return insights, status
-    except Exception as exc:
+    insights = {}
+    errors = []
+    max_tokens = int(CONFIG["reporting"].get("llm_max_tokens", 800))
+    for stock in stocks_data:
+        code = normalize_code(stock.get("code"))
+        try:
+            resp = requests.post(
+                f"{base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {
+                            "role": "user",
+                            "content": "只分析这一只股票，只返回合法 JSON：\n" + json.dumps([stock], ensure_ascii=False),
+                        },
+                    ],
+                    "response_format": {"type": "json_object"},
+                    "stream": False,
+                    "temperature": 0.2,
+                    "max_tokens": max_tokens,
+                },
+                timeout=60,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            content = data["choices"][0]["message"].get("content", "")
+            parsed = json.loads(content)
+            for item in parsed.get("insights", []):
+                item_code = normalize_code(item.get("code"))
+                insight = str(item.get("insight", "")).strip()
+                if item_code and insight:
+                    insights[item_code] = insight
+        except Exception as exc:
+            errors.append(f"{code}: {type(exc).__name__}: {str(exc)[:160]}")
+
+    status["returned"] = len(insights)
+    if len(insights) == len(watching_rows):
+        status["status"] = "success"
+    elif insights:
+        status["status"] = "partial"
+        status["reason"] = f"returned {len(insights)} of {len(watching_rows)} insights; " + " | ".join(errors[:3])
+    else:
         status["status"] = "failed"
-        status["reason"] = f"{type(exc).__name__}: {str(exc)[:300]}"
-        return {}, status
+        status["reason"] = " | ".join(errors[:5]) if errors else "no insights returned"
+    return insights, status
 
 
 def build_bloom(payload, previous_payload, date_yy, allow_partial=False):
@@ -1026,6 +1156,9 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False):
         r.get("code", ""),
     ))
 
+    watching_rows = [r for r in rows if is_watching_row(r)]
+    watching_rows.sort(key=watch_sort_key)
+
     sections = {
         "new_entries": [r for r in rows if r["event_type"] == "NEW_ENTRY"],
         "upgrades": [r for r in rows if r["bloom_signal"] == "UPGRADE"],
@@ -1036,11 +1169,7 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False):
         "exits": [r for r in rows if r["pool_decision"] == "EXIT"],
         "data_issues": [r for r in rows if r["bloom_status"] == "DATA_ISSUE"],
         "valuation_candidates": [r for r in rows if r["valuation_candidate"] == "true"],
-        "watching": [r for r in rows if r.get("model2_stage") in {"VCP_FORMING", "VCP_MATURE", "VCP_TIGHT"}
-                     or r.get("bloom_status") == "TRIGGERED"
-                     or r.get("model2_setup_signal") in {"PULLBACK_BUY", "RETEST_BUY"}
-                     or (r.get("model2_stage") == "VCP_EARLY"
-                         and safe_float(r.get("structure_score")) >= 60)],
+        "watching": watching_rows,
     }
 
     # ── LLM 解读：为重点观察标的生成自然语言洞察 ──
@@ -1139,6 +1268,29 @@ def _format_contraction_detail(cc, pcts, days):
     return f"↳ {cc}段：" + " -> ".join(segments)
 
 
+def _format_structure_cell(row):
+    stage = row.get("model2_stage", "")
+    score = row.get("structure_score", "")
+    return f"{stage} / {score}分" if score != "" else stage
+
+
+def _format_setup_cell(row):
+    setup = row.get("model2_setup_signal", "")
+    if not setup or setup == "NONE":
+        return "-"
+    quality = row.get("setup_quality", "")
+    score = row.get("setup_score", "")
+    position = row.get("suggested_position", "")
+    parts = [setup]
+    if score != "":
+        parts.append(f"{score}分")
+    if quality:
+        parts.append(f"{quality}级买点")
+    if position and position != "0":
+        parts.append(f"建议仓位：{position}")
+    return " / ".join(str(p) for p in parts if p)
+
+
 def append_compact_stock_table(lines, title, rows, empty_text, cols_per_row=8):
     if not rows:
         lines.extend(["", empty_text, ""])
@@ -1216,7 +1368,7 @@ def build_markdown(bloom):
     watching = sections.get("watching", [])
     lines.append("## 🔥 重点观察")
     if watching:
-        watch_headers = ["代码", "名称", "结构", "Bloom", "分", "风险", "收缩", "观察要点"]
+        watch_headers = ["代码", "名称", "结构", "Bloom", "买点", "风险", "观察要点"]
         watch_sep = ["---"] * len(watch_headers)
         lines.append("| " + " | ".join(watch_headers) + " |")
         lines.append("| " + " | ".join(watch_sep) + " |")
@@ -1233,15 +1385,15 @@ def build_markdown(bloom):
 
             main = [
                 r.get("code", ""), r.get("name", ""),
-                r.get("model2_stage", ""), r.get("bloom_status", ""),
-                r.get("structure_score", ""), risk,
-                cc, insight,
+                _format_structure_cell(r), r.get("bloom_status", ""),
+                _format_setup_cell(r), risk,
+                insight,
             ]
             lines.append("| " + " | ".join(str(c) for c in main) + " |")
 
             if cc and pcts:
                 detail = _format_contraction_detail(cc, pcts, days)
-                sub = [""] * 7 + [detail]
+                sub = [""] * 6 + [detail]
                 lines.append("| " + " | ".join(sub) + " |")
     else:
         lines.extend(["", "*今日无符合条件的结构*", ""])

@@ -1,7 +1,7 @@
 # 模型二：量价精筛模型（自执行指令）
 
 - **版本管理**: 由 Git 分支与提交历史管理，文件名不再携带版本号
-- **最近更新**: 2026-07-05
+- **最近更新**: 2026-07-08
 - **核心目标**: 在模型一基本面候选池中，寻找 VCP 蓄力结构和可交易触发，输出可复现、可回测、可供模型三/四复用的结构化量价结果。
 - **核心哲学**: 基本面先过滤烂公司，模型二只判断资金行为和价格位置。脚本负责确定性计算，LLM 只做可选解释，不参与结构阶段或交易触发判定。
 - **输入**: `pool/pool_<YYMMDD>.csv`，或命令行指定 `--code/--codes`
@@ -29,12 +29,15 @@
 
 ```bash
 python3 scripts/quant_filter.py
+python3 scripts/quant_filter.py --date 260707
 python3 scripts/quant_filter.py --pool pool/pool_260703.csv
 python3 scripts/quant_filter.py --code 300604 --name 长川科技
 python3 scripts/quant_filter.py --codes 300604,300442
 python3 scripts/quant_filter.py --code 300604 --with-llm
 python3 scripts/quant_filter.py --code 300604 --json
 ```
+
+`--date` 用于回测或复盘指定交易日，支持 `YYMMDD` 与 `YYYY-MM-DD` 两种格式；未指定时按共享数据层的预期最近交易日运行。脚本会据此读取 `pool/pool_<YYMMDD>.csv`、日线缓存，并写出同日期的 `quant/` 与 `cache/quant_runs/` 文件。
 
 ### 职责边界
 
@@ -77,7 +80,7 @@ classification
 - 结构有效期、pivot 距离、突破后延伸/回撤失效阈值。
 - 收缩递减比例、量能递减/缩量/失败阈值。
 - 阶段判定所需收缩轮数、紧致结构阈值。
-- `PULLBACK_BUY` / `RETEST_BUY` 触发信号参数。
+- `PULLBACK_BUY` / `BREAKOUT_BUY` / `RETEST_BUY` 触发信号参数。
 - 结构评分、量能评分、趋势评分、位置评分和风险分数。
 - 触发信号对应的模型二建议仓位文本。
 
@@ -137,6 +140,26 @@ VCP 结构已经成立
 20%-30%
 ```
 
+### BREAKOUT_BUY：VCP 枢轴突破参与
+
+`BREAKOUT_BUY` 是 VCP 成熟后收盘有效站上 pivot 的突破参与点。
+
+```text
+VCP_MATURE / VCP_TIGHT 结构已经成立
+收盘价站上 structure_pivot × 1.01
+当日量能恢复，至少不低于 vol_ma20 或 vol_ma5
+突破日无明显长上影或放量滞涨
+距离 MA20 不过度乖离，短期没有过热
+```
+
+`BREAKOUT_BUY` 买的是启动确认，确定性低于突破后回踩确认，但能避免强势股突破后不回踩导致完全踏空。
+
+仓位建议：
+
+```text
+40%-50%
+```
+
 ### RETEST_BUY：突破后回踩确认
 
 `RETEST_BUY` 是 VCP 突破后的确认买点。
@@ -160,7 +183,7 @@ VCP 结构已经成立
 
 ```text
 PULLBACK_BUY 买入 20%-30%
-→ 若直接上涨但不给 RETEST_BUY：不追满，只持有已有仓位
+→ 若直接突破且触发 BREAKOUT_BUY：加至 40%-50%
 → 若突破后回踩确认：RETEST_BUY 加至 60%-80%
 → 若跌破失效位：减仓或退出
 ```
@@ -178,11 +201,13 @@ date, open, high, low, close, volume, turnover
 日线数据统一通过 `scripts.shared.fetch_daily()` 获取，链路为：
 
 ```text
-当天缓存 → 最近可用缓存（需最新 K 线不早于预期交易日）
+运行日缓存 → 最近可用缓存（不得晚于运行日，且最新 K 线不早于目标交易日）
 → 妙想 API → 通达信 mootdx 备用源
 ```
 
 日线行情数据源实现位于 `scripts/data/market_data.py`，`scripts.shared.fetch_daily()` 负责统一缓存、主备源降级和返回标准 OHLCV 结构。
+
+模型二必须把本次 `run_date` 作为 `fetch_daily(..., as_of_date=run_date)` 传入数据层。未指定 `--date` 时，`run_date` 由共享数据层按 15:00 分隔线确定：15:00 前取前一交易日，15:00 后取当日，周末回退到周五。指定 `--date` 时，缓存新鲜度、最近缓存回退和回源后数据截断都以该指定交易日为准。
 
 妙想 API 是主数据源；当妙想限流、返回空数据、结构异常、异常抛出，或本地未配置 `MX_APIKEY` 时，脚本必须尝试通达信备用源。通达信通过 mootdx 获取日线 `frequency=9`，客户端使用内置 HQ 候选服务器、短超时和失败切换，避免批量运行长时间阻塞。通达信数据同样标准化为上述 OHLCV 结构并写入 `cache/daily/`。通达信不提供换手率，`turnover` 填 `0.0`；模型二判定不得依赖 `turnover`。
 
@@ -194,14 +219,16 @@ cache/daily/<code>_<YYMMDD>.pkl
 
 缓存只保存原始日线，不保存指标列。指标每次实时计算，避免规则变更后旧缓存污染。
 
+日线缓存按文件修改时间保留 30 天，模型二启动时自动清理超过 30 天未修改的 `cache/daily/*.pkl`。该清理只影响原始日线缓存，不影响 `quant/`、`cache/quant_runs/` 或 Bloom 报告。
+
 缓存命中必须同时满足：
 
 ```text
-文件名日期 = 当前运行日期；或当天缓存未命中时，为该股票最近可用缓存
-缓存内最后一条 K 线日期 >= 当前应有交易日
+文件名日期 = 当前运行日期；或运行日缓存未命中时，为该股票不晚于运行日的最近可用缓存
+缓存内最后一条 K 线日期 >= 目标交易日
 ```
 
-若当天盘中或盘后早期生成的缓存仍停留在前一交易日（例如文件为 `*_260703.pkl`，但最后 K 线是 `2026-07-02`），脚本必须视为过期并重新拉取。已拉到当前交易日的缓存继续复用，避免重复调用接口。
+若当天盘中或盘后早期生成的缓存仍停留在前一交易日（例如文件为 `*_260703.pkl`，但最后 K 线是 `2026-07-02`），脚本必须视为过期并重新拉取。已拉到目标交易日的缓存继续复用，避免重复调用接口。若回源返回了目标交易日之后的数据，数据层必须先截断到 `<= as_of_date` 再返回并保存，防止复盘指定日期时混入未来 K 线。
 
 ---
 
@@ -350,12 +377,17 @@ TREND_REBUILD
 |--------------|------|
 | `NONE` | 没有交易触发 |
 | `PULLBACK_BUY` | VCP 结构内缩量回踩买点，适合轻仓试探 |
+| `BREAKOUT_BUY` | VCP 成熟后枢轴突破参与点，适合半仓参与 |
 | `RETEST_BUY` | 突破后回踩确认买点，确认度高于 PULLBACK_BUY |
 
 `setup_signal` 必须建立在 `structure_stage` 之上。它不是独立形态，而是“结构阶段 + 当日量价触发条件”的结果。
+模型二使用四段式买点评分：硬条件只判断买点形态是否成立；`setup_pattern_score` 表示动作分；`setup_score` 是结构基础分、动作分和风险修正后的最终买点分。
 
 ```text
 setup_signal = structure_stage + trigger_conditions
+setup_pattern_score = action_type_base + action_quality_score
+setup_score = stage_base + setup_pattern_score + risk_adjust
+setup_quality = setup_signal + setup_score
 ```
 
 触发定义：
@@ -369,18 +401,41 @@ NONE
 PULLBACK_BUY
 - 结构内缩量回踩买点。
 - 前提阶段：VCP_FORMING / VCP_MATURE / VCP_TIGHT。
-- 触发条件：缩量回踩 MA20 / MA60 / 收敛下沿，最近收缩低点不破，MA20 斜率未明显走坏，短期不过热，无放量长上影。
+- 硬条件：回踩 MA20 / MA60 / 收敛下沿，具备基础缩量，最近收缩低点不破，MA20 斜率未明显走坏，无放量长上影，无趋势硬风险。
+- 评分项：买点类型基础分、回踩位置、缩量质量、前低确认。
+- 缩量确认：`volume_dry_up < 0.80`，或收缩段均量逐轮递减且当前 1-3 日量能仍处于最近收缩段低量区。单日地量只能作为确认，不得单独触发买点。
 - 交易含义：低吸试探，风险收益比优先，确定性低于 RETEST_BUY。
 - 模型二量价侧建议：BUY_LIGHT，参考仓位 20%-30%。
 
+BREAKOUT_BUY
+- VCP 枢轴突破参与点。
+- 前提形态：当前存在有效 VCP 结构，`structure_stage` 至少为 `VCP_FORMING`，且两轮以上主收缩结构质量需由评分确认。
+- 硬条件：最新收盘站上 `structure_pivot × 1.01`，当日成交量高于 `vol_ma20` 或 `vol_ma5`，突破日无明显长上影/放量滞涨，无趋势硬风险。
+- 初始突破边界：最新收盘不得高于 `structure_pivot × 1.08`，否则视为突破后延伸，不再触发 `BREAKOUT_BUY`。
+- 评分项：买点类型基础分、突破幅度、突破量能、K线确认。
+- 交易含义：突破正在发生，可以参与但尚未经过回踩验证，确定性低于 RETEST_BUY。
+- 模型二量价侧建议：BUY_BREAKOUT，参考仓位 40%-50%。
+
 RETEST_BUY
 - 突破后回踩确认买点。
-- 前提形态：当前存在有效 VCP 结构，且 `structure_stage` 只能是 `VCP_MATURE` / `VCP_TIGHT`。
-- 排除条件：`structure_valid=false`、`POST_BREAKOUT`、`TREND_REBUILD`、`TREND_WATCH`、`NONE`、`DATA_ISSUE`，以及硬风险标记（`OVERHEAT_CHG5`、`OVERHEAT_CHG20`、`DOWNTREND`、`DEEP_FALL`）均不得触发 `RETEST_BUY`。
-- 触发条件：先放量突破关键位（突破日不能是放量长上影），随后 3-10 个交易日内缩量回踩，回踩不跌破突破位，最新收盘重新站回突破位或 MA10。
+- 前提形态：当前存在有效 VCP 结构，`structure_stage` 至少为 `VCP_FORMING`。
+- 排除条件：`structure_valid=false`、`POST_BREAKOUT`、`TREND_REBUILD`、`TREND_WATCH`、`NONE`、`DATA_ISSUE`，以及趋势硬风险标记（`DOWNTREND`、`DEEP_FALL`）均不得触发 `RETEST_BUY`；短期过热只影响 `setup_score`。
+- 硬条件：先有效突破关键位（突破日不能是放量长上影），随后缩量回踩，回踩不有效跌破突破位，最新收盘重新站回突破位或 MA10，无趋势硬风险。
+- 评分项：买点类型基础分、回踩位置、回踩量能、重新确认。
 - 交易含义：突破已经发生并经回踩确认，确定性高于 PULLBACK_BUY。
-- 模型二量价侧建议：BUY_STANDARD，参考仓位 60%-80%。
+- 模型二量价侧建议：BUY_STANDARD；A 级参考仓位 60%-80%，B 级参考仓位 40%-50%，C 级轻仓或观察。
 ```
+
+最终买点分公式：
+
+```text
+setup_score = stage_base
+            + action_type_base
+            + action_quality_score
+            + risk_adjust
+```
+
+交易含义：结构阶段决定买点基础上限，买点类型决定天然确认度，动作质量决定当天执行质量，风险标识负责加分或降级。
 
 模型二只判断量价触发是否成立；模型三估值是否支持、模型四是否实际给买入建议，需要在模型四中决定。
 
@@ -390,6 +445,7 @@ RETEST_BUY
 |-------------|------|
 | `WATCH` | 只观察，不给买入动作 |
 | `BUY_LIGHT` | 缩量回踩触发，量价侧允许轻仓试探 |
+| `BUY_BREAKOUT` | 枢轴突破触发，量价侧允许半仓参与 |
 | `BUY_STANDARD` | 突破回踩确认，量价侧允许标准仓位 |
 | `AVOID_CHASE` | 结构已突破延伸或位置过热，不追高 |
 | `WAIT_REBUILD` | 旧结构失效，等待重新形成 |
@@ -408,6 +464,11 @@ BUY_LIGHT
 - setup_signal=PULLBACK_BUY。
 - 说明量价侧出现结构内缩量回踩，适合小仓位试探。
 - 模型四仍需检查估值安全边际和账户已有仓位。
+
+BUY_BREAKOUT
+- setup_signal=BREAKOUT_BUY。
+- 说明量价侧出现 VCP 枢轴突破，但尚未经过回踩确认。
+- 模型四可在估值支持时给出半仓参与建议；若已持有 PULLBACK_BUY 仓位，则可考虑加至 40%-50%。
 
 BUY_STANDARD
 - setup_signal=RETEST_BUY。
@@ -436,6 +497,7 @@ DATA_SKIP
 ```text
 structure_type / structure_stage / setup_signal
 structure_score / structure_risk_flags / structure_risk_score
+setup_pattern_score / setup_score / setup_quality / setup_reasons / setup_misses
 support_price / invalid_price / breakout_level
 ```
 
@@ -491,7 +553,7 @@ VCP 不再使用 `range_10/range_20/range_60` 等截面指标做 `6选3` 判定�
 ```text
 从局部高点回撤到后续局部低点
 回撤幅度 >= 4%
-持续时间 3-45 个交易日
+持续时间 3-45 个交易日，按包含首尾的 K 线数量计算
 低点后有一定修复，不能是单边下跌未止
 ```
 
@@ -505,6 +567,8 @@ duration_days
 avg_volume
 recovery_pct
 ```
+
+`duration_days = low_idx - high_idx + 1`，与 `avg_volume` 的取样区间一致，均包含局部高点日和局部低点日。
 
 ### 1.2 收缩递减
 
@@ -526,6 +590,25 @@ abs(Cn.pullback) <= abs(Cn-1.pullback) * 1.05
 ### 1.3 当前有效性
 
 模型二只识别**当前正在形成**的 VCP，不追认已经走完或已经被大幅突破的历史结构。收缩轮次必须组成一个当前有效的 contraction group。
+
+当前 VCP 结构组不能机械取最近三轮 contraction。脚本必须枚举最近候选组，并优先选择更符合当前主结构的 group：
+
+```text
+收缩幅度递减或接近递减
+量能逐轮下降或近期 drying
+当前价格接近 structure_pivot
+最后一轮收缩距离当前更近
+组内轮次足够，但早期噪声回调不得污染主收缩序列
+```
+
+相邻收缩轮次允许轻微扩张，但明显扩张会打断旧 VCP 组，后一轮应视为新结构的起点：
+
+```text
+abs(Cn.pullback) > abs(Cn-1.pullback) * 1.50
+且 abs(Cn.pullback) - abs(Cn-1.pullback) >= 5pct
+```
+
+交易含义：VCP 的核心是波动和抛压逐步收敛。若窄幅整理后突然出现大一级别回撤，说明旧收敛结构被破坏，不能为了凑满三段而把它和前面的窄收缩归为同一组。小幅扩张只降低结构质量，不直接重置。
 
 对每个候选 contraction group 计算：
 
@@ -596,11 +679,27 @@ vol_ma20 < vol_ma60
 
 ```text
 volume_dry_up < 0.80
+或：收缩段 avg_volume 逐轮下降，且最近 1-3 日均量 <= 最近收缩段 avg_volume × 1.10
 distance_ma20 在 [-4%, +3%]，或 distance_ma60 在 [-5%, +5%]
 close > 最近一轮 contraction low × 1.02
 MA20_slope >= -0.03%/日
-近 5 日涨幅 < 12%
 无放量长阴
+setup_score >= 55
+```
+
+### BREAKOUT_BUY：VCP 枢轴突破
+
+必须先有 `VCP_FORMING`、`VCP_MATURE` 或 `VCP_TIGHT`，`VCP_EARLY` 只观察，不触发 `BREAKOUT_BUY`。
+
+```text
+structure_valid = true
+close > structure_pivot × 1.01
+close <= structure_pivot × 1.08
+当日成交量 > vol_ma20 × 1.0，或当日成交量 > vol_ma5 × 1.0
+无明显长上影
+无放量滞涨
+无 DOWNTREND / DEEP_FALL
+setup_score >= 55
 ```
 
 ### RETEST_BUY：突破后回踩确认
@@ -610,22 +709,108 @@ MA20_slope >= -0.03%/日
 ```text
 breakout_level = 最近 60 日箱体上沿/突破前高
 突破日收盘价 > breakout_level × 1.01
-突破日成交量 > vol_ma20 × 1.5
+突破日成交量 > vol_ma20 × 1.0
 突破日无明显长上影
 ```
 
 回踩确认：
 
 ```text
-突破后 3-10 个交易日内
-回踩低点 >= breakout_level × 0.97
+突破后 1-15 个交易日内；3-10 日为标准时间窗，1-2 日早期回踩降低评分
+回踩低点在 breakout_level × 0.97 至 breakout_level × 1.005 区间内
 回踩期缩量
 最新收盘重新站回 breakout_level 或 MA10
+setup_score >= 55
 ```
 
 ---
 
 ## 六、评分与风险事实
+
+### 6.0 setup_score 买点评分
+
+买点评分公式：
+
+```text
+setup_score = stage_base
+            + action_type_base
+            + action_quality_score
+            + risk_adjust
+```
+
+结构基础分：
+
+| structure_stage | stage_base |
+|-----------------|------------|
+| `VCP_FORMING` | 30 |
+| `VCP_MATURE` | 50 |
+| `VCP_TIGHT` | 60 |
+| `VCP_EARLY` | 不触发买点 |
+
+买点类型基础分：
+
+| setup_signal | action_type_base |
+|--------------|------------------|
+| `PULLBACK_BUY` | 6 |
+| `BREAKOUT_BUY` | 10 |
+| `RETEST_BUY` | 15 |
+
+动作质量分为 0-15 分，三类买点分别评分。
+
+`PULLBACK_BUY`：
+
+| 维度 | 分数 |
+|------|------|
+| 位置质量 | `distance_ma20 ∈ [0%, +2%]` 得 5；`[-3%, 0%)` 或 `(+2%, +3%]` 得 2；只靠近 MA60 得 2；其他 0 |
+| 量能质量 | `volume_dry_up < 0.80` 得 5；收缩段低量确认得 4；`volume_dry_up < 0.90` 得 2；其他 0 |
+| 确认质量 | `close > last_low * 1.05` 且 `MA20_slope >= 0` 得 5；`close > last_low * 1.02` 且 `MA20_slope >= -0.03` 得 2；其他 0 |
+
+`BREAKOUT_BUY`：
+
+| 维度 | 分数 |
+|------|------|
+| 突破幅度 | `close / pivot ∈ [1.02, 1.05]` 得 5；`[1.01, 1.02)` 或 `(1.05, 1.08]` 得 2；其他 0 |
+| 量能质量 | `volume > vol_ma20 * 1.5` 得 5；`> 1.2` 得 3；`> 1.0` 得 1；其他 0 |
+| K 线确认 | 收盘接近日高、实体强、无明显上影得 5；站上 pivot 且无长上影得 2；其他 0 |
+
+`RETEST_BUY`：
+
+| 维度 | 分数 |
+|------|------|
+| 回踩位置 | `pullback_low / breakout_level ∈ [0.99, 1.003]` 得 5；`[0.97, 0.99)` 或 `(1.003, 1.005]` 得 2；其他 0 |
+| 回踩量能 | 回踩期均量 `< 突破日量 * 0.70` 得 5；`< 0.85` 得 3；`< 1.0` 得 1；其他 0 |
+| 重新确认 | `close >= breakout_level` 且收盘强得 5；`close >= breakout_level` 或 `close >= MA10` 得 2；其他 0 |
+
+风险修正分：
+
+```text
+risk_adjust = clamp(sum(flag_adjustments), -20, +10)
+无风险标识 = +10
+```
+
+| risk_flag | 修正 |
+|-----------|------|
+| `EXTENDED_FROM_MA20` | -5 |
+| `MA20_DECLINE` | -6 |
+| `BELOW_MA120` | -6 |
+| `FAR_ABOVE_MA20` | -8 |
+| `LONG_UPPER_SHADOW` | -10 |
+| `VOLUME_STALL` | -10 |
+| `OVERHEAT_CHG5` | -12 |
+| `OVERHEAT_CHG20` | -12 |
+| `DOWNTREND` | -20 |
+| `DEEP_FALL` | -20 |
+
+买点等级：
+
+| setup_quality | setup_score |
+|---------------|-------------|
+| A | `>= 80` |
+| B | `65-79` |
+| C | `55-64` |
+| D | `< 55` |
+
+`setup_signal` 只有在硬条件成立且 `setup_score >= 55` 时触发。
 
 ```text
 structure_score = stage_score
@@ -756,6 +941,11 @@ model2_include
 structure_score
 structure_risk_score
 structure_risk_flags
+setup_pattern_score
+setup_score
+setup_quality
+setup_reasons
+setup_misses
 
 support_price
 invalid_price

@@ -1030,7 +1030,7 @@ def main():
 
     # 清理旧缓存
     cleanup_cache = DailyCache()
-    cleaned = cleanup_cache.cleanup_old(keep_days=5)
+    cleaned = cleanup_cache.cleanup_old(keep_days=30)
     if cleaned:
         print(f"🧹 清理旧缓存: {cleaned} 个文件")
 

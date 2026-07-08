@@ -1933,9 +1933,9 @@ def main():
     print(f"缓存: {'关闭' if args.no_cache else '开启'} | 目录: {cleanup_cache.cache_dir}")
     print("=" * 70)
 
-    cleaned = cleanup_cache.cleanup_old(keep_days=5)
+    cleaned = cleanup_cache.cleanup_old(keep_days=30)
     if cleaned:
-        print(f"已清理 {cleaned} 个超过5天的旧缓存文件")
+        print(f"已清理 {cleaned} 个超过30天的旧缓存文件")
     if args.refresh:
         cleared = cleanup_cache.clear_today(today_yy)
         print(f"已清除今日缓存 {cleared} 个文件")

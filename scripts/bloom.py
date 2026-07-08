@@ -309,6 +309,25 @@ def is_active_status(status):
     return status in ACTIVE_STATUSES
 
 
+def has_setup_trigger(row):
+    return row.get("model2_setup_signal") in {"PULLBACK_BUY", "BREAKOUT_BUY", "RETEST_BUY"}
+
+
+def is_watching_row(row):
+    if row.get("bloom_status") == "TRIGGERED" or has_setup_trigger(row):
+        return True
+
+    stage = row.get("model2_stage")
+    if stage in {"VCP_MATURE", "VCP_TIGHT"}:
+        return True
+
+    min_scores = CONFIG.get("reporting", {}).get("watching_min_scores", {})
+    if stage in min_scores:
+        return safe_float(row.get("structure_score")) >= safe_float(min_scores.get(stage), 0)
+
+    return False
+
+
 def status_rank(status):
     return STATUS_RANK.get(status, 0)
 
@@ -1132,11 +1151,7 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False):
         "exits": [r for r in rows if r["pool_decision"] == "EXIT"],
         "data_issues": [r for r in rows if r["bloom_status"] == "DATA_ISSUE"],
         "valuation_candidates": [r for r in rows if r["valuation_candidate"] == "true"],
-        "watching": [r for r in rows if r.get("model2_stage") in {"VCP_FORMING", "VCP_MATURE", "VCP_TIGHT"}
-                     or r.get("bloom_status") == "TRIGGERED"
-                     or r.get("model2_setup_signal") in {"PULLBACK_BUY", "BREAKOUT_BUY", "RETEST_BUY"}
-                     or (r.get("model2_stage") == "VCP_EARLY"
-                         and safe_float(r.get("structure_score")) >= 60)],
+        "watching": [r for r in rows if is_watching_row(r)],
     }
 
     # ── LLM 解读：为重点观察标的生成自然语言洞察 ──

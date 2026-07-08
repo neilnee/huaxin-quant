@@ -326,6 +326,7 @@ Markdown 的“重点观察”表格列为：
 ```
 
 - 重点观察纳入规则：`VCP_MATURE` / `VCP_TIGHT` 默认纳入；`VCP_FORMING` 需 `structure_score >= 60`；`VCP_EARLY` 需 `structure_score >= 60`；若 `setup_signal=PULLBACK_BUY/BREAKOUT_BUY/RETEST_BUY` 或 Bloom 状态为 `TRIGGERED`，不受结构分门槛限制，必须纳入。
+- 重点观察排序规则：先排有买点触发的标的，再按结构阶段强弱排序（`VCP_TIGHT` > `VCP_MATURE` > `VCP_FORMING` > `VCP_EARLY`），最后按 `structure_score` 从高到低排序。
 - `结构` 列格式为 `model2_stage / structure_score分`，例如 `VCP_FORMING / 62分`。
 - `买点` 列格式为 `setup_signal / setup_score分 / setup_quality级买点 / 建议仓位：suggested_position`，例如 `BREAKOUT_BUY / 82分 / A级买点 / 建议仓位：40%-50%`；无买点时填 `-`。
 - 不单独设置“收缩”列；收缩明细保留在该股票下方的缩进详情行中，且必须优先使用模型二 `contraction_group` 表示当前 VCP 结构，不得从全部历史 `contractions` 机械截取最近 N 段。

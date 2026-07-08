@@ -42,6 +42,12 @@ STATUS_RANK = CONFIG["statuses"]["rank"]
 ACTIVE_STATUSES = set(CONFIG["statuses"]["active"])
 HOLD_STATUSES = set(CONFIG["statuses"]["hold"])
 HARD_RISK_FLAGS = set(CONFIG["risk_rules"]["hard_flags"])
+MODEL2_STAGE_RANK = {
+    "VCP_TIGHT": 4,
+    "VCP_MATURE": 3,
+    "VCP_FORMING": 2,
+    "VCP_EARLY": 1,
+}
 
 STATE_FIELDS = [
     "code",
@@ -326,6 +332,15 @@ def is_watching_row(row):
         return safe_float(row.get("structure_score")) >= safe_float(min_scores.get(stage), 0)
 
     return False
+
+
+def watch_sort_key(row):
+    return (
+        0 if row.get("bloom_status") == "TRIGGERED" or has_setup_trigger(row) else 1,
+        -MODEL2_STAGE_RANK.get(row.get("model2_stage"), 0),
+        -safe_float(row.get("structure_score")),
+        row.get("code", ""),
+    )
 
 
 def status_rank(status):
@@ -1141,6 +1156,9 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False):
         r.get("code", ""),
     ))
 
+    watching_rows = [r for r in rows if is_watching_row(r)]
+    watching_rows.sort(key=watch_sort_key)
+
     sections = {
         "new_entries": [r for r in rows if r["event_type"] == "NEW_ENTRY"],
         "upgrades": [r for r in rows if r["bloom_signal"] == "UPGRADE"],
@@ -1151,7 +1169,7 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False):
         "exits": [r for r in rows if r["pool_decision"] == "EXIT"],
         "data_issues": [r for r in rows if r["bloom_status"] == "DATA_ISSUE"],
         "valuation_candidates": [r for r in rows if r["valuation_candidate"] == "true"],
-        "watching": [r for r in rows if is_watching_row(r)],
+        "watching": watching_rows,
     }
 
     # ── LLM 解读：为重点观察标的生成自然语言洞察 ──

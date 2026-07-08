@@ -374,12 +374,12 @@ TREND_REBUILD
 | `RETEST_BUY` | 突破后回踩确认买点，确认度高于 PULLBACK_BUY |
 
 `setup_signal` 必须建立在 `structure_stage` 之上。它不是独立形态，而是“结构阶段 + 当日量价触发条件”的结果。
-模型二使用三层判断：硬条件只判断买点形态是否成立；`setup_pattern_score` 判断买点动作质量；`setup_score` 在动作分基础上叠加结构质量修正，表示最终买点质量。天数、短期涨幅、距 MA20、量能强弱等偏主观条件不得单独一票否决形态，应进入买点质量评分。
+模型二使用四段式买点评分：硬条件只判断买点形态是否成立；`setup_pattern_score` 表示动作分；`setup_score` 是结构基础分、动作分和风险修正后的最终买点分。
 
 ```text
 setup_signal = structure_stage + trigger_conditions
-setup_pattern_score = trigger_action_score
-setup_score = setup_pattern_score after structure/risk caps
+setup_pattern_score = action_type_base + action_quality_score
+setup_score = stage_base + setup_pattern_score + risk_adjust
 setup_quality = setup_signal + setup_score
 ```
 
@@ -394,8 +394,8 @@ NONE
 PULLBACK_BUY
 - 结构内缩量回踩买点。
 - 前提阶段：VCP_FORMING / VCP_MATURE / VCP_TIGHT。
-- 硬条件：回踩 MA20 / MA60 / 收敛下沿，最近收缩低点不破，MA20 斜率未明显走坏，无放量长上影，无趋势硬风险。
-- 评分项：缩量程度、结构成熟度、是否在 MA20 上方回踩、近 5 日涨幅。
+- 硬条件：回踩 MA20 / MA60 / 收敛下沿，具备基础缩量，最近收缩低点不破，MA20 斜率未明显走坏，无放量长上影，无趋势硬风险。
+- 评分项：买点类型基础分、回踩位置、缩量质量、前低确认。
 - 缩量确认：`volume_dry_up < 0.80`，或收缩段均量逐轮递减且当前 1-3 日量能仍处于最近收缩段低量区。单日地量只能作为确认，不得单独触发买点。
 - 交易含义：低吸试探，风险收益比优先，确定性低于 RETEST_BUY。
 - 模型二量价侧建议：BUY_LIGHT，参考仓位 20%-30%。
@@ -405,7 +405,7 @@ BREAKOUT_BUY
 - 前提形态：当前存在有效 VCP 结构，`structure_stage` 至少为 `VCP_FORMING`，且两轮以上主收缩结构质量需由评分确认。
 - 硬条件：最新收盘站上 `structure_pivot × 1.01`，当日成交量高于 `vol_ma20` 或 `vol_ma5`，突破日无明显长上影/放量滞涨，无趋势硬风险。
 - 初始突破边界：最新收盘不得高于 `structure_pivot × 1.08`，否则视为突破后延伸，不再触发 `BREAKOUT_BUY`。
-- 评分项：VCP 成熟度、最近两轮是否递减、量能是否逐轮下降、站上 pivot 幅度、距 MA20、近 5 日涨幅。
+- 评分项：买点类型基础分、突破幅度、突破量能、K线确认。
 - 交易含义：突破正在发生，可以参与但尚未经过回踩验证，确定性低于 RETEST_BUY。
 - 模型二量价侧建议：BUY_BREAKOUT，参考仓位 40%-50%。
 
@@ -414,30 +414,21 @@ RETEST_BUY
 - 前提形态：当前存在有效 VCP 结构，`structure_stage` 至少为 `VCP_FORMING`。
 - 排除条件：`structure_valid=false`、`POST_BREAKOUT`、`TREND_REBUILD`、`TREND_WATCH`、`NONE`、`DATA_ISSUE`，以及趋势硬风险标记（`DOWNTREND`、`DEEP_FALL`）均不得触发 `RETEST_BUY`；短期过热只影响 `setup_score`。
 - 硬条件：先有效突破关键位（突破日不能是放量长上影），随后缩量回踩，回踩不有效跌破突破位，最新收盘重新站回突破位或 MA10，无趋势硬风险。
-- 评分项：突破后天数、回踩贴近突破位程度、回踩缩量程度、收回突破位强度、距 MA20、近 5 日涨幅。
+- 评分项：买点类型基础分、回踩位置、回踩量能、重新确认。
 - 交易含义：突破已经发生并经回踩确认，确定性高于 PULLBACK_BUY。
-- 模型二量价侧建议：BUY_STANDARD；`setup_score>=80` 参考仓位 60%-80%，`70<=setup_score<80` 参考仓位 40%-50%。
+- 模型二量价侧建议：BUY_STANDARD；A 级参考仓位 60%-80%，B 级参考仓位 40%-50%，C 级轻仓或观察。
 ```
 
-买点评分修正：
+最终买点分公式：
 
 ```text
-setup_pattern_score 只评价触发动作本身，例如回踩是否贴近突破位、是否收回突破位、是否缩量。
-setup_score 是最终买点分，必须兼顾底层 VCP 结构质量。
+setup_score = stage_base
+            + action_type_base
+            + action_quality_score
+            + risk_adjust
 ```
 
-当动作分较高但结构质量不足时，最终买点分按配置封顶：
-
-```text
-structure_score < 50 / < 60 / < 70
-structure_stage 仅为 VCP_FORMING
-volume_pattern 不是 decreasing / drying
-存在 EXTENDED_FROM_MA20
-post_structure_gain > 20%
-distance_ma20 > 10%
-```
-
-交易含义：动作标准但结构一般时，可以识别买点，但不得给出满分或高仓位。例如标准 RETEST 动作若建立在两段 FORMING、量能 mixed、价格远离 MA20 的结构上，应降为 B 级或轻仓确认，而不是 A/100。
+交易含义：结构阶段决定买点基础上限，买点类型决定天然确认度，动作质量决定当天执行质量，风险标识负责加分或降级。
 
 模型二只判断量价触发是否成立；模型三估值是否支持、模型四是否实际给买入建议，需要在模型四中决定。
 
@@ -686,7 +677,7 @@ distance_ma20 在 [-4%, +3%]，或 distance_ma60 在 [-5%, +5%]
 close > 最近一轮 contraction low × 1.02
 MA20_slope >= -0.03%/日
 无放量长阴
-setup_score >= 70
+setup_score >= 55
 ```
 
 ### BREAKOUT_BUY：VCP 枢轴突破
@@ -701,7 +692,7 @@ close <= structure_pivot × 1.08
 无明显长上影
 无放量滞涨
 无 DOWNTREND / DEEP_FALL
-setup_score >= 70
+setup_score >= 55
 ```
 
 ### RETEST_BUY：突破后回踩确认
@@ -722,12 +713,97 @@ breakout_level = 最近 60 日箱体上沿/突破前高
 回踩低点在 breakout_level × 0.97 至 breakout_level × 1.005 区间内
 回踩期缩量
 最新收盘重新站回 breakout_level 或 MA10
-setup_score >= 70
+setup_score >= 55
 ```
 
 ---
 
 ## 六、评分与风险事实
+
+### 6.0 setup_score 买点评分
+
+买点评分公式：
+
+```text
+setup_score = stage_base
+            + action_type_base
+            + action_quality_score
+            + risk_adjust
+```
+
+结构基础分：
+
+| structure_stage | stage_base |
+|-----------------|------------|
+| `VCP_FORMING` | 30 |
+| `VCP_MATURE` | 50 |
+| `VCP_TIGHT` | 60 |
+| `VCP_EARLY` | 不触发买点 |
+
+买点类型基础分：
+
+| setup_signal | action_type_base |
+|--------------|------------------|
+| `PULLBACK_BUY` | 6 |
+| `BREAKOUT_BUY` | 10 |
+| `RETEST_BUY` | 15 |
+
+动作质量分为 0-15 分，三类买点分别评分。
+
+`PULLBACK_BUY`：
+
+| 维度 | 分数 |
+|------|------|
+| 位置质量 | `distance_ma20 ∈ [0%, +2%]` 得 5；`[-3%, 0%)` 或 `(+2%, +3%]` 得 2；只靠近 MA60 得 2；其他 0 |
+| 量能质量 | `volume_dry_up < 0.80` 得 5；收缩段低量确认得 4；`volume_dry_up < 0.90` 得 2；其他 0 |
+| 确认质量 | `close > last_low * 1.05` 且 `MA20_slope >= 0` 得 5；`close > last_low * 1.02` 且 `MA20_slope >= -0.03` 得 2；其他 0 |
+
+`BREAKOUT_BUY`：
+
+| 维度 | 分数 |
+|------|------|
+| 突破幅度 | `close / pivot ∈ [1.02, 1.05]` 得 5；`[1.01, 1.02)` 或 `(1.05, 1.08]` 得 2；其他 0 |
+| 量能质量 | `volume > vol_ma20 * 1.5` 得 5；`> 1.2` 得 3；`> 1.0` 得 1；其他 0 |
+| K 线确认 | 收盘接近日高、实体强、无明显上影得 5；站上 pivot 且无长上影得 2；其他 0 |
+
+`RETEST_BUY`：
+
+| 维度 | 分数 |
+|------|------|
+| 回踩位置 | `pullback_low / breakout_level ∈ [0.99, 1.003]` 得 5；`[0.97, 0.99)` 或 `(1.003, 1.005]` 得 2；其他 0 |
+| 回踩量能 | 回踩期均量 `< 突破日量 * 0.70` 得 5；`< 0.85` 得 3；`< 1.0` 得 1；其他 0 |
+| 重新确认 | `close >= breakout_level` 且收盘强得 5；`close >= breakout_level` 或 `close >= MA10` 得 2；其他 0 |
+
+风险修正分：
+
+```text
+risk_adjust = clamp(sum(flag_adjustments), -20, +10)
+无风险标识 = +10
+```
+
+| risk_flag | 修正 |
+|-----------|------|
+| `EXTENDED_FROM_MA20` | -5 |
+| `MA20_DECLINE` | -6 |
+| `BELOW_MA120` | -6 |
+| `FAR_ABOVE_MA20` | -8 |
+| `LONG_UPPER_SHADOW` | -10 |
+| `VOLUME_STALL` | -10 |
+| `OVERHEAT_CHG5` | -12 |
+| `OVERHEAT_CHG20` | -12 |
+| `DOWNTREND` | -20 |
+| `DEEP_FALL` | -20 |
+
+买点等级：
+
+| setup_quality | setup_score |
+|---------------|-------------|
+| A | `>= 80` |
+| B | `65-79` |
+| C | `55-64` |
+| D | `< 55` |
+
+`setup_signal` 只有在硬条件成立且 `setup_score >= 55` 时触发。
 
 ```text
 structure_score = stage_score

@@ -1,5 +1,5 @@
 {
-  "strategy_version": "model2_quant_v5",
+  "strategy_version": "model2_quant_v6",
   "description": "Model 2 VCP structure and setup signal parameters. This file contains thresholds and weights only; algorithms stay in scripts/quant_filter.py.",
   "vcp": {
     "lookback_days": 120,
@@ -88,7 +88,7 @@
         "VCP_MATURE",
         "VCP_TIGHT"
       ],
-      "min_setup_score": 70,
+      "min_setup_score": 55,
       "volume_dry_up_lt": 0.8,
       "segment_volume_patterns": [
         "decreasing"
@@ -122,7 +122,7 @@
         "VCP_MATURE",
         "VCP_TIGHT"
       ],
-      "min_setup_score": 70,
+      "min_setup_score": 55,
       "close_buffer_ratio": 1.01,
       "max_close_extension_ratio": 1.08,
       "volume_ma20_ratio": 1.0,
@@ -146,7 +146,7 @@
         "VCP_MATURE",
         "VCP_TIGHT"
       ],
-      "min_setup_score": 70,
+      "min_setup_score": 55,
       "min_days_after_breakout": 3,
       "max_days_after_breakout": 10,
       "max_allowed_days_after_breakout": 15,
@@ -216,26 +216,48 @@
   },
   "classification": {
     "pullback_buy_position": "20%-30%",
+    "pullback_buy_position_b": "10%-20%",
+    "pullback_buy_position_c": "观察或极轻仓",
     "breakout_buy_position": "40%-50%",
+    "breakout_buy_position_b": "20%-30%",
+    "breakout_buy_position_c": "观察或极轻仓",
     "retest_buy_light_position": "40%-50%",
+    "retest_buy_position_c": "20%-30%或观察",
     "retest_buy_position": "60%-80%",
     "no_position": "0"
   },
   "setup_scoring": {
     "quality_thresholds": {
       "A": 80,
-      "B": 70,
-      "C": 60
+      "B": 65,
+      "C": 55
     },
-    "final_score_caps": {
-      "structure_score_lt_50": 78,
-      "structure_score_lt_60": 85,
-      "structure_score_lt_70": 92,
-      "stage_forming": 85,
-      "volume_not_healthy": 85,
-      "extended_from_ma20": 80,
-      "post_structure_gain_gt_20": 80,
-      "distance_ma20_gt_10": 85
+    "stage_base": {
+      "VCP_FORMING": 30,
+      "VCP_MATURE": 50,
+      "VCP_TIGHT": 60
+    },
+    "action_type_base": {
+      "PULLBACK_BUY": 6,
+      "BREAKOUT_BUY": 10,
+      "RETEST_BUY": 15
+    },
+    "risk_adjust": {
+      "no_risk": 10,
+      "min": -20,
+      "max": 10,
+      "flags": {
+        "EXTENDED_FROM_MA20": -5,
+        "MA20_DECLINE": -6,
+        "BELOW_MA120": -6,
+        "FAR_ABOVE_MA20": -8,
+        "LONG_UPPER_SHADOW": -10,
+        "VOLUME_STALL": -10,
+        "OVERHEAT_CHG5": -12,
+        "OVERHEAT_CHG20": -12,
+        "DOWNTREND": -20,
+        "DEEP_FALL": -20
+      }
     }
   }
 }

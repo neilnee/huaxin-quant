@@ -325,8 +325,8 @@ Markdown 的“重点观察”表格列为：
 代码 | 名称 | 结构 | Bloom | 买点 | 风险 | 观察要点
 ```
 
-- `结构` 列格式为 `model2_stage/structure_score分`，例如 `VCP_FORMING/62分`。
-- `买点` 列格式为 `setup_signal setup_quality/setup_score suggested_position`，例如 `BREAKOUT_BUY B/70 40%-50%`；无买点时填 `-`。
+- `结构` 列格式为 `model2_stage / structure_score分`，例如 `VCP_FORMING / 62分`。
+- `买点` 列格式为 `setup_signal / setup_score分 / setup_quality级买点 / 建议仓位：suggested_position`，例如 `BREAKOUT_BUY / 82分 / A级买点 / 建议仓位：40%-50%`；无买点时填 `-`。
 - 不单独设置“收缩”列；收缩明细保留在该股票下方的缩进详情行中，且必须优先使用模型二 `contraction_group` 表示当前 VCP 结构，不得从全部历史 `contractions` 机械截取最近 N 段。
 - `Bloom` 列只表示生命周期状态，不得替代或吞掉模型二买点类型。
 

@@ -1238,7 +1238,7 @@ def _format_contraction_detail(cc, pcts, days):
 def _format_structure_cell(row):
     stage = row.get("model2_stage", "")
     score = row.get("structure_score", "")
-    return f"{stage}/{score}分" if score != "" else stage
+    return f"{stage} / {score}分" if score != "" else stage
 
 
 def _format_setup_cell(row):
@@ -1249,11 +1249,13 @@ def _format_setup_cell(row):
     score = row.get("setup_score", "")
     position = row.get("suggested_position", "")
     parts = [setup]
-    if quality or score:
-        parts.append(f"{quality}/{score}" if quality and score != "" else quality or str(score))
+    if score != "":
+        parts.append(f"{score}分")
+    if quality:
+        parts.append(f"{quality}级买点")
     if position and position != "0":
-        parts.append(position)
-    return " ".join(str(p) for p in parts if p)
+        parts.append(f"建议仓位：{position}")
+    return " / ".join(str(p) for p in parts if p)
 
 
 def append_compact_stock_table(lines, title, rows, empty_text, cols_per_row=8):

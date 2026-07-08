@@ -1853,7 +1853,7 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True):
             continue
 
         print(f"[{i+1}/{len(codes)}] {code} {name} ...", end=" ", flush=True)
-        df, source = fetch_daily(code, name, today_yy, use_cache=use_cache)
+        df, source = fetch_daily(code, name, today_yy, use_cache=use_cache, as_of_date=run_date)
         if df is None:
             if allow_retry and "112" in str(source):
                 print(f"失败: {source}，加入重试队列")

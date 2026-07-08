@@ -65,12 +65,30 @@ def expected_trade_date(run_date=None):
     return cur.strftime("%Y-%m-%d")
 
 
+def normalize_date_arg(value):
+    """Normalize YYMMDD / YYYYMMDD / YYYY-MM-DD-ish values to YYYY-MM-DD."""
+    raw = str(value).strip()
+    if len(raw) == 6 and raw.isdigit():
+        return datetime.strptime(raw, "%y%m%d").strftime("%Y-%m-%d")
+    if len(raw) == 8 and raw.isdigit():
+        return datetime.strptime(raw, "%Y%m%d").strftime("%Y-%m-%d")
+    if len(raw) >= 10:
+        text = raw[:10]
+        return datetime.strptime(text, "%Y-%m-%d").strftime("%Y-%m-%d")
+    raise ValueError(f"无法解析日期: {value}")
+
+
+def cache_datestr(value):
+    """Return YYMMDD cache suffix for a normalized date-like value."""
+    return normalize_date_arg(value).replace("-", "")[2:]
+
+
 def cache_is_fresh(df, expected_date):
     """检查缓存的 DataFrame 最新日期是否不早于预期交易日。"""
     if df is None or df.empty:
         return False
     try:
-        last_date = str(df.iloc[-1]["date"])[:10]
+        last_date = normalize_date_arg(df.iloc[-1]["date"])
     except Exception:
         return False
     return last_date >= expected_date
@@ -135,11 +153,12 @@ class DailyCache:
                 os.remove(path)
         return None
 
-    def load_latest(self, code):
+    def load_latest(self, code, max_datestr=None):
         """当天缓存不存在时，回退到该股票最近日期的缓存文件。
 
         返回 (DataFrame, datestr)，无可用缓存时返回 (None, None)。
         文件名格式: <code>_<YYMMDD>.pkl，按 YYMMDD 降序取最新。
+        max_datestr 不为空时，只允许回退到不晚于该日期的缓存。
         """
         if not os.path.isdir(self.cache_dir):
             return None, None
@@ -150,6 +169,8 @@ class DailyCache:
             if f.startswith(prefix) and f.endswith(suffix):
                 datestr = f[len(prefix):-len(suffix)]
                 if len(datestr) == 6 and datestr.isdigit():
+                    if max_datestr and datestr > max_datestr:
+                        continue
                     candidates.append((datestr, os.path.join(self.cache_dir, f)))
         if not candidates:
             return None, None
@@ -267,7 +288,28 @@ def _ensure_tdx_source():
     return _tdx_source
 
 
-def _fetch_daily_from_tdx(code, name, datestr, cache):
+def _clip_daily_as_of(df, as_of_date):
+    """Sort and clip daily bars to as_of_date, preventing future-data leakage."""
+    if df is None or df.empty:
+        return df
+    import pandas as pd
+
+    out = df.copy()
+    date_key = pd.to_datetime(out["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    out = out[date_key.notna() & (date_key <= as_of_date)]
+    if out.empty:
+        return out
+    return out.sort_values("date").reset_index(drop=True)
+
+
+def _fresh_as_of(df, as_of_date):
+    clipped = _clip_daily_as_of(df, as_of_date)
+    if not cache_is_fresh(clipped, as_of_date):
+        return None
+    return clipped
+
+
+def _fetch_daily_from_tdx(code, name, datestr, cache, as_of_date):
     """尝试使用通达信备用源，成功时写入统一日线缓存。"""
     try:
         tdx = _ensure_tdx_source()
@@ -280,15 +322,19 @@ def _fetch_daily_from_tdx(code, name, datestr, cache):
     if df.empty:
         return None, "通达信备用源无有效交易日数据"
 
-    df = df.sort_values("date").reset_index(drop=True)
+    df = _fresh_as_of(df, as_of_date)
+    if df is None:
+        return None, f"通达信备用源未覆盖目标交易日 {as_of_date}"
     cache.save(code, datestr, df)
     return df, "tdx"
 
 
-def fetch_daily(code, name, datestr, use_cache=True):
+def fetch_daily(code, name, datestr, use_cache=True, as_of_date=None):
     """统一日线数据获取入口（替代 quant_filter / tracker 各自的 fetch_daily）。
 
     链路: 缓存 → 妙想 API → 通达信 mootdx
+    as_of_date 不传时使用 expected_trade_date()，保留 15:00 分隔线；
+    传入时按调用方指定交易日做缓存新鲜度判断和未来数据截断。
 
     返回:
         (DataFrame, source_label) — source_label 为 "cache" / "cache(YYMMDD)" / "api" / "tdx"
@@ -297,22 +343,25 @@ def fetch_daily(code, name, datestr, use_cache=True):
     DataFrame 列: date, open, high, low, close, volume, turnover
     """
     cache = _ensure_cache()
-    expected_date = expected_trade_date()
+    expected_date = expected_trade_date(normalize_date_arg(as_of_date)) if as_of_date else expected_trade_date()
+    max_cache_datestr = cache_datestr(expected_date)
 
     # ── 第 1 步：缓存查找 ──
     if use_cache:
         cached = cache.load(code, datestr)
-        if cached is not None and cache_is_fresh(cached, expected_date):
+        cached = _fresh_as_of(cached, expected_date)
+        if cached is not None:
             return cached, "cache"
         # 当天缓存未命中时，回退到该股票最近日期的缓存
-        cached, cache_date = cache.load_latest(code)
-        if cached is not None and cache_is_fresh(cached, expected_date):
+        cached, cache_date = cache.load_latest(code, max_datestr=max_cache_datestr)
+        cached = _fresh_as_of(cached, expected_date)
+        if cached is not None:
             return cached, f"cache({cache_date})"
 
     # ── 第 2 步：妙想 API ──
     api_key = os.environ.get("MX_APIKEY")
     if not api_key:
-        df, tdx_msg = _fetch_daily_from_tdx(code, name, datestr, cache)
+        df, tdx_msg = _fetch_daily_from_tdx(code, name, datestr, cache, expected_date)
         if df is not None:
             return df, tdx_msg
         return None, f"妙想API不可用: MX_APIKEY 未设置；通达信失败: {tdx_msg}"
@@ -321,7 +370,7 @@ def fetch_daily(code, name, datestr, use_cache=True):
         mx = _ensure_mx_source()
         df, err_msg = mx.fetch_bars(code, name)
     except Exception as exc:
-        df, tdx_msg = _fetch_daily_from_tdx(code, name, datestr, cache)
+        df, tdx_msg = _fetch_daily_from_tdx(code, name, datestr, cache, expected_date)
         if df is not None:
             return df, tdx_msg
         return None, f"妙想API异常: {exc}；通达信失败: {tdx_msg}"
@@ -329,17 +378,22 @@ def fetch_daily(code, name, datestr, use_cache=True):
     if df is None:
         mx_error = err_msg or "妙想API返回空数据"
         # ── 第 3 步：通达信回退 ──
-        df, tdx_msg = _fetch_daily_from_tdx(code, name, datestr, cache)
+        df, tdx_msg = _fetch_daily_from_tdx(code, name, datestr, cache, expected_date)
         if df is not None:
             return df, tdx_msg
         return None, f"{mx_error}；通达信失败: {tdx_msg}"
 
     if df.empty:
-        df, tdx_msg = _fetch_daily_from_tdx(code, name, datestr, cache)
+        df, tdx_msg = _fetch_daily_from_tdx(code, name, datestr, cache, expected_date)
         if df is not None:
             return df, tdx_msg
         return None, f"妙想API无有效交易日数据(可能长期停牌)；通达信失败: {tdx_msg}"
 
-    df = df.sort_values("date").reset_index(drop=True)
+    df = _fresh_as_of(df, expected_date)
+    if df is None:
+        df, tdx_msg = _fetch_daily_from_tdx(code, name, datestr, cache, expected_date)
+        if df is not None:
+            return df, tdx_msg
+        return None, f"妙想API未覆盖目标交易日 {expected_date}；通达信失败: {tdx_msg}"
     cache.save(code, datestr, df)
     return df, "api"

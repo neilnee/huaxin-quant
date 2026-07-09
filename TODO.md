@@ -230,4 +230,5 @@ for each stock in quant_output where structure_stage in {VCP_MATURE, VCP_TIGHT}:
 - [x] 交易策略参考文档（instructions/trading-strategy.md）
 - [x] 日线缓存 30 天保留 + --date 回测参数
 - [x] 模型四 Signal Plan v1（次日量价触发计划：signal-plan.md + signal_plan.py + 04-signal-plan.json）
+- [x] 模型四 Tracker 总控 v1（编排 Bloom + Signal Plan → 合并日报；清理旧 tracker.py/generate_report.py/signals/）
 - [x] v1.5 发布

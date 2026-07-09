@@ -59,6 +59,24 @@ python3 scripts/position.py add-trade --trade-date 2026-07-06 --code 688676 --na
 python3 scripts/position.py rebuild --as-of 2026-07-06
 ```
 
+### Signal Plan 信号层
+
+基于模型二买点判定，生成次日量价触发计划（具体价格区间、量能条件、失效位）。执行方式参考 `instructions/signal-plan.md`。
+
+```bash
+python3 scripts/signal_plan.py [--date 260709]
+```
+
+### 模型四：Tracker 总控
+
+统一编排 Bloom + Signal Plan，生成合并日报。执行方式参考 `instructions/04-tracker.md`。
+
+```bash
+python3 scripts/tracker.py [--date 260709]
+python3 scripts/tracker.py --skip-bloom    # 只跑 Signal Plan
+python3 scripts/tracker.py --skip-plan     # 只跑 Bloom
+```
+
 ### 模型三：深度估值（Valuation）
 
 LLM 拆解业务线 + 脚本 DCF/PE 计算，按需手动触发。执行方式参考 `instructions/03-valuation.md`。
@@ -82,6 +100,8 @@ LLM 拆解业务线 + 脚本 DCF/PE 计算，按需手动触发。执行方式�
 | `pool/` | 模型一输出 | 本地 |
 | `quant/` | 模型二输出 | 本地 |
 | `bloom/` | Bloom 信号报告 + state/ | 本地 |
+| `signal_plan/` | Signal Plan 买点计划 + JSON | 本地 |
+| `tracker/` | 合并日报 | 本地 |
 | `reports/` | 估值报告 + indexes/ | 本地 |
 | `position/` | 持仓账本 | 本地 |
 | `.tmp/` | 临时脚本（预授权，用完即删） | 本地 |
@@ -93,7 +113,7 @@ LLM 拆解业务线 + 脚本 DCF/PE 计算，按需手动触发。执行方式�
 
 - **指令文件是源头**，脚本是指令的配套实现。改逻辑先改指令，再改脚本；脚本与指令同提交更新
 - **指令卡保持精简**：只保留 LLM 执行所需内容（流程、规则、约束）。公式速查、报告模板、字段定义等放入配对 `*-ref.md`，按需查阅
-- **固定文件名**：模型主指令卡固定为 `01-pool.md`、`02-quant.md`、`03-valuation.md`、`03-valuation-ref.md`、`04-tracker.md`、`04-tracker-ref.md`；模型四内部信号模块使用 `signal-` 前缀，如 `signal-bloom.md`
+- **固定文件名**：模型主指令卡固定为 `01-pool.md`、`02-quant.md`、`03-valuation.md`、`03-valuation-ref.md`、`04-tracker.md`；模型四内部信号模块使用 `signal-` 前缀，如 `signal-bloom.md`、`signal-plan.md`、`signal-position.md`
 - **分支开发**：较大改动在 Git feature 分支上直接修改活跃文件；稳定后 commit/merge 保留历史，不靠复制文件发版
 - **收尾更新**：每次完成一组规则变更后，更新 `TODO.md` 勾掉已完成项
 - **数据口径统一**：模型一和模型三使用相同报告期数据，避免跨模型数据口径不一致

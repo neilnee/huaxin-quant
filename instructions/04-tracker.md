@@ -44,7 +44,7 @@ tracker 不重复计算，不修改子模块逻辑。子模块仍可独立运行
 
 ## 三、合并报告
 
-输出：`tracker/tracker_<YYMMDD>.md`
+输出：`tracker/花期策览_<YYMMDD>.md`
 
 | 分区 | 内容 |
 |------|------|
@@ -69,7 +69,7 @@ bloom/state/bloom_events.jsonl                # Bloom 事件流水
 ## 五、输出
 
 ```text
-tracker/tracker_<YYMMDD>.md                   # 合并日报
+tracker/花期策览_<YYMMDD>.md                   # 合并日报
 bloom/bloom_<YYMMDD>.md                       # Bloom 独立报告（由 Bloom 模块生成）
 bloom/state/bloom_state.csv                   # Bloom 状态（由 Bloom 模块维护）
 bloom/state/bloom_events.jsonl                # Bloom 事件（由 Bloom 模块维护）

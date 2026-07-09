@@ -1,24 +1,76 @@
 # Huaxin Quant Workflow
 
-本文档定义 Huaxin Quant 的日常执行顺序和产物流转。模型细节以 `instructions/` 和 `scripts/` 为准。
+本文档定义 Huaxin Quant 的日常执行流程。模型细节以 `instructions/` 和 `scripts/` 为准。
 
-## 目标
+## 每日执行
 
-每天完成三件事：
+一条命令启动全流程：
 
-1. 从基本面合格池中识别正在形成 VCP 形态的股票。
-2. 通过 Bloom 信号层记录候选状态的跨日变化。
-3. 阅读 Bloom 日报，辅助人工决定后续观察、估值或跟踪。
+```bash
+python3 scripts/daily.py &
+```
 
-## 主流程
+带选项：
+
+```bash
+python3 scripts/daily.py --date 260709 &         # 指定日期
+python3 scripts/daily.py --skip-pool &            # 复用已有池子，跳过模型一
+python3 scripts/daily.py --force-refresh &        # 强制刷新数据缓存
+```
+
+启动后立即返回，不阻塞当前终端。流水线在后台按顺序执行：
 
 ```text
-模型一 Pool
-  → 模型二 Quant
-  → Bloom 信号层
-  → 人工复盘 Bloom 日报
-  → 可选：估值 / 自选股 / 持仓管理
+模型一 Pool → 模型二 Quant → Bloom → Signal Plan → 合并报告
 ```
+
+## 查看进度
+
+```bash
+python3 scripts/monitor.py
+```
+
+monitor 每 2 秒刷新一次，输出到 `tracker/花期策览_<YYMMDD>.md`：
+
+- **运行中**：显示阶段状态 + 进度条（模型二含逐只股票进度）
+- **完成后**：自动替换为完整合并报告，monitor 退出
+
+```bash
+python3 scripts/monitor.py --date 260709         # 指定日期
+python3 scripts/monitor.py --interval 1          # 调整轮询间隔（秒）
+```
+
+Ctrl+C 可随时退出 monitor，流水线继续在后台运行。重新连接：`python3 scripts/monitor.py`。
+
+## ⚠️ 重要
+
+**启动 daily.py 后不要在对话中持续汇报进度。** `daily.py &` 是非阻塞的，终端立即可用。想看进展时运行 `monitor.py`，不想看就做其他事。monitor 跑完自动停，报告在 `tracker/花期策览_<date>.md`。
+
+## 手动运行（调试 / 单步）
+
+```bash
+python3 scripts/run_pool.py --date 260709
+python3 scripts/quant_filter.py --pool pool/pool_260709.csv
+python3 scripts/bloom.py --date 260709
+python3 scripts/signal_plan.py --date 260709
+python3 scripts/tracker.py --date 260709
+```
+
+各模块也可独立运行，详见 `instructions/` 目录下各指令卡。
+
+## 产物关系
+
+| 层级 | 文件 | 说明 |
+|------|------|------|
+| 模型一 | `pool/pool_<YYMMDD>.csv` | 基本面候选池 |
+| 模型二 | `quant/quant_<YYMMDD>.csv` | 单日量价结构 |
+| 模型二 | `cache/quant_runs/quant_<YYMMDD>.json` | 结构化结果（Bloom / Plan 输入） |
+| Bloom | `bloom/bloom_<YYMMDD>.md` | Bloom 日报 |
+| Bloom | `bloom/state/bloom_state.csv` | 跨日状态表 |
+| Bloom | `bloom/state/bloom_events.jsonl` | 事件流水 |
+| Plan | `signal_plan/signal_plan_<YYMMDD>.json` | 买点计划结构化数据 |
+| Plan | `signal_plan/signal_plan_<YYMMDD>.md` | 买点计划日报 |
+| **终** | **`tracker/花期策览_<YYMMDD>.md`** | **合并日报（最终阅读入口）** |
 
 ## 首次初始化
 
@@ -27,99 +79,15 @@ cp .env.example .env
 python3 scripts/init_runtime.py
 ```
 
-## 每日执行
+## 异常处理
 
-### 1. 生成股票池
-
-```bash
-python3 scripts/run_pool.py
-```
-
-产出：`pool/pool_<YYMMDD>.csv` — 模型二输入。
-
-### 2. 运行量价筛选
-
-```bash
-python3 scripts/quant_filter.py --pool pool/pool_<YYMMDD>.csv
-```
-
-产出：
-
-- `quant/quant_<YYMMDD>.csv` — 单日量价结构
-- `cache/quant_runs/quant_<YYMMDD>.json` — 结构化结果（Bloom 输入）
-
-### 3. 运行 Bloom 信号层
-
-```bash
-python3 scripts/bloom.py
-python3 scripts/bloom.py --date 260705
-```
-
-产出：
-
-- `bloom/bloom_<YYMMDD>.md` — Bloom 日报
-- `bloom/state/bloom_state.csv` — 机器状态表
-- `bloom/state/bloom_events.jsonl` — 事件流水
-- `bloom/state/bloom_input_<YYMMDD>.json` — 结构化输入
-
-### 4. 阅读 Bloom 日报
-
-打开 `bloom/bloom_<YYMMDD>.md`，重点看：
-
-1. **🔥 重点观察** — FORMING 及以上结构的标的，风险行内标记
-2. **📋 池子变化** — 新进入和移出的标的
-3. **📖 字段说明** — 枚举速查（文末）
-
-## 产物关系
-
-| 层级 | 文件 | 作用 |
-|------|------|------|
-| 模型一 | `pool/pool_<YYMMDD>.csv` | 基本面候选池 |
-| 模型二 | `quant/quant_<YYMMDD>.csv` | 单日量价结构 |
-| 模型二 | `cache/quant_runs/quant_<YYMMDD>.json` | 结构化结果（Bloom 输入） |
-| Bloom | `bloom/state/bloom_state.csv` | 当前观察状态 |
-| Bloom | `bloom/state/bloom_events.jsonl` | 跨日状态变化 |
-| Bloom | `bloom/bloom_<YYMMDD>.md` | 人工阅读日报 |
-
-## 人工复盘顺序
-
-优先看：
-
-1. `TRIGGERED` 或 `RISK_BLOCKED` 的标的。
-2. `FORMING` / `MATURE` 升级的标的。
-3. 连续保持有效状态的标的。
-4. `EXIT` 移出的标的。
-5. `DATA_ISSUE` 但本来值得关注的标的。
-
-人工动作：`watch` / `ignore` / `valuation` / `tracker` / `zixuan_add` / `zixuan_remove`
-
-## 可选后续
-
-### 模型三估值
-
-只对人工确认值得深入研究的标的执行。
-
-### 模型四持仓管理
-
-只对已有估值锚点或明确交易计划的标的执行。
-
-## 异常原则
-
-- 当日行情接口未完全更新时，不强制清缓存。
-- 数据异常不直接删除候选，Bloom 标记为 `DATA_ISSUE` 维持原状态。
-- 批量结果异常时，先抽查单股，再决定是否重跑。
+- 模型二失败 → 流水线中止（无下游数据）
+- Bloom / Plan 失败 → 继续执行，终末报告标注错误
+- 数据异常 → Bloom 标记 `DATA_ISSUE`，不删除候选
+- LLM 调用失败 → 不影响核心流程，自动回退规则兜底
 
 ## 维护原则
 
-- 改模型规则：先改对应 `instructions/*.md`，再改 `scripts/*.py`。
-- 本地数据产物不提交 Git：`cache/`、`pool/`、`quant/`、`bloom/`、`signals/`、`reports/`。
-- 提交只包含源文件、指令卡和必要文档。
-
-## 常用验证
-
-```bash
-python3 -m py_compile scripts/*.py
-python3 scripts/run_pool.py --dry-run
-python3 scripts/quant_filter.py --code 300604 --name 长川科技
-python3 scripts/bloom.py --date 260705
-```
+- 改模型规则：先改 `instructions/*.md`，再改 `scripts/*.py`。
+- 本地数据产物不提交 Git：`cache/`、`pool/`、`quant/`、`bloom/`、`signal_plan/`、`tracker/`、`reports/`、`.tmp/`。
+- 提交只包含源文件、指令卡和文档。

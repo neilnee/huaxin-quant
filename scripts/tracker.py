@@ -161,7 +161,7 @@ def build_consolidated_markdown(bloom_data, plan_data, date_yy, bloom_md, plan_m
     plan_families = _extract_plan_families(plan_md)
 
     lines = [
-        f"# Tracker Daily Report {date_yy}",
+        f"# 花期策览 {date_yy}",
         "",
     ]
 
@@ -264,7 +264,7 @@ def main():
     # ── 3. Consolidated report ──
     TRACKER_DIR.mkdir(parents=True, exist_ok=True)
     consolidated = build_consolidated_markdown(bloom_data, plan_data, date_yy, bloom_md, plan_md)
-    tracker_path = TRACKER_DIR / f"tracker_{date_yy}.md"
+    tracker_path = TRACKER_DIR / f"花期策览_{date_yy}.md"
     with open(tracker_path, "w", encoding="utf-8") as f:
         f.write(consolidated)
 

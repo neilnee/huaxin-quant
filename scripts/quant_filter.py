@@ -23,6 +23,39 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+
+
+# ── progress tracking (for daily.py pipeline) ──
+
+def _write_quant_progress(progress_file, completed, total, results_count,
+                          current_code="", current_name="", current_stage=""):
+    """Update quant step progress in the shared progress JSON."""
+    if not progress_file:
+        return
+    try:
+        from datetime import datetime as _dt
+        data = {}
+        if os.path.exists(progress_file):
+            with open(progress_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        steps = data.setdefault("steps", {})
+        steps["quant"] = {
+            "status": "running",
+            "started_at": (steps.get("quant") or {}).get("started_at") or _dt.now().isoformat(),
+            "finished_at": None,
+            "total": total,
+            "completed": completed,
+            "results": results_count,
+            "current_code": current_code,
+            "current_name": current_name,
+            "current_stage": current_stage,
+        }
+        data["updated_at"] = _dt.now().isoformat()
+        os.makedirs(os.path.dirname(progress_file), exist_ok=True)
+        with open(progress_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass  # progress is best-effort, never crash the pipeline
 import pandas as pd
 import requests
 
@@ -1945,7 +1978,7 @@ def build_output_paths(args, today_yy, mode, codes):
     return quant_path, json_path
 
 
-def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True):
+def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True, progress_file=None):
     results = []
     stats = {
         "pull_ok": 0,
@@ -1962,6 +1995,8 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True):
         if fatal_stop:
             print(f"[{i+1}/{len(codes)}] {code} {name} ... 因上游致命错误跳过")
             stats["pull_fail"] += 1
+            _write_quant_progress(progress_file, i + 1, len(codes), len(results),
+                                  current_code=code, current_name=name, current_stage="FATAL")
             continue
 
         print(f"[{i+1}/{len(codes)}] {code} {name} ...", end=" ", flush=True)
@@ -1981,6 +2016,8 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True):
         if len(df) < BASE_CFG["min_runtime_data_days"]:
             print(f"跳过: 数据不足({len(df)}天)")
             stats["data_insufficient"] += 1
+            _write_quant_progress(progress_file, i + 1, len(codes), len(results),
+                                  current_code=code, current_name=name, current_stage="DATA_ISSUE")
             continue
 
         stats["pull_ok"] += 1
@@ -1988,11 +2025,16 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True):
         result = result_from_df(code, name, df, run_date)
         results.append(result)
         print(f"{result['structure_stage']} / {result['setup_signal']} | score={result['structure_score']} | {result['reason'][:48]}")
+        _write_quant_progress(
+            progress_file, i + 1, len(codes), len(results),
+            current_code=code, current_name=name,
+            current_stage=str(result.get("structure_stage", "")),
+        )
 
     if retry_queue:
         print(f"\n重试 {len(retry_queue)} 只频率限制失败标的...")
         time.sleep(10)
-        retry_results, retry_stats = process_codes(retry_queue, today_yy, run_date, use_cache=False, allow_retry=False)
+        retry_results, retry_stats = process_codes(retry_queue, today_yy, run_date, use_cache=False, allow_retry=False, progress_file=args.progress_file)
         results.extend(retry_results)
         for key, val in retry_stats.items():
             stats[key] += val
@@ -2018,6 +2060,7 @@ def main():
     parser.add_argument("--refresh", action="store_true", help="清除今日缓存后重新拉取")
     parser.add_argument("--with-llm", action="store_true", help="可选调用 LLM 对 top 标的做解释")
     parser.add_argument("--llm-top", type=int, default=10, help="LLM 解释 Top N，默认 10")
+    parser.add_argument("--progress-file", help="进度文件路径（供 daily.py 流水线使用）")
     args = parser.parse_args()
 
     try:
@@ -2052,7 +2095,7 @@ def main():
         cleared = cleanup_cache.clear_today(today_yy)
         print(f"已清除今日缓存 {cleared} 个文件")
 
-    results, stats = process_codes(codes, today_yy, run_date, use_cache=use_cache)
+    results, stats = process_codes(codes, today_yy, run_date, use_cache=use_cache, progress_file=args.progress_file)
     csv_results = [r for r in results if should_write_to_quant(r, include_reject=args.include_reject)]
     csv_results.sort(key=lambda x: x["structure_score"], reverse=True)
 

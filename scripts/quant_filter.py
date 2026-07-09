@@ -1101,6 +1101,41 @@ def detect_pullback_buy(df, structure, overheat):
     last_low = structure.get("last_contraction_low")
     volume_ok, volume_reason = pullback_volume_confirmed(df, structure, cfg)
     volume_floor_ok = volume_ok or safe_float(latest.get("volume_dry_up"), 999) < 0.9
+    ma20 = safe_float(latest.get("MA20"))
+    ma60 = safe_float(latest.get("MA60"))
+    vol_ma20 = safe_float(latest.get("vol_ma20"))
+    group = structure.get("contraction_group") or []
+    last_segment_avg_volume = safe_float(group[-1].get("avg_volume")) if group else None
+    segment_volume_threshold = (
+        last_segment_avg_volume * cfg.get("current_low_volume_ratio", 1.0)
+        if last_segment_avg_volume is not None else None
+    )
+    fixed_window_volume_threshold = (
+        vol_ma20 * cfg["volume_dry_up_lt"]
+        if vol_ma20 is not None else None
+    )
+    plan_inputs = {
+        "allowed": True,
+        "anchor": None,
+        "support_price": None,
+        "invalid_price": None,
+        "ma20_price_low": ma20 * (1 + ma20_min / 100) if ma20 is not None else None,
+        "ma20_price_high": ma20 * (1 + ma20_max / 100) if ma20 is not None else None,
+        "ma60_price_low": ma60 * (1 + ma60_min / 100) if ma60 is not None else None,
+        "ma60_price_high": ma60 * (1 + ma60_max / 100) if ma60 is not None else None,
+        "last_low_required_price": (
+            last_low * (1 + cfg["last_low_buffer_pct"] / 100)
+            if last_low is not None else None
+        ),
+        "volume_dry_up_threshold": cfg["volume_dry_up_lt"],
+        "volume_floor_threshold": vol_ma20 * 0.9 if vol_ma20 is not None else None,
+        "fixed_window_volume_threshold": fixed_window_volume_threshold,
+        "segment_volume_threshold": segment_volume_threshold,
+        "current_low_volume_days": cfg.get("current_low_volume_days", 3),
+        "volume_confirmation": volume_reason,
+        "min_ma20_slope": cfg["min_ma20_slope"],
+        "blocked_risk_flags": cfg["blocked_risk_flags"],
+    }
     hard_conditions = [
         near_ma20 or near_ma60,
         volume_floor_ok,
@@ -1118,6 +1153,9 @@ def detect_pullback_buy(df, structure, overheat):
     invalid = None
     if support:
         invalid = min(support * cfg["invalid_support_ratio"], safe_float(low20, support) * cfg["invalid_low20_ratio"])
+    plan_inputs["anchor"] = anchor
+    plan_inputs["support_price"] = support
+    plan_inputs["invalid_price"] = invalid
     if not (near_ma20 or near_ma60):
         misses.append("未靠近MA20/MA60")
     if not volume_floor_ok:
@@ -1141,6 +1179,7 @@ def detect_pullback_buy(df, structure, overheat):
         support_price=support,
         invalid_price=invalid,
         volume_confirmation=volume_reason,
+        plan_inputs=plan_inputs,
     )
 
 
@@ -1161,6 +1200,28 @@ def detect_breakout_buy(df, structure, overheat):
     vol_ma20 = safe_float(latest.get("vol_ma20"))
     vol_ma5 = safe_float(latest.get("vol_ma5"))
     volume = safe_float(latest.get("volume"), 0)
+    volume_thresholds = []
+    if vol_ma20 and vol_ma20 > 0:
+        volume_thresholds.append(vol_ma20 * cfg["volume_ma20_ratio"])
+    if vol_ma5 and vol_ma5 > 0:
+        volume_thresholds.append(vol_ma5 * cfg["volume_ma5_ratio"])
+    volume_min = min(volume_thresholds) if volume_thresholds else None
+    ideal_volume_min = vol_ma20 * 1.5 if vol_ma20 and vol_ma20 > 0 else None
+    plan_inputs = {
+        "allowed": True,
+        "pivot": pivot,
+        "trigger_price": pivot * cfg["close_buffer_ratio"],
+        "max_price": pivot * cfg.get("max_close_extension_ratio", 999),
+        "ideal_price_low": pivot * 1.02,
+        "ideal_price_high": pivot * 1.05,
+        "volume_min": volume_min,
+        "volume_ma20_threshold": vol_ma20 * cfg["volume_ma20_ratio"] if vol_ma20 and vol_ma20 > 0 else None,
+        "volume_ma5_threshold": vol_ma5 * cfg["volume_ma5_ratio"] if vol_ma5 and vol_ma5 > 0 else None,
+        "ideal_volume_min": ideal_volume_min,
+        "invalid_price": pivot * cfg["invalid_support_ratio"],
+        "blocked_risk_flags": cfg["blocked_risk_flags"],
+        "requires_no_long_upper_shadow": True,
+    }
     volume_ok = False
     if vol_ma20 and vol_ma20 > 0 and volume > vol_ma20 * cfg["volume_ma20_ratio"]:
         volume_ok = True
@@ -1201,6 +1262,7 @@ def detect_breakout_buy(df, structure, overheat):
         breakout_level=pivot,
         support_price=pivot,
         invalid_price=pivot * cfg["invalid_support_ratio"],
+        plan_inputs=plan_inputs,
     )
 
 
@@ -1250,11 +1312,34 @@ def detect_retest_buy(df, structure, overheat):
         return base_setup_result(False, "近期无有效突破")
 
     days_after = len(df) - breakout["idx"] - 1
+    ma10 = safe_float(latest.get("MA10"))
+    plan_inputs = {
+        "allowed": True,
+        "recent_breakout": True,
+        "recent_breakout_date": str(breakout["date"]),
+        "recent_breakout_level": breakout["level"],
+        "recent_breakout_volume": breakout["volume"],
+        "recent_breakout_vol_ma20": breakout["vol_ma20"],
+        "days_after_breakout": days_after,
+        "price_low": breakout["level"] * cfg["max_pullback_below_breakout_ratio"],
+        "price_high": breakout["level"] * cfg.get("max_pullback_above_breakout_ratio", 999),
+        "ideal_price_low": breakout["level"] * 0.99,
+        "ideal_price_high": breakout["level"] * 1.003,
+        "volume_threshold": breakout["volume"],
+        "ideal_volume_max": breakout["volume"] * 0.70,
+        "confirm_price": max(breakout["level"], ma10) if ma10 is not None else breakout["level"],
+        "invalid_price": breakout["level"] * cfg["invalid_support_ratio"],
+        "min_days_after_breakout": cfg["min_days_after_breakout"],
+        "max_days_after_breakout": cfg["max_days_after_breakout"],
+        "max_allowed_days_after_breakout": cfg.get("max_allowed_days_after_breakout", cfg["max_days_after_breakout"]),
+        "blocked_risk_flags": cfg["blocked_risk_flags"],
+    }
     if days_after < 1 or days_after > cfg.get("max_allowed_days_after_breakout", cfg["max_days_after_breakout"]):
         return base_setup_result(
             False,
             "突破后天数不在允许范围",
             breakout_level=breakout["level"],
+            plan_inputs=plan_inputs,
         )
 
     post = df.iloc[breakout["idx"] + 1:]
@@ -1302,6 +1387,7 @@ def detect_retest_buy(df, structure, overheat):
         breakout_level=breakout["level"],
         support_price=breakout["level"],
         invalid_price=breakout["level"] * cfg["invalid_support_ratio"],
+        plan_inputs=plan_inputs,
     )
 
 
@@ -1493,6 +1579,11 @@ def screen(df):
             "vcp_quality": "D",
             "contractions": [],
             "contraction_group": [],
+            "setup_plan_inputs": {
+                "pullback": {},
+                "breakout": {},
+                "retest": {},
+            },
         }
 
     overheat = detect_overheat(df)
@@ -1554,6 +1645,11 @@ def screen(df):
         "vcp_quality": final_quality,
         "contractions": structure.get("contractions", []),
         "contraction_group": structure.get("contraction_group", []),
+        "setup_plan_inputs": {
+            "pullback": pullback.get("plan_inputs", {}),
+            "breakout": breakout.get("plan_inputs", {}),
+            "retest": retest.get("plan_inputs", {}),
+        },
     }
 
 
@@ -1569,7 +1665,8 @@ CSV_COLUMNS = [
     "structure_age_days", "structure_valid", "structure_invalid_reason",
     "post_structure_gain", "post_structure_drawdown", "vcp_quality",
     "close", "MA20", "MA60", "MA120", "MA20_slope", "MA60_slope",
-    "range_10", "range_20", "range_60", "volume_dry_up",
+    "range_10", "range_20", "range_60",
+    "volume", "vol_ma5", "vol_ma20", "vol_ma60", "vol_ratio", "volume_dry_up",
     "distance_ma20", "distance_ma60", "distance_high_60",
     "chg_5", "chg_20", "reason", "run_date", "strategy_version",
 ]
@@ -1593,6 +1690,11 @@ def result_from_df(code, name, df, run_date):
         "range_10": round_or_none(latest.get("range_10")),
         "range_20": round_or_none(latest.get("range_20")),
         "range_60": round_or_none(latest.get("range_60")),
+        "volume": round_or_none(latest.get("volume"), 0),
+        "vol_ma5": round_or_none(latest.get("vol_ma5"), 0),
+        "vol_ma20": round_or_none(latest.get("vol_ma20"), 0),
+        "vol_ma60": round_or_none(latest.get("vol_ma60"), 0),
+        "vol_ratio": round_or_none(latest.get("量比"), 4),
         "volume_dry_up": round_or_none(latest.get("volume_dry_up"), 4),
         "distance_ma20": round_or_none(latest.get("distance_ma20")),
         "distance_ma60": round_or_none(latest.get("distance_ma60")),
@@ -1662,6 +1764,11 @@ def write_csv(results, quant_path):
                 r["range_10"] if r["range_10"] is not None else "",
                 r["range_20"] if r["range_20"] is not None else "",
                 r["range_60"] if r["range_60"] is not None else "",
+                r["volume"] if r["volume"] is not None else "",
+                r["vol_ma5"] if r["vol_ma5"] is not None else "",
+                r["vol_ma20"] if r["vol_ma20"] is not None else "",
+                r["vol_ma60"] if r["vol_ma60"] is not None else "",
+                r["vol_ratio"] if r["vol_ratio"] is not None else "",
                 r["volume_dry_up"] if r["volume_dry_up"] is not None else "",
                 r["distance_ma20"] if r["distance_ma20"] is not None else "",
                 r["distance_ma60"] if r["distance_ma60"] is not None else "",

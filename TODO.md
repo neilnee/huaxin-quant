@@ -229,4 +229,5 @@ for each stock in quant_output where structure_stage in {VCP_MATURE, VCP_TIGHT}:
 - [x] 重点观察智能过滤（结构分门槛）与排序规则（买点优先 + 结构强弱）
 - [x] 交易策略参考文档（instructions/trading-strategy.md）
 - [x] 日线缓存 30 天保留 + --date 回测参数
+- [x] 模型四 Signal Plan v1（次日量价触发计划：signal-plan.md + signal_plan.py + 04-signal-plan.json）
 - [x] v1.5 发布

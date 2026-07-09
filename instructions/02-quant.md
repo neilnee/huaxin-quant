@@ -969,12 +969,58 @@ close
 MA20 / MA60 / MA120
 MA20_slope / MA60_slope
 range_10 / range_20 / range_60
+volume
+vol_ma5 / vol_ma20 / vol_ma60
+vol_ratio
 volume_dry_up
 distance_ma20 / distance_ma60 / distance_high_60
+setup_plan_inputs
 reason
 run_date
 strategy_version
 ```
+
+`setup_plan_inputs` 为模型四 Signal Plan 使用的结构化中间阈值，不参与模型二自身排序和买点判定。模型二必须先按原逻辑完成 `setup_signal` 与 `setup_score` 判定，再把判定过程中已经计算出的阈值透出：
+
+```text
+setup_plan_inputs.pullback:
+  anchor
+  support_price
+  invalid_price
+  ma20_price_low / ma20_price_high
+  ma60_price_low / ma60_price_high
+  last_low_required_price
+  volume_floor_threshold
+  fixed_window_volume_threshold
+  segment_volume_threshold
+  volume_confirmation
+
+setup_plan_inputs.breakout:
+  pivot
+  trigger_price
+  max_price
+  ideal_price_low / ideal_price_high
+  volume_min
+  volume_ma20_threshold
+  volume_ma5_threshold
+  ideal_volume_min
+  invalid_price
+
+setup_plan_inputs.retest:
+  recent_breakout
+  recent_breakout_date
+  recent_breakout_level
+  recent_breakout_volume
+  days_after_breakout
+  price_low / price_high
+  ideal_price_low / ideal_price_high
+  volume_threshold
+  ideal_volume_max
+  confirm_price
+  invalid_price
+```
+
+这些字段只是把模型二现有买点逻辑的中间事实暴露给模型四；新增或修改这些字段不得改变模型二的 `structure_stage`、`setup_signal`、`setup_score`、`action_hint`。
 
 输出文件命名规则：
 

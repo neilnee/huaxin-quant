@@ -990,9 +990,12 @@ setup_plan_inputs.pullback:
   ma20_price_low / ma20_price_high
   ma60_price_low / ma60_price_high
   last_low_required_price
+  volume_dry_up_threshold
   volume_floor_threshold
   fixed_window_volume_threshold
+  ideal_volume_max
   segment_volume_threshold
+  current_low_volume_days
   volume_confirmation
 
 setup_plan_inputs.breakout:

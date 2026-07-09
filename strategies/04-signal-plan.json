@@ -52,8 +52,8 @@
     "invalid_pivot_ratio": 0.97
   },
   "breakout_follow": {
-    "trigger_low_ratio": 1.01,
-    "trigger_high_ratio": 1.08,
+    "close_buffer_ratio": 1.01,
+    "max_close_extension_ratio": 1.08,
     "ideal_low_ratio": 1.02,
     "ideal_high_ratio": 1.05,
     "overextended_ratio": 1.08,
@@ -110,7 +110,8 @@
     "main_limit": 30,
     "watch_limit": 30,
     "data_issue_limit": 20,
-    "llm_max_tokens": 500,
+    "llm_max_tokens": 2000,
+    "llm_batch_size": 10,
     "volume_display_unit": "wan_shou"
   }
 }

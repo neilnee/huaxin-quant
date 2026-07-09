@@ -364,7 +364,7 @@ def build_pullback_plan(row, follow=False):
         "ideal_price_low": round_price(anchor * cfg["ideal_low_ratio"]),
         "ideal_price_high": round_price(anchor * cfg["ideal_high_ratio"]),
         "volume_max": round_volume(inputs.get("volume_floor_threshold") or vol_ma20 * cfg["volume_max_ratio"]),
-        "ideal_volume_max": round_volume(inputs.get("fixed_window_volume_threshold") or vol_ma20 * cfg["ideal_volume_max_ratio"]),
+        "ideal_volume_max": round_volume(inputs.get("ideal_volume_max") or vol_ma20 * cfg["ideal_volume_max_ratio"]),
         "invalid_price": round_price(invalid),
         "formula_ref": {
             "source": "model2.setup_plan_inputs.pullback" if inputs else "signal_plan_fallback",
@@ -489,11 +489,24 @@ def plans_for_row(row):
             return plans
         plans.append(build_pullback_plan(row, follow=False))
         plans.append(build_breakout_plan(row, follow=False))
-        if pivot and close and close >= pivot * CONFIG["breakout_buy"]["close_buffer_ratio"]:
-            plans.append(build_retest_plan(row, follow=False))
         return plans
 
     return plans
+
+
+def valid_plan_exclusion(row):
+    stage = row.get("structure_stage")
+    signal = row.get("setup_signal")
+    close = safe_float(row.get("close"))
+    pivot = safe_float(row.get("structure_pivot") or row.get("pivot_price"))
+    if (
+        stage in CONFIG["candidate_rules"]["allowed_new_stages"]
+        and signal not in CONFIG["candidate_rules"]["allowed_follow_signals"]
+        and pivot and close
+        and close > pivot * CONFIG["breakout_buy"]["overextended_ratio"]
+    ):
+        return "价格超过突破计划上沿，Signal Plan 不追高"
+    return ""
 
 
 def sort_key(plan):
@@ -533,6 +546,18 @@ def build_signal_plan(payload, date_yy):
                 excluded.append(item)
             continue
         row_plans = plans_for_row(row)
+        if not row_plans:
+            reason = valid_plan_exclusion(row)
+            if reason:
+                excluded.append({
+                    "code": str(row.get("code", "")),
+                    "name": row.get("name", ""),
+                    "structure_stage": row.get("structure_stage", ""),
+                    "setup_signal": row.get("setup_signal", ""),
+                    "reason": reason,
+                    "close": round_price(row.get("close")),
+                    "structure_pivot": round_price(row.get("structure_pivot") or row.get("pivot_price")),
+                })
         plans.extend(row_plans)
 
     plans.sort(key=sort_key)
@@ -570,6 +595,8 @@ def build_signal_plan(payload, date_yy):
         },
         "by_setup_family": by_family_stats,
         "data_issue_total": len(data_issues),
+        "excluded_total": len(excluded),
+        "overextended_total": sum(1 for item in excluded if "超过突破计划上沿" in item.get("reason", "")),
         "strategy_version": STRATEGY_VERSION,
         "strategy_file": STRATEGY_PATH,
         "quant_strategy_version": meta.get("strategy_version", ""),
@@ -633,6 +660,10 @@ def llm_context_for_plan(plan):
     }
 
 
+def plan_key(plan):
+    return f"{plan.get('code')}|{plan.get('setup_family')}|{plan.get('plan_action')}"
+
+
 def deterministic_note_for_plan(plan):
     family = plan.get("setup_family", "")
     action = "延续" if plan.get("plan_action") == "FOLLOW" else "触发"
@@ -661,11 +692,33 @@ def deterministic_note_for_plan(plan):
     return note
 
 
+def usable_llm_note(plan, note):
+    note = str(note or "")
+    if not note:
+        return False
+    forbidden = ["买入", "止损", "离场", "仓位", "建议"]
+    if any(word in note for word in forbidden):
+        return False
+    price_tokens = [
+        fmt_price(plan.get("trigger_price_low")),
+        fmt_price(plan.get("trigger_price_high")),
+    ]
+    has_price = any(token != "-" and token in note for token in price_tokens)
+    has_volume = "万手" in note or "量能" in note or "成交量" in note
+    return has_price and has_volume
+
+
+def chunks(items, size):
+    size = max(1, int(size or 1))
+    for idx in range(0, len(items), size):
+        yield items[idx:idx + size]
+
+
 def call_llm_notes(plans):
     """Generate concise explanations for each executable plan.
 
     Returns (notes_by_key, status). Missing or failed LLM calls are non-fatal;
-    Markdown falls back to deterministic plan_reason.
+    Markdown falls back to deterministic note generation.
     """
     api_key = os.environ.get("DEEPSEEK_API_KEY")
     if not api_key:
@@ -685,24 +738,36 @@ def call_llm_notes(plans):
         "base_url": base_url,
         "requested": len(plans),
         "returned": 0,
+        "batches": 0,
     }
     system_prompt = (
         "你是A股VCP买点计划解释助手。你的任务是解释 Signal Plan 已经算出的量价区间，"
         "不能改动区间，不能提出新的价格或成交量，不能引入外部事实。\n"
-        "请用一句中文说明为什么普通买点触发价、普通触发量能、A类量价区和失效价能对应这个买点。"
+        "请分别用一句中文说明这个计划的价格锚点、量能要求和失效价依据。"
         "若 a_class_available=false，不要提 A 类区间，只解释普通买点触发区和失效价。"
-        "要求：35-55字，直接、具体，提到关键锚点（如MA20/MA60/pivot/突破位）和量能条件。"
-        "必须返回合法 JSON：{\"note\":\"...\"}"
+        "每条说明要求35-60字，直接、具体，不要分项，不要使用冒号，提到关键锚点（如MA20/MA60/pivot/突破位）和量能条件。"
+        "不要使用买入、止损、离场、建议、仓位等最终交易措辞；只能说进入触发范围、计划失效或风险增大。"
+        "必须返回合法 JSON：{\"notes\":[{\"key\":\"传入key\",\"note\":\"说明\"}]}，key 必须原样保留，note 中不要使用英文双引号。"
     )
 
     notes = {}
     errors = []
-    max_tokens = int(CONFIG["reporting"].get("llm_max_tokens", 500))
-    for plan in plans:
-        key = f"{plan.get('code')}|{plan.get('setup_family')}|{plan.get('plan_action')}"
+    batch_size = int(CONFIG["reporting"].get("llm_batch_size", 20))
+    base_max_tokens = int(CONFIG["reporting"].get("llm_max_tokens", 2000))
+    for batch in chunks(plans, batch_size):
+        status["batches"] += 1
+        payload = [
+            {
+                "key": plan_key(plan),
+                "plan": llm_context_for_plan(plan),
+            }
+            for plan in batch
+        ]
+        requested_keys = [item["key"] for item in payload]
         last_exc = None
         for _attempt in range(2):
             try:
+                max_tokens = max(base_max_tokens, min(4000, 90 * len(batch)))
                 resp = requests.post(
                     f"{base_url}/chat/completions",
                     headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -712,8 +777,8 @@ def call_llm_notes(plans):
                             {"role": "system", "content": system_prompt},
                             {
                                 "role": "user",
-                                "content": "只解释这一条计划，只返回合法 JSON：\n"
-                                + json.dumps(llm_context_for_plan(plan), ensure_ascii=False),
+                                "content": "解释以下计划，只返回合法 JSON：\n"
+                                + json.dumps({"plans": payload}, ensure_ascii=False),
                             },
                         ],
                         "response_format": {"type": "json_object"},
@@ -727,15 +792,34 @@ def call_llm_notes(plans):
                 data = resp.json()
                 content = data["choices"][0]["message"].get("content", "")
                 parsed = parse_json_object_text(content)
-                note = str(parsed.get("note", "")).strip()
-                if note:
-                    notes[key] = note
+                batch_notes = parsed.get("notes") or {}
+                if isinstance(batch_notes, list):
+                    note_map = {
+                        str(item.get("key", "")).strip(): str(item.get("note", "")).strip()
+                        for item in batch_notes
+                        if isinstance(item, dict)
+                    }
+                elif isinstance(batch_notes, dict):
+                    note_map = {
+                        str(key).strip(): str(value).strip()
+                        for key, value in batch_notes.items()
+                    }
+                else:
+                    raise ValueError("notes is not an array or object")
+                for key in requested_keys:
+                    note = note_map.get(key, "")
+                    if note:
+                        notes[key] = note
+                missing = [key for key in requested_keys if key not in notes]
+                if missing:
+                    raise ValueError("missing notes: " + ",".join(missing[:5]))
+                if all(key in notes for key in requested_keys):
                     last_exc = None
                     break
             except Exception as exc:
                 last_exc = exc
         if last_exc is not None:
-            errors.append(f"{key}: {type(last_exc).__name__}: {str(last_exc)[:160]}")
+            errors.append(f"batch({','.join(requested_keys[:3])}): {type(last_exc).__name__}: {str(last_exc)[:160]}")
 
     status["returned"] = len(notes)
     if len(notes) == len(plans):
@@ -767,12 +851,12 @@ def parse_json_object_text(content):
 def attach_llm_notes(plan):
     notes, status = call_llm_notes(plan.get("plans", []))
     for item in plan.get("plans", []):
-        key = f"{item.get('code')}|{item.get('setup_family')}|{item.get('plan_action')}"
-        item["llm_note"] = notes.get(key) or deterministic_note_for_plan(item)
+        note = notes.get(plan_key(item))
+        item["llm_note"] = note if usable_llm_note(item, note) else deterministic_note_for_plan(item)
     for rows in plan.get("sections", {}).get("by_family", {}).values():
         for item in rows:
-            key = f"{item.get('code')}|{item.get('setup_family')}|{item.get('plan_action')}"
-            item["llm_note"] = notes.get(key) or deterministic_note_for_plan(item)
+            note = notes.get(plan_key(item))
+            item["llm_note"] = note if usable_llm_note(item, note) else deterministic_note_for_plan(item)
     plan["summary"]["llm"] = status
     return plan
 
@@ -839,9 +923,15 @@ def build_markdown(plan):
         f"- NEW: {summary['new_total']} 条",
         f"- FOLLOW: {summary['follow_total']} 条",
         f"- 最高等级分布: A级 {summary['quality_dist']['A']} / B级 {summary['quality_dist']['B']} / C级 {summary['quality_dist']['C']}",
+    ]
+    if summary.get("overextended_total"):
+        lines.append(
+            f"- 过度延伸排除: {summary.get('overextended_total', 0)} 只"
+        )
+    lines.extend([
         "",
         "> 表内价格和成交量均为已计算好的具体执行区间；公式来源保留在 JSON 的 formula_ref 中。",
-    ]
+    ])
     by_family = sections["by_family"]
     for family in ["PULLBACK", "BREAKOUT", "RETEST"]:
         lines.extend(["", f"## {family_title(family)}", ""])

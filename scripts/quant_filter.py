@@ -1114,6 +1114,10 @@ def detect_pullback_buy(df, structure, overheat):
         vol_ma20 * cfg["volume_dry_up_lt"]
         if vol_ma20 is not None else None
     )
+    ideal_volume_max = (
+        vol_ma20 * cfg.get("ideal_volume_dry_up_lt", cfg["volume_dry_up_lt"])
+        if vol_ma20 is not None else None
+    )
     plan_inputs = {
         "allowed": True,
         "anchor": None,
@@ -1130,6 +1134,7 @@ def detect_pullback_buy(df, structure, overheat):
         "volume_dry_up_threshold": cfg["volume_dry_up_lt"],
         "volume_floor_threshold": vol_ma20 * 0.9 if vol_ma20 is not None else None,
         "fixed_window_volume_threshold": fixed_window_volume_threshold,
+        "ideal_volume_max": ideal_volume_max,
         "segment_volume_threshold": segment_volume_threshold,
         "current_low_volume_days": cfg.get("current_low_volume_days", 3),
         "volume_confirmation": volume_reason,

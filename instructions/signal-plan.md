@@ -20,6 +20,7 @@ Signal Plan 负责：
 - 计算下一交易日可能触发的买点计划。
 - 输出普通买点触发区、A 类买点量价区、最高潜在等级和失效价。
 - 按 PULLBACK / BREAKOUT / RETEST 三类买点统计和展示，区分首次触发计划和已触发后的延续计划。
+- 记录成熟结构被排除的原因，例如价格已超过突破计划上沿。
 
 Signal Plan 不负责：
 
@@ -128,6 +129,8 @@ structure_risk_flags 命中 hard_risk_flags
 
 `VCP_FORMING` 仅在当日已经触发 `PULLBACK_BUY` / `BREAKOUT_BUY` / `RETEST_BUY` 时允许生成 `FOLLOW_SETUP_PLAN`，不得作为普通成熟结构生成首次买点计划。
 
+成熟结构若价格已经超过突破计划上沿，不输出追高计划，需进入 `excluded` 并在 summary 中计数。
+
 ---
 
 ## 四、计划类型
@@ -159,6 +162,8 @@ Signal Plan 只输出三类买点计划，不输出等待突破或等待回踩�
 | `PULLBACK_FOLLOW` | 当日回踩买点后的次日延续计划 |
 | `BREAKOUT_FOLLOW` | 当日突破买点后的次日延续计划 |
 | `RETEST_FOLLOW` | 当日回踩确认买点后的次日延续计划 |
+
+当日 `setup_signal=PULLBACK_BUY` 时，Signal Plan 必须输出 `PULLBACK_FOLLOW`。若该股票同时属于成熟结构且收盘价仍低于突破触发价，可以额外输出 `BREAKOUT_BUY` 的 `NEW` 计划，用于描述次日可能发生的枢轴突破买点。
 
 ---
 
@@ -260,6 +265,8 @@ A 类缩量 = vol_ma20 × ideal_volume_max_ratio 以下
 仅对已经突破过的结构生成。
 
 若当日 `setup_signal=BREAKOUT_BUY`，下一交易日只生成 `BREAKOUT_FOLLOW`；不会输出 `RETEST_BUY`，因为模型二 RETEST 需要已经发生有效突破后的回踩确认，第一版不凭空生成等待项。
+
+普通成熟结构不得因为 `close >= structure_pivot × close_buffer_ratio` 自动生成 `RETEST_BUY` 的 `NEW` 计划。`RETEST` 只在模型二已经识别出 `RETEST_BUY` 时输出 `FOLLOW`。
 
 区间规则：
 

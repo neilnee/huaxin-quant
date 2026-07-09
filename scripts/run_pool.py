@@ -131,21 +131,27 @@ def fetch_segments(args: argparse.Namespace) -> list[Path]:
     return fetched_or_cached
 
 
-def run_process_pool(dry_run: bool) -> int:
+def run_process_pool(dry_run: bool, run_date=None) -> int:
     cmd = [sys.executable, str(PROCESS_POOL_SCRIPT)]
+    env = os.environ.copy()
+    if run_date:
+        env["POOL_DATE"] = run_date
     print("\n" + "=" * 60)
     print("Phase 2-5: Process pool")
+    if run_date:
+        print(f"Date: {run_date}")
     print("=" * 60)
     if dry_run:
         print("DRY-RUN:", " ".join(cmd))
         return 0
     sys.stdout.flush()
-    completed = subprocess.run(cmd, cwd=str(PROJECT_ROOT), text=True)
+    completed = subprocess.run(cmd, cwd=str(PROJECT_ROOT), text=True, env=env)
     return completed.returncode
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run model 1 pool screening end-to-end.")
+    parser.add_argument("--date", help="运行日期 YYYY-MM-DD，默认当天（15:00 前取前一日）")
     parser.add_argument("--skip-fetch", action="store_true", help="只执行阶段二到五，复用现有 cache/xuangu 数据")
     parser.add_argument("--force-refresh", action="store_true", help="忽略缓存，强制重新拉取阶段一分段数据")
     parser.add_argument("--no-process", action="store_true", help="只执行阶段一拉取，不运行 process_pool.py")
@@ -175,7 +181,7 @@ def main() -> int:
         if args.no_process:
             return 0
 
-        return run_process_pool(args.dry_run)
+        return run_process_pool(args.dry_run, run_date=args.date)
     except RuntimeError as exc:
         print(f"\nERROR: {exc}")
         return 1

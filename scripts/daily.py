@@ -157,7 +157,9 @@ def _mark_done(date_yy):
 # ── stage runners ──
 
 def run_pool(date_yy, force_refresh=False):
-    cmd = ["python3", "scripts/run_pool.py", "--date", date_yy]
+    from datetime import datetime as _dt
+    iso = _dt.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
+    cmd = ["python3", "scripts/run_pool.py", "--date", iso]
     if force_refresh:
         cmd.append("--force-refresh")
     return subprocess.run(cmd, cwd=PROJECT_ROOT)

@@ -21,7 +21,7 @@ python3 scripts/daily.py --force-refresh &        # 强制刷新数据缓存
 启动后立即返回，不阻塞当前终端。流水线在后台按顺序执行：
 
 ```text
-模型一 Pool → 模型二 Quant → Bloom → Signal Plan → 合并报告
+模型一 Pool → 模型二 Quant → 模型四 Tracker（Bloom → Plan → 花期策览）
 ```
 
 ## 查看进度

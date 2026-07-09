@@ -106,9 +106,7 @@ def _step_label(step):
     labels = {
         "pool": "模型一 Pool",
         "quant": "模型二 Quant",
-        "bloom": "Bloom 信号层",
-        "plan": "Signal Plan",
-        "assemble": "合并报告",
+        "tracker": "模型四 Tracker",
     }
     return labels.get(step, step)
 

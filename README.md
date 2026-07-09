@@ -2,7 +2,7 @@
 
 [English](README.en.md) | 中文
 
-Huaxin Quant 是一个面向 A 股的多模型股票发现与跟踪系统。它把基本面海选、VCP 量价结构识别、Bloom 跨日信号跟踪、估值分析和持仓管理拆成可复现的脚本流水线，用于发现“基本面达标、结构逐步成熟、买点可量化”的候选股票。
+Huaxin Quant 是一个面向 A 股的多模型股票发现与跟踪系统。它把基本面海选、VCP 量价结构识别、Bloom 跨日信号跟踪、次日量价触发计划、估值分析和持仓管理拆成可复现的脚本流水线，用于发现”基本面达标、结构逐步成熟、买点可量化”的候选股票。
 
 项目以确定性脚本为核心：`instructions/` 定义模型规则和执行约束，`strategies/` 保存可调参数，`scripts/` 负责数据拉取、缓存、计算、输出和状态维护。LLM 只用于解释和报告增强，不参与核心结构和买点判定。
 
@@ -41,6 +41,19 @@ Huaxin Quant 是一个面向 A 股的多模型股票发现与跟踪系统。它�
 - 将模型二结构映射为 `EARLY`、`FORMING`、`MATURE`、`TRIGGERED`、`RISK_BLOCKED`、`COOLDOWN`、`EXIT` 等状态。
 - 重点观察列表优先展示已触发买点的标的，其次按结构阶段和结构分排序。
 - Bloom 报告会展示结构、买点、风险、当前 VCP 收缩组和 LLM 观察要点。
+
+### Signal Plan 信号计划
+
+- 消费模型二 JSON，生成下一交易日可执行的量价触发计划。
+- 三类买点计划：`PULLBACK` 缩量回踩、`BREAKOUT` 枢轴突破、`RETEST` 突破后回踩确认。
+- 输出具体触发价区间、A/B 类量能条件和失效位，不展示抽象公式。
+- 区分首次触发（`NEW`）和已触发延续（`FOLLOW`）两种动作。
+
+### 模型四：Tracker 总控
+
+- 统一编排 Bloom + Signal Plan 的运行，生成合并日报 `花期策览`。
+- 报告分五区：总览 → 重点观察 → 买点计划 → 全量观察 → 字段说明。
+- `scripts/daily.py` 一键启动全流水线（模型一 → 模型二 → 模型四），`scripts/monitor.py` 实时查看进度。
 
 ### 持仓管理
 
@@ -114,6 +127,15 @@ python3 scripts/quant_filter.py --code 300604 --name 长川科技
 python3 scripts/bloom.py
 python3 scripts/bloom.py --date 260707
 
+# Signal Plan：次日量价触发计划
+python3 scripts/signal_plan.py
+python3 scripts/signal_plan.py --date 260707
+
+# Tracker：统一编排 + 合并日报
+python3 scripts/tracker.py
+python3 scripts/daily.py &        # 全流水线后台启动
+python3 scripts/monitor.py         # 前台查看实时进度
+
 # 模型三：估值
 python3 scripts/valuate.py
 python3 scripts/valuate.py --code 300442
@@ -143,6 +165,8 @@ cache/             日线、选股、估值等本地缓存
 pool/              模型一输出
 quant/             模型二输出
 bloom/             Bloom 报告、状态池和事件
+signal_plan/       Signal Plan 买点计划和 JSON
+tracker/           合并日报
 reports/           估值和其他报告
 position/          本地持仓账本
 dev_logs/          本地开发复盘日志
@@ -156,8 +180,10 @@ dev_logs/          本地开发复盘日志
 | Pool | `scripts/run_pool.py` | 拉取和处理基本面候选池 |
 | Quant | `scripts/quant_filter.py` | 识别 VCP 结构、风险和买点 |
 | Bloom | `scripts/bloom.py` | 维护跨日观察池并生成日报 |
+| Signal Plan | `scripts/signal_plan.py` | 生成次日量价触发计划 |
+| Tracker | `scripts/tracker.py` | 编排 Bloom + Plan，生成合并日报 |
 | Valuation | `scripts/valuate.py` | 生成估值报告和估值排序 |
-| Tracker | `scripts/tracker.py` | 对核心池进行择时信号检查 |
+| Daily | `scripts/daily.py` | 全流水线一键启动 |
 | Position | `scripts/position.py` | 管理交易流水和持仓账本 |
 | Shared Data | `scripts/shared.py` | 日线缓存、日期口径、数据源降级 |
 
@@ -167,5 +193,7 @@ dev_logs/          本地开发复盘日志
 - [模型二 Quant](instructions/02-quant.md)
 - [模型三 Valuation](instructions/03-valuation.md)
 - [Bloom 信号层](instructions/signal-bloom.md)
+- [Signal Plan 信号计划](instructions/signal-plan.md)
+- [Tracker 总控](instructions/04-tracker.md)
 - [持仓管理](instructions/signal-position.md)
 - [交易策略文档](instructions/trading-strategy.md)

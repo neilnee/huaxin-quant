@@ -90,6 +90,7 @@
       ],
       "min_setup_score": 55,
       "volume_dry_up_lt": 0.8,
+      "ideal_volume_dry_up_lt": 0.8,
       "segment_volume_patterns": [
         "decreasing"
       ],

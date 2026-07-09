@@ -1,0 +1,12 @@
+{
+  "strategy_version": "model4_tracker_v1",
+  "description": "Model 4 Tracker orchestrator: unified daily signal report combining Bloom lifecycle and Signal Plan triggers.",
+  "outputs": {
+    "report_dir": "tracker"
+  },
+  "reporting": {
+    "focus_cross_limit": 30,
+    "bloom_active_limit": 40,
+    "plan_limit": 30
+  }
+}

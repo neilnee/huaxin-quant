@@ -17,11 +17,14 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+import time
+
 import requests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.shared import PROJECT_ROOT
 from scripts.strategy_config import load_strategy_config
+from scripts.progress_utils import ProgressTracker
 
 
 BLOOM_STRATEGY_FILE = "04-bloom.json"
@@ -987,7 +990,7 @@ def _build_stock_context(r: dict, contractions: list = None) -> dict:
     }
 
 
-def call_llm_insights(watching_rows, quant_results=None):
+def call_llm_insights(watching_rows, quant_results=None, progress_file=None):
     """为每只重点观察标的生成自然语言解读。
 
     调用 DeepSeek API，先将内部编码翻译为中文术语再传入，
@@ -1060,39 +1063,62 @@ def call_llm_insights(watching_rows, quant_results=None):
     insights = {}
     errors = []
     max_tokens = int(CONFIG["reporting"].get("llm_max_tokens", 800))
-    for stock in stocks_data:
+    max_retries = int(CONFIG["reporting"].get("llm_max_retries", 3))
+    for idx, stock in enumerate(stocks_data):
         code = normalize_code(stock.get("code"))
-        try:
-            resp = requests.post(
-                f"{base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {
-                            "role": "user",
-                            "content": "只分析这一只股票，只返回合法 JSON：\n" + json.dumps([stock], ensure_ascii=False),
-                        },
-                    ],
-                    "response_format": {"type": "json_object"},
-                    "stream": False,
-                    "temperature": 0.2,
-                    "max_tokens": max_tokens,
-                },
-                timeout=60,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            content = data["choices"][0]["message"].get("content", "")
-            parsed = json.loads(content)
-            for item in parsed.get("insights", []):
-                item_code = normalize_code(item.get("code"))
-                insight = str(item.get("insight", "")).strip()
-                if item_code and insight:
-                    insights[item_code] = insight
-        except Exception as exc:
-            errors.append(f"{code}: {type(exc).__name__}: {str(exc)[:160]}")
+
+        # Progress: update per-stock
+        if progress_file and (idx % 5 == 0 or idx == len(stocks_data) - 1):
+            try:
+                pt = ProgressTracker(progress_file)
+                pt.step_update("bloom", current_stage="LLM解读",
+                               total=len(stocks_data), completed=idx + 1,
+                               current_code=code, current_name=stock.get("name", ""))
+            except Exception:
+                pass
+
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                resp = requests.post(
+                    f"{base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={
+                        "model": model,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {
+                                "role": "user",
+                                "content": "只分析这一只股票，只返回合法 JSON：\n" + json.dumps([stock], ensure_ascii=False),
+                            },
+                        ],
+                        "response_format": {"type": "json_object"},
+                        "stream": False,
+                        "temperature": 0.2,
+                        "max_tokens": max_tokens,
+                    },
+                    timeout=60,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                content = data["choices"][0]["message"].get("content", "")
+                if not content.strip():
+                    raise ValueError("empty response content")
+                parsed = json.loads(content)
+                for item in parsed.get("insights", []):
+                    item_code = normalize_code(item.get("code"))
+                    insight = str(item.get("insight", "")).strip()
+                    if item_code and insight:
+                        insights[item_code] = insight
+                last_error = None
+                break
+            except Exception as exc:
+                last_error = exc
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)  # 1s, 2s, 4s, ...
+
+        if last_error is not None:
+            errors.append(f"{code}: {type(last_error).__name__}: {str(last_error)[:160]}")
 
     status["returned"] = len(insights)
     if len(insights) == len(watching_rows):
@@ -1106,7 +1132,7 @@ def call_llm_insights(watching_rows, quant_results=None):
     return insights, status
 
 
-def build_bloom(payload, previous_payload, date_yy, allow_partial=False):
+def build_bloom(payload, previous_payload, date_yy, allow_partial=False, progress_file=None):
     meta = payload.get("meta", {})
     run_date = meta.get("run_date") or date_yy_to_iso(date_yy)
     mode = meta.get("mode", "")
@@ -1132,13 +1158,23 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False):
     new_state = dict(prev_state)
     events = []
 
-    for code, source in by_code.items():
+    total_codes = len(by_code)
+    for idx, (code, source) in enumerate(by_code.items()):
         prev_row = prev_state.get(code)
         status = base_status(source)
         updated = state_row(prev_row, source, run_date, status)
         new_state[code] = updated
         if updated["bloom_signal"] != "CONTINUED" or updated["event_type"] != "CONTINUED":
             events.append(row_event(updated, run_date))
+
+        # Progress: every 10 stocks or at boundaries
+        if progress_file and (idx % 10 == 0 or idx == total_codes - 1):
+            try:
+                pt = ProgressTracker(progress_file)
+                pt.step_update("bloom", current_stage="信号处理",
+                               total=total_codes, completed=idx + 1)
+            except Exception:
+                pass
 
     for code, prev_row in prev_state.items():
         if code in by_code:
@@ -1182,7 +1218,13 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False):
         "returned": 0,
     }
     if watching:
-        insights, llm_status = call_llm_insights(watching, results)
+        if progress_file:
+            try:
+                pt = ProgressTracker(progress_file)
+                pt.step_update("bloom", current_stage="LLM解读", total=len(watching), completed=0)
+            except Exception:
+                pass
+        insights, llm_status = call_llm_insights(watching, results, progress_file=progress_file)
         for r in watching:
             code = r.get("code", "")
             if code in insights:
@@ -1496,6 +1538,7 @@ def main():
     parser.add_argument("--date", help="Bloom 日期，支持 YYMMDD 或 YYYY-MM-DD；默认取最新 quant run")
     parser.add_argument("--allow-partial", action="store_true", help="允许单股/多股/测试模式生成 Bloom 输出")
     parser.add_argument("--no-state-update", action="store_true", help="只生成 bloom_input 和 Markdown，不更新状态层")
+    parser.add_argument("--progress-file", default=None, help="进度文件路径（供 daily.py 流水线使用）")
     args = parser.parse_args()
 
     ensure_dirs()
@@ -1516,7 +1559,9 @@ def main():
     previous_payload = load_json(prev_path) if prev_path else None
 
     try:
-        bloom, new_state, events = build_bloom(payload, previous_payload, date_yy, allow_partial=args.allow_partial)
+        bloom, new_state, events = build_bloom(payload, previous_payload, date_yy,
+                                                      allow_partial=args.allow_partial,
+                                                      progress_file=args.progress_file)
     except Exception as exc:
         print(f"错误: {exc}")
         sys.exit(1)

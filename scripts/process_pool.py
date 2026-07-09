@@ -13,7 +13,8 @@ from scripts.strategy_config import load_strategy_config
 PROJECT_ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SEGMENT_DIR = PROJECT_ROOT / "cache" / "xuangu"
 OUTPUT_DIR = PROJECT_ROOT / "pool"
-TODAY = datetime.strptime(expected_trade_date(), "%Y-%m-%d").date()
+_pool_date = os.environ.get("POOL_DATE") or expected_trade_date()
+TODAY = datetime.strptime(_pool_date, "%Y-%m-%d").date()
 ANNUAL_PERIOD = get_latest_annual_period()
 POOL_STRATEGY_FILE = "01-pool.json"
 POOL_STRATEGY, POOL_STRATEGY_PATH = load_strategy_config(POOL_STRATEGY_FILE)

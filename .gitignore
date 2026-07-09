@@ -24,7 +24,8 @@ pool/
 quant/
 bloom/
 reports/
-signals/
+signal_plan/
+tracker/
 refer/
 .tmp/
 tmp_*/

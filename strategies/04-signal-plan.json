@@ -1,0 +1,117 @@
+{
+  "strategy_version": "model4_signal_plan_v1",
+  "description": "Signal Plan parameters. This model-4 signal layer consumes Model 2 quant JSON and emits next-session concrete price/volume setup plans.",
+  "inputs": {
+    "quant_run_dir": "cache/quant_runs"
+  },
+  "outputs": {
+    "plan_dir": "signal_plan"
+  },
+  "candidate_rules": {
+    "allowed_new_stages": [
+      "VCP_MATURE",
+      "VCP_TIGHT"
+    ],
+    "allowed_follow_signals": [
+      "PULLBACK_BUY",
+      "BREAKOUT_BUY",
+      "RETEST_BUY"
+    ],
+    "min_structure_score": 60.0,
+    "risk_block_min_score": 40.0,
+    "hard_risk_flags": [
+      "OVERHEAT_CHG5",
+      "OVERHEAT_CHG20",
+      "DOWNTREND",
+      "DEEP_FALL"
+    ]
+  },
+  "quality_rules": {
+    "A": {
+      "min_structure_score": 80.0,
+      "max_risk_score": 15.0
+    },
+    "B": {
+      "min_structure_score": 65.0,
+      "max_risk_score": 30.0
+    },
+    "main_table_qualities": [
+      "A",
+      "B"
+    ]
+  },
+  "breakout_buy": {
+    "close_buffer_ratio": 1.01,
+    "max_close_extension_ratio": 1.08,
+    "ideal_low_ratio": 1.02,
+    "ideal_high_ratio": 1.05,
+    "overextended_ratio": 1.08,
+    "volume_ma20_ratio": 1.0,
+    "volume_ma5_ratio": 1.0,
+    "ideal_volume_min_ratio": 1.5,
+    "invalid_pivot_ratio": 0.97
+  },
+  "breakout_follow": {
+    "close_buffer_ratio": 1.01,
+    "max_close_extension_ratio": 1.08,
+    "ideal_low_ratio": 1.02,
+    "ideal_high_ratio": 1.05,
+    "overextended_ratio": 1.08,
+    "volume_ma20_ratio": 1.0,
+    "volume_ma5_ratio": 1.0,
+    "ideal_volume_min_ratio": 1.5,
+    "invalid_pivot_ratio": 0.98
+  },
+  "pullback_buy": {
+    "support_anchor_order": [
+      "MA20",
+      "MA60",
+      "last_contraction_low",
+      "support_price"
+    ],
+    "trigger_low_ratio": 0.96,
+    "trigger_high_ratio": 1.03,
+    "ideal_low_ratio": 0.995,
+    "ideal_high_ratio": 1.015,
+    "volume_max_ratio": 0.9,
+    "ideal_volume_max_ratio": 0.8,
+    "invalid_anchor_ratio": 0.97,
+    "invalid_low_ratio": 0.98
+  },
+  "pullback_follow": {
+    "trigger_low_ratio": 0.96,
+    "trigger_high_ratio": 1.03,
+    "ideal_low_ratio": 0.995,
+    "ideal_high_ratio": 1.01,
+    "volume_max_ratio": 0.9,
+    "ideal_volume_max_ratio": 0.8,
+    "invalid_anchor_ratio": 0.97,
+    "invalid_low_ratio": 0.98
+  },
+  "retest_buy": {
+    "trigger_low_ratio": 0.99,
+    "trigger_high_ratio": 1.005,
+    "ideal_low_ratio": 0.995,
+    "ideal_high_ratio": 1.002,
+    "pullback_volume_max_ratio": 0.7,
+    "ideal_pullback_volume_max_ratio": 0.55,
+    "invalid_pivot_ratio": 0.97
+  },
+  "retest_follow": {
+    "trigger_low_ratio": 0.995,
+    "trigger_high_ratio": 1.02,
+    "ideal_low_ratio": 1.0,
+    "ideal_high_ratio": 1.01,
+    "volume_max_ratio": 0.9,
+    "ideal_volume_max_ratio": 0.75,
+    "invalid_pivot_ratio": 0.98
+  },
+  "reporting": {
+    "main_limit": 30,
+    "watch_limit": 30,
+    "data_issue_limit": 20,
+    "llm_max_tokens": 2000,
+    "llm_batch_size": 10,
+    "volume_display_unit": "wan_shou"
+  }
+}

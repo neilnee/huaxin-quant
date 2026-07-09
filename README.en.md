@@ -2,7 +2,7 @@
 
 English | [中文](README.md)
 
-Huaxin Quant is a multi-model stock discovery and tracking system for the A-share market. It combines fundamental screening, VCP price-volume structure detection, Bloom cross-day signal tracking, valuation analysis, and position bookkeeping into a reproducible script-driven workflow.
+Huaxin Quant is a multi-model stock discovery and tracking system for the A-share market. It combines fundamental screening, VCP price-volume structure detection, Bloom cross-day signal tracking, next-day price/volume setup plans, valuation analysis, and position bookkeeping into a reproducible script-driven workflow.
 
 The system is built around deterministic scripts: `instructions/` defines model rules and operating constraints, `strategies/` stores tunable parameters, and `scripts/` handles data fetching, caching, calculation, output, and state management. LLMs are used only for explanations and report enrichment, not for core structure or buy-signal decisions.
 
@@ -41,6 +41,19 @@ The system is built around deterministic scripts: `instructions/` defines model 
 - Maps Model 2 structures into states such as `EARLY`, `FORMING`, `MATURE`, `TRIGGERED`, `RISK_BLOCKED`, `COOLDOWN`, and `EXIT`.
 - The watch list prioritizes triggered setups first, then structure stage, then structure score.
 - Bloom reports show structure, setup, risk, current VCP contraction group, and LLM-generated observation notes.
+
+### Signal Plan
+
+- Consumes Model 2 JSON and generates next-session executable price/volume setup plans.
+- Three plan types: `PULLBACK` (low-volume pullback), `BREAKOUT` (pivot breakout), `RETEST` (post-breakout retest).
+- Outputs concrete trigger price ranges, A/B-class volume thresholds, and invalidation levels — no abstract formulas.
+- Distinguishes first-time triggers (`NEW`) from post-trigger continuation (`FOLLOW`).
+
+### Model 4: Tracker
+
+- Orchestrates Bloom + Signal Plan and produces a consolidated daily report ("花期策览").
+- Five-section report: overview → focus watch → setup plans → active pool → field reference.
+- `scripts/daily.py` for one-command daily pipeline (Model 1 → 2 → 4), `scripts/monitor.py` for real-time progress.
 
 ### Position Management
 
@@ -114,6 +127,15 @@ python3 scripts/quant_filter.py --code 300604 --name 长川科技
 python3 scripts/bloom.py
 python3 scripts/bloom.py --date 260707
 
+# Signal Plan: next-day price/volume setup plans
+python3 scripts/signal_plan.py
+python3 scripts/signal_plan.py --date 260707
+
+# Tracker: unified orchestrator + consolidated daily report
+python3 scripts/tracker.py
+python3 scripts/daily.py &        # full pipeline, background
+python3 scripts/monitor.py         # real-time progress, foreground
+
 # Model 3: valuation
 python3 scripts/valuate.py
 python3 scripts/valuate.py --code 300442
@@ -143,6 +165,8 @@ cache/             Local daily-bar, screening, and valuation caches
 pool/              Model 1 outputs
 quant/             Model 2 outputs
 bloom/             Bloom reports, state, and events
+signal_plan/       Signal Plan setup plans and JSON
+tracker/           Consolidated daily report
 reports/           Valuation and other reports
 position/          Local position ledger
 dev_logs/          Local development review logs
@@ -156,8 +180,10 @@ dev_logs/          Local development review logs
 | Pool | `scripts/run_pool.py` | Fetch and process the fundamental candidate pool |
 | Quant | `scripts/quant_filter.py` | Detect VCP structures, risks, and setups |
 | Bloom | `scripts/bloom.py` | Maintain the cross-day watch pool and generate reports |
+| Signal Plan | `scripts/signal_plan.py` | Generate next-day price/volume setup plans |
+| Tracker | `scripts/tracker.py` | Orchestrate Bloom + Plan, produce consolidated report |
 | Valuation | `scripts/valuate.py` | Generate valuation reports and ranking outputs |
-| Tracker | `scripts/tracker.py` | Check timing signals for the core pool |
+| Daily | `scripts/daily.py` | One-command full pipeline launcher |
 | Position | `scripts/position.py` | Manage trades and position ledgers |
 | Shared Data | `scripts/shared.py` | Daily-bar cache, date semantics, and data-source fallback |
 
@@ -167,5 +193,7 @@ Detailed strategy documents:
 - [Model 2 Quant](instructions/02-quant.md)
 - [Model 3 Valuation](instructions/03-valuation.md)
 - [Bloom Signal Layer](instructions/signal-bloom.md)
+- [Signal Plan](instructions/signal-plan.md)
+- [Tracker](instructions/04-tracker.md)
 - [Position Management](instructions/signal-position.md)
 - [Trading Strategy](instructions/trading-strategy.md)

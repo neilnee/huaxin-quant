@@ -194,32 +194,29 @@ def run_plan(date_yy):
 
 
 def run_assemble(date_yy):
-    """Import tracker internals and build the consolidated report."""
-    from scripts import bloom as _bloom
-    from scripts import signal_plan as _plan
+    """Read bloom + plan outputs from disk, assemble consolidated report.
+    Steps 3 and 4 already ran bloom.py and signal_plan.py (with LLM calls).
+    This step only reads their outputs — no duplicate LLM calls."""
+    from pathlib import Path as _Path
     from scripts.tracker import build_consolidated_markdown
 
-    quant_path = _bloom.quant_run_for_date(date_yy)
-    if not quant_path:
-        raise FileNotFoundError(f"missing quant run for {date_yy}")
-    payload = _bloom.load_json(quant_path)
+    bloom_input_path = _Path(PROJECT_ROOT) / "bloom" / "state" / f"bloom_input_{date_yy}.json"
+    plan_json_path = _Path(PROJECT_ROOT) / "signal_plan" / f"signal_plan_{date_yy}.json"
+    bloom_md_path = _Path(PROJECT_ROOT) / "bloom" / f"bloom_{date_yy}.md"
+    plan_md_path = _Path(PROJECT_ROOT) / "signal_plan" / f"signal_plan_{date_yy}.md"
 
-    prev_path = _bloom.previous_quant_run(date_yy)
-    previous_payload = _bloom.load_json(prev_path) if prev_path else None
+    if not bloom_input_path.exists():
+        raise FileNotFoundError(f"missing bloom input: {bloom_input_path}")
+    if not plan_json_path.exists():
+        raise FileNotFoundError(f"missing plan json: {plan_json_path}")
 
-    bloom_data, new_state, events = _bloom.build_bloom(payload, previous_payload, date_yy)
-    _bloom.write_state_snapshot_before(bloom_data["summary"]["date"])
-    _bloom.write_state(new_state)
-    _bloom.write_events(bloom_data["summary"]["date"], events)
-    _bloom.write_bloom_input(date_yy, bloom_data)
-    bloom_md = _bloom.build_markdown(bloom_data)
-    _bloom.write_markdown(date_yy, bloom_md)
+    with open(bloom_input_path, "r", encoding="utf-8") as f:
+        bloom_data = json.load(f)
+    with open(plan_json_path, "r", encoding="utf-8") as f:
+        plan_data = json.load(f)
 
-    plan_data = _plan.build_signal_plan(payload, date_yy)
-    plan_data = _plan.attach_llm_notes(plan_data)
-    plan_md = _plan.build_markdown(plan_data)
-    _plan.write_json_plan(date_yy, plan_data)
-    _plan.write_markdown_plan(date_yy, plan_md)
+    bloom_md = bloom_md_path.read_text(encoding="utf-8") if bloom_md_path.exists() else ""
+    plan_md = plan_md_path.read_text(encoding="utf-8") if plan_md_path.exists() else ""
 
     TRACKER_DIR.mkdir(parents=True, exist_ok=True)
     consolidated = build_consolidated_markdown(bloom_data, plan_data, date_yy, bloom_md, plan_md)

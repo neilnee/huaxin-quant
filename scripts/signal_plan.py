@@ -20,6 +20,7 @@ import requests
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.shared import PROJECT_ROOT
 from scripts.strategy_config import load_strategy_config
+from scripts.progress_utils import ProgressTracker
 
 
 STRATEGY_FILE = "04-signal-plan.json"
@@ -522,15 +523,16 @@ def sort_key(plan):
     )
 
 
-def build_signal_plan(payload, date_yy):
+def build_signal_plan(payload, date_yy, progress_file=None):
     meta = payload.get("meta", {})
     run_date = meta.get("run_date") or datetime.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
     results = payload.get("results", [])
+    total_results = len(results)
     plans = []
     excluded = []
     data_issues = []
 
-    for row in results:
+    for idx, row in enumerate(results):
         ok, reason = valid_candidate(row)
         if not ok:
             item = {
@@ -559,6 +561,16 @@ def build_signal_plan(payload, date_yy):
                     "structure_pivot": round_price(row.get("structure_pivot") or row.get("pivot_price")),
                 })
         plans.extend(row_plans)
+
+        # Progress: every 10 stocks or at boundaries
+        if progress_file and (idx % 10 == 0 or idx == total_results - 1):
+            try:
+                pt = ProgressTracker(progress_file)
+                pt.step_update("plan", current_stage="筛选候选+生成计划",
+                               total=total_results, completed=idx + 1,
+                               current_code=str(row.get("code", "")))
+            except Exception:
+                pass
 
     plans.sort(key=sort_key)
     families = ["PULLBACK", "BREAKOUT", "RETEST"]
@@ -714,7 +726,7 @@ def chunks(items, size):
         yield items[idx:idx + size]
 
 
-def call_llm_notes(plans):
+def call_llm_notes(plans, progress_file=None):
     """Generate concise explanations for each executable plan.
 
     Returns (notes_by_key, status). Missing or failed LLM calls are non-fatal;
@@ -754,8 +766,20 @@ def call_llm_notes(plans):
     errors = []
     batch_size = int(CONFIG["reporting"].get("llm_batch_size", 20))
     base_max_tokens = int(CONFIG["reporting"].get("llm_max_tokens", 2000))
-    for batch in chunks(plans, batch_size):
+    total_batches = (len(plans) + batch_size - 1) // batch_size if plans else 0
+    for batch_idx, batch in enumerate(chunks(plans, batch_size)):
         status["batches"] += 1
+
+        # Progress
+        if progress_file:
+            try:
+                first_plan = batch[0] if batch else {}
+                pt = ProgressTracker(progress_file)
+                pt.step_update("plan", current_stage="LLM备注",
+                               total=total_batches, completed=batch_idx + 1,
+                               current_code=first_plan.get("code", "") if first_plan else "")
+            except Exception:
+                pass
         payload = [
             {
                 "key": plan_key(plan),
@@ -848,8 +872,8 @@ def parse_json_object_text(content):
         raise
 
 
-def attach_llm_notes(plan):
-    notes, status = call_llm_notes(plan.get("plans", []))
+def attach_llm_notes(plan, progress_file=None):
+    notes, status = call_llm_notes(plan.get("plans", []), progress_file=progress_file)
     for item in plan.get("plans", []):
         note = notes.get(plan_key(item))
         item["llm_note"] = note if usable_llm_note(item, note) else deterministic_note_for_plan(item)
@@ -959,6 +983,7 @@ def main():
     parser = argparse.ArgumentParser(description="Model 4 Signal Plan: next-session VCP setup plans")
     parser.add_argument("--date", help="运行日期，支持 YYMMDD 或 YYYY-MM-DD；默认取最新 quant run")
     parser.add_argument("--no-llm", action="store_true", help="跳过 LLM 说明生成，使用确定性量价说明兜底")
+    parser.add_argument("--progress-file", default=None, help="进度文件路径（供 daily.py 流水线使用）")
     args = parser.parse_args()
 
     try:
@@ -978,9 +1003,9 @@ def main():
     date_yy = match.group(1)
 
     payload = load_json(quant_path)
-    plan = build_signal_plan(payload, date_yy)
+    plan = build_signal_plan(payload, date_yy, progress_file=args.progress_file)
     if not args.no_llm:
-        plan = attach_llm_notes(plan)
+        plan = attach_llm_notes(plan, progress_file=args.progress_file)
     json_path = write_json_plan(date_yy, plan)
     md_path = write_markdown_plan(date_yy, build_markdown(plan))
 

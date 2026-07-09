@@ -16,6 +16,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.shared import PROJECT_ROOT
 from scripts.strategy_config import load_strategy_config
+from scripts.progress_utils import ProgressTracker
 from scripts import bloom as _bloom
 from scripts import signal_plan as _plan
 
@@ -214,6 +215,7 @@ def main():
     parser.add_argument("--date", help="运行日期 YYMMDD 或 YYYY-MM-DD；默认取最新 quant run")
     parser.add_argument("--skip-bloom", action="store_true", help="跳过 Bloom 信号层")
     parser.add_argument("--skip-plan", action="store_true", help="跳过 Signal Plan 层")
+    parser.add_argument("--progress-file", default=None, help="进度文件路径（供 daily.py 流水线使用）")
     args = parser.parse_args()
 
     try:
@@ -234,39 +236,79 @@ def main():
 
     payload = _bloom.load_json(quant_path)
 
+    progress_file = args.progress_file
+    ptag = ProgressTracker(progress_file) if progress_file else None
+
     # ── 1. Bloom ──
     if not args.skip_bloom:
+        if ptag:
+            ptag.step_start("bloom")
+            ptag.step_update("bloom", current_stage="信号处理")
+
         _bloom.ensure_dirs()
         prev_path = _bloom.previous_quant_run(date_yy)
         previous_payload = _bloom.load_json(prev_path) if prev_path else None
-        bloom_data, new_state, events = _bloom.build_bloom(payload, previous_payload, date_yy)
+        bloom_data, new_state, events = _bloom.build_bloom(
+            payload, previous_payload, date_yy,
+            progress_file=progress_file,
+        )
         _bloom.write_state_snapshot_before(bloom_data["summary"]["date"])
         _bloom.write_state(new_state)
         _bloom.write_events(bloom_data["summary"]["date"], events)
         _bloom.write_bloom_input(date_yy, bloom_data)
+
+        if ptag:
+            ptag.step_update("bloom", current_stage="生成报告")
+
         bloom_md = _bloom.build_markdown(bloom_data)
         _bloom.write_markdown(date_yy, bloom_md)
+
+        if ptag:
+            ptag.step_done("bloom")
     else:
         bloom_data = {"summary": {}, "sections": {}}
         bloom_md = ""
 
     # ── 2. Signal Plan ──
     if not args.skip_plan:
-        plan_data = _plan.build_signal_plan(payload, date_yy)
-        plan_data = _plan.attach_llm_notes(plan_data)
+        if ptag:
+            ptag.step_start("plan")
+            ptag.step_update("plan", current_stage="生成计划")
+
+        plan_data = _plan.build_signal_plan(payload, date_yy,
+                                            progress_file=progress_file)
+
+        if ptag:
+            ptag.step_update("plan", current_stage="LLM备注")
+
+        plan_data = _plan.attach_llm_notes(plan_data,
+                                           progress_file=progress_file)
+
+        if ptag:
+            ptag.step_update("plan", current_stage="输出报告")
+
         plan_md = _plan.build_markdown(plan_data)
         _plan.write_json_plan(date_yy, plan_data)
         _plan.write_markdown_plan(date_yy, plan_md)
+
+        if ptag:
+            ptag.step_done("plan")
     else:
         plan_data = {"summary": {}, "sections": {}, "plans": []}
         plan_md = ""
 
     # ── 3. Consolidated report ──
+    if ptag:
+        ptag.step_start("assemble")
+
     TRACKER_DIR.mkdir(parents=True, exist_ok=True)
     consolidated = build_consolidated_markdown(bloom_data, plan_data, date_yy, bloom_md, plan_md)
     tracker_path = TRACKER_DIR / f"花期策览_{date_yy}.md"
     with open(tracker_path, "w", encoding="utf-8") as f:
         f.write(consolidated)
+
+    if ptag:
+        ptag.step_done("assemble")
 
     print("=" * 70)
     print("Model 4 Tracker")

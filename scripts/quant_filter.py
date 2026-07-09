@@ -33,27 +33,12 @@ def _write_quant_progress(progress_file, completed, total, results_count,
     if not progress_file:
         return
     try:
-        from datetime import datetime as _dt
-        data = {}
-        if os.path.exists(progress_file):
-            with open(progress_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        steps = data.setdefault("steps", {})
-        steps["quant"] = {
-            "status": "running",
-            "started_at": (steps.get("quant") or {}).get("started_at") or _dt.now().isoformat(),
-            "finished_at": None,
-            "total": total,
-            "completed": completed,
-            "results": results_count,
-            "current_code": current_code,
-            "current_name": current_name,
-            "current_stage": current_stage,
-        }
-        data["updated_at"] = _dt.now().isoformat()
-        os.makedirs(os.path.dirname(progress_file), exist_ok=True)
-        with open(progress_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        from scripts.progress_utils import ProgressTracker
+        tracker = ProgressTracker(progress_file)
+        tracker.step_update("quant",
+                            total=total, completed=completed, results=results_count,
+                            current_code=current_code, current_name=current_name,
+                            current_stage=current_stage)
     except Exception:
         pass  # progress is best-effort, never crash the pipeline
 import pandas as pd

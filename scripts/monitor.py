@@ -23,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.shared import PROJECT_ROOT, default_pipeline_date
 from scripts.strategy_config import load_strategy_config
+from scripts.progress_utils import ProgressTracker
 
 
 TRACKER_CONFIG, _ = load_strategy_config("04-tracker.json")
@@ -79,14 +80,9 @@ def _report_path(date_yy):
 
 
 def _read_progress(date_yy):
+    """Read progress with shared lock via ProgressTracker."""
     path = _progress_file(date_yy)
-    if not path.exists():
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
+    return ProgressTracker.read(path)
 
 
 def _status_icon(status):
@@ -122,9 +118,17 @@ def _step_label(step):
     labels = {
         "pool": "模型一 Pool",
         "quant": "模型二 Quant",
+        "bloom": "　├ Bloom 信号",
+        "plan": "　├ Signal Plan",
+        "assemble": "　└ 合并报告",
         "tracker": "模型四 Tracker",
     }
     return labels.get(step, step)
+
+
+def _has_detail(step_key):
+    """Steps that can show per-item progress details."""
+    return step_key in ("quant", "bloom", "plan")
 
 
 def _build_progress_markdown(progress):
@@ -146,7 +150,7 @@ def _build_progress_markdown(progress):
         icon = _status_icon(status)
         label = _step_label(key)
 
-        if key == "quant" and status == "running":
+        if _has_detail(key) and status == "running":
             total = step.get("total", 0)
             done = step.get("completed", 0)
             pct = f"{done / total * 100:.1f}%" if total else "-"
@@ -154,8 +158,10 @@ def _build_progress_markdown(progress):
             cur_name = step.get("current_name", "")
             cur_stage = step.get("current_stage", "")
             detail = f"{done}/{total} ({pct})"
+            if cur_stage:
+                detail += f" — {cur_stage}"
             if cur_code:
-                detail += f" — {cur_code} {cur_name} {cur_stage}"
+                detail += f" [{cur_code} {cur_name}]" if cur_name else f" [{cur_code}]"
         elif status == "done":
             elapsed = _step_time(step)
             detail = elapsed

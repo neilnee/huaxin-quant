@@ -87,6 +87,7 @@
     "section_limit": 30,
     "human_review_limit": 12,
     "llm_max_tokens": 800,
+    "llm_max_retries": 3,
     "watching_min_scores": {
       "VCP_FORMING": 60.0,
       "VCP_EARLY": 60.0

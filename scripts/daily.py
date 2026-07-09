@@ -28,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from scripts.shared import PROJECT_ROOT
+from scripts.shared import PROJECT_ROOT, default_pipeline_date
 
 PROGRESS_DIR = Path(PROJECT_ROOT) / ".tmp"
 
@@ -200,18 +200,22 @@ def main():
         print(f"错误: {exc}")
         sys.exit(1)
 
-    # Resolve date from latest pool if not specified
+    # Resolve date: use 15:00-aware default, fall back to latest pool if needed
     if not date_yy:
-        from scripts.run_pool import POOL_DIR
-        pool_files = sorted(POOL_DIR.glob("pool_*.csv"))
-        if not pool_files:
-            print("错误: 未找到模型一 pool 文件，请先运行模型一或指定 --date")
-            sys.exit(1)
-        match = re.fullmatch(r"pool_(\d{6})\.csv", pool_files[-1].name)
-        if not match:
-            print(f"错误: 无法从池文件名解析日期: {pool_files[-1]}")
-            sys.exit(1)
-        date_yy = match.group(1)
+        date_yy = default_pipeline_date()
+        pool_dir = Path(PROJECT_ROOT) / "pool"
+        pool_path_check = pool_dir / f"pool_{date_yy}.csv"
+        if not pool_path_check.exists():
+            # 当日 pool 尚未生成（例如凌晨跑前一天数据），回退到最新 pool
+            pool_files = sorted(pool_dir.glob("pool_*.csv"))
+            if pool_files:
+                match = re.fullmatch(r"pool_(\d{6})\.csv", pool_files[-1].name)
+                if match:
+                    date_yy = match.group(1)
+                    print(f"[daily] 默认日期 {default_pipeline_date()} 无 pool，回退到最新: {date_yy}")
+            else:
+                print(f"错误: 未找到模型一 pool 文件，请先运行模型一或指定 --date")
+                sys.exit(1)
 
     progress_path = _init_progress(date_yy)
     print(f"[daily] 流水线启动 {date_yy}")

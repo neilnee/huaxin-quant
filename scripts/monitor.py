@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from scripts.shared import PROJECT_ROOT
+from scripts.shared import PROJECT_ROOT, default_pipeline_date
 from scripts.strategy_config import load_strategy_config
 
 
@@ -42,11 +42,27 @@ def normalize_date_arg(value):
 
 
 def _resolve_date(date_yy):
-    """Try to find the running/completed pipeline for the given date."""
+    """解析监控日期，统一使用 15:00 收盘分隔线。
+
+    优先精确匹配给定日期；未指定时按 default_pipeline_date() 查找对应
+    progress 文件，找不到再回退到最新的 progress 文件。
+    """
     if date_yy:
         return date_yy
-    # Look for the most recent progress file
+    # 优先匹配 15:00-aware 默认日期
+    default_yy = default_pipeline_date()
+    default_path = _progress_file(default_yy)
+    if default_path.exists():
+        return default_yy
+    # 回退：查找最近的 progress 文件（不早于默认日期，避免拿到未来日期）
     files = sorted(PROGRESS_DIR.glob("daily_progress_*.json"))
+    for f in reversed(files):
+        match = re.fullmatch(r"daily_progress_(\d{6})\.json", f.name)
+        if match:
+            candidate = match.group(1)
+            if candidate <= default_yy:
+                return candidate
+    # 最后兜底：取最新 progress（可能比默认日期新，但至少有东西可监控）
     if files:
         match = re.fullmatch(r"daily_progress_(\d{6})\.json", files[-1].name)
         if match:

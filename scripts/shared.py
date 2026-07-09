@@ -65,6 +65,16 @@ def expected_trade_date(run_date=None):
     return cur.strftime("%Y-%m-%d")
 
 
+def default_pipeline_date():
+    """流水线默认运行日期（YYMMDD），统一使用 15:00 收盘分隔线。
+
+    凌晨到 15:00 前，当日交易尚未完成，回退到上一交易日；
+    15:00 后取当日。周末回退到周五。
+    所有脚本（daily.py / monitor.py）统一使用此函数作为默认日期。
+    """
+    return expected_trade_date().replace("-", "")[2:]
+
+
 def normalize_date_arg(value):
     """Normalize YYMMDD / YYYYMMDD / YYYY-MM-DD-ish values to YYYY-MM-DD."""
     raw = str(value).strip()

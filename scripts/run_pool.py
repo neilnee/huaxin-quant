@@ -167,6 +167,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    _load_dotenv()
     args = parse_args()
     if args.skip_fetch and args.force_refresh:
         print("ERROR: --skip-fetch 与 --force-refresh 不能同时使用")

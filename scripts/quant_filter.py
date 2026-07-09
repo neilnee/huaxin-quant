@@ -2019,7 +2019,7 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True, p
     if retry_queue:
         print(f"\n重试 {len(retry_queue)} 只频率限制失败标的...")
         time.sleep(10)
-        retry_results, retry_stats = process_codes(retry_queue, today_yy, run_date, use_cache=False, allow_retry=False, progress_file=args.progress_file)
+        retry_results, retry_stats = process_codes(retry_queue, today_yy, run_date, use_cache=False, allow_retry=False, progress_file=progress_file)
         results.extend(retry_results)
         for key, val in retry_stats.items():
             stats[key] += val

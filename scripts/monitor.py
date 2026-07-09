@@ -197,6 +197,20 @@ def _build_progress_markdown(progress):
     return "\n".join(lines) + "\n"
 
 
+def _final_report_content(date_yy, progress):
+    """Return the final report content once the pipeline is done."""
+    assemble = progress.get("steps", {}).get("assemble", {})
+    tmp_path = assemble.get("final_report_tmp")
+    if tmp_path and Path(tmp_path).exists():
+        return Path(tmp_path).read_text(encoding="utf-8")
+
+    final_path = Path(assemble.get("final_report_path") or _report_path(date_yy))
+    if final_path.exists():
+        return final_path.read_text(encoding="utf-8")
+
+    return _build_progress_markdown(progress)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Daily pipeline progress monitor")
     parser.add_argument("--date", help="监控日期 YYMMDD 或 YYYY-MM-DD；默认自动检测")
@@ -230,13 +244,8 @@ def main():
             status = progress.get("status", "unknown")
 
             if status == "done":
-                # Pipeline finished — copy final report
-                final_path = _report_path(date_yy)
-                if final_path.exists():
-                    content = final_path.read_text(encoding="utf-8")
-                else:
-                    content = _build_progress_markdown(progress)
-
+                # Pipeline finished: publish the final draft over the progress page.
+                content = _final_report_content(date_yy, progress)
                 report_path = TRACKER_DIR / f"花期策览_{date_yy}.md"
                 with open(report_path, "w", encoding="utf-8") as f:
                     f.write(content)

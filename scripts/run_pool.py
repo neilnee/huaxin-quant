@@ -19,7 +19,6 @@ from scripts.strategy_config import load_strategy_config
 PROJECT_ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SEGMENT_DIR = PROJECT_ROOT / "cache" / "xuangu"
 PROCESS_POOL_SCRIPT = PROJECT_ROOT / "scripts" / "process_pool.py"
-DEFAULT_XUANGU_SCRIPT = os.environ.get("HUAXIN_XUANGU_SCRIPT", "mx_xuangu.py")
 POOL_STRATEGY_FILE = "01-pool.json"
 POOL_STRATEGY, POOL_STRATEGY_PATH = load_strategy_config(POOL_STRATEGY_FILE)
 STRATEGY_VERSION = POOL_STRATEGY["strategy_version"]
@@ -160,7 +159,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--delay", type=float, default=RUNTIME_CFG["fetch_delay_seconds"], help=f"分段调用间隔秒数，默认 {RUNTIME_CFG['fetch_delay_seconds']}")
     parser.add_argument(
         "--xuangu-script",
-        default=DEFAULT_XUANGU_SCRIPT,
+        default=os.environ.get("HUAXIN_XUANGU_SCRIPT", "mx_xuangu.py"),
         help="mx_xuangu.py 路径，也可通过 HUAXIN_XUANGU_SCRIPT 设置",
     )
     return parser.parse_args()

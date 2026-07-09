@@ -94,6 +94,24 @@ def run_tracker(date_yy, progress_path):
     )
 
 
+def publish_final_report(progress_path):
+    """Publish the final tracker draft after progress is marked done."""
+    progress = ProgressTracker.read(progress_path)
+    if not progress:
+        return
+    assemble = progress.get("steps", {}).get("assemble", {})
+    tmp_path = assemble.get("final_report_tmp")
+    final_path = assemble.get("final_report_path")
+    if not tmp_path or not final_path:
+        return
+    src = Path(tmp_path)
+    dst = Path(final_path)
+    if not src.exists():
+        return
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+
+
 # ── main ──
 
 def main():
@@ -111,22 +129,29 @@ def main():
         print(f"错误: {exc}")
         sys.exit(1)
 
-    # Resolve date: use 15:00-aware default, fall back to latest pool if needed
+    # Resolve date: full runs generate the default-date pool; skip-pool reuses one.
     if not date_yy:
         date_yy = default_pipeline_date()
+        if args.skip_pool:
+            pool_dir = Path(PROJECT_ROOT) / "pool"
+            pool_path_check = pool_dir / f"pool_{date_yy}.csv"
+            if not pool_path_check.exists():
+                # 复用已有池子时，如果默认日期未生成，则回退到最近 pool。
+                pool_files = sorted(pool_dir.glob("pool_*.csv"))
+                if pool_files:
+                    match = re.fullmatch(r"pool_(\d{6})\.csv", pool_files[-1].name)
+                    if match:
+                        date_yy = match.group(1)
+                        print(f"[daily] 默认日期 {default_pipeline_date()} 无 pool，回退到最新: {date_yy}")
+                else:
+                    print(f"错误: 未找到模型一 pool 文件，请先运行模型一或指定 --date")
+                    sys.exit(1)
+    elif args.skip_pool:
         pool_dir = Path(PROJECT_ROOT) / "pool"
         pool_path_check = pool_dir / f"pool_{date_yy}.csv"
         if not pool_path_check.exists():
-            # 当日 pool 尚未生成（例如凌晨跑前一天数据），回退到最新 pool
-            pool_files = sorted(pool_dir.glob("pool_*.csv"))
-            if pool_files:
-                match = re.fullmatch(r"pool_(\d{6})\.csv", pool_files[-1].name)
-                if match:
-                    date_yy = match.group(1)
-                    print(f"[daily] 默认日期 {default_pipeline_date()} 无 pool，回退到最新: {date_yy}")
-            else:
-                print(f"错误: 未找到模型一 pool 文件，请先运行模型一或指定 --date")
-                sys.exit(1)
+            print(f"错误: --skip-pool 需要已有 pool 文件: {pool_path_check}")
+            sys.exit(1)
 
     progress_path = _progress_path(date_yy)
     tracker = ProgressTracker(progress_path)
@@ -182,6 +207,7 @@ def main():
         print(f"[daily] ✓ tracker done")
 
     tracker.mark_done()
+    publish_final_report(progress_path)
     print(f"[daily] 流水线完成，共 {len(errors)} 个错误")
     if errors:
         for e in errors:

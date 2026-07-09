@@ -304,8 +304,17 @@ def main():
     TRACKER_DIR.mkdir(parents=True, exist_ok=True)
     consolidated = build_consolidated_markdown(bloom_data, plan_data, date_yy, bloom_md, plan_md)
     tracker_path = TRACKER_DIR / f"花期策览_{date_yy}.md"
-    with open(tracker_path, "w", encoding="utf-8") as f:
+    output_path = tracker_path
+    if progress_file:
+        output_path = Path(progress_file).with_name(f"tracker_final_{date_yy}.md")
+    with open(output_path, "w", encoding="utf-8") as f:
         f.write(consolidated)
+    if ptag:
+        ptag.step_update(
+            "assemble",
+            final_report_tmp=str(output_path),
+            final_report_path=str(tracker_path),
+        )
 
     if ptag:
         ptag.step_done("assemble")

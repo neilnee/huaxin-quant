@@ -83,14 +83,22 @@ def _status_icon(status):
     return icons.get(status, "❓")
 
 
-def _elapsed(started_at):
-    if not started_at:
+def _step_time(step):
+    """Return elapsed time string. For done/error steps, use stored elapsed_s
+    (captured at completion time). For running steps, compute live from started_at."""
+    if step.get("status") in ("done", "error") and step.get("elapsed_s") is not None:
+        s = step["elapsed_s"]
+        if s < 60:
+            return f"{s}s"
+        m, sec = divmod(s, 60)
+        return f"{m}m{sec}s"
+    started = step.get("started_at")
+    if not started:
         return ""
-    started = datetime.fromisoformat(started_at)
-    s = round((datetime.now() - started).total_seconds())
-    if s < 60:
-        return f"{s}s"
-    m, s = divmod(s, 60)
+    elapsed = round((datetime.now() - datetime.fromisoformat(started)).total_seconds())
+    if elapsed < 60:
+        return f"{elapsed}s"
+    m, s = divmod(elapsed, 60)
     return f"{m}m{s}s"
 
 
@@ -135,7 +143,7 @@ def _build_progress_markdown(progress):
             if cur_code:
                 detail += f" — {cur_code} {cur_name} {cur_stage}"
         elif status == "done":
-            elapsed = _elapsed(step.get("started_at")) or _elapsed(step.get("finished_at"))
+            elapsed = _step_time(step)
             detail = elapsed
         elif status == "error":
             detail = step.get("error", "未知错误")
@@ -144,10 +152,22 @@ def _build_progress_markdown(progress):
 
         lines.append(f"| {icon} {label} | {status} | {detail} |")
 
-    total_elapsed = _elapsed(started_at) if started_at else ""
+    if progress.get("status") == "done":
+        total_s = progress.get("total_elapsed_s", 0)
+        if not total_s:
+            started = datetime.fromisoformat(started_at) if started_at else None
+            last_finish = max(
+                (s.get("finished_at") for s in steps.values() if s.get("finished_at")),
+                default=None,
+            )
+            if started and last_finish:
+                total_s = round((datetime.fromisoformat(last_finish) - started).total_seconds())
+        total_str = f"{total_s // 60}m{total_s % 60}s" if total_s else ""
+    else:
+        total_str = _step_time({"started_at": started_at}) if started_at else ""
     lines.extend([
         "",
-        f"> 已用时 {total_elapsed}",
+        f"> 已用时 {total_str}",
         "",
         "---",
         "",
@@ -205,8 +225,9 @@ def main():
                     1 for s in progress.get("steps", {}).values()
                     if s.get("status") == "error"
                 )
-                total_elapsed = _elapsed(progress.get("started_at"))
-                print(f"[monitor] ✅ 流水线完成 — 总耗时 {total_elapsed}，{error_count} 个错误")
+                total = _step_time({"status": "done", "started_at": progress.get("started_at"),
+                                    "elapsed_s": progress.get("total_elapsed_s")})
+                print(f"[monitor] ✅ 流水线完成 — 总耗时 {total}，{error_count} 个错误")
                 print(f"[monitor] 报告: {report_path}")
                 if error_count:
                     sys.exit(1)

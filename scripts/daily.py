@@ -73,6 +73,24 @@ def _progress_file(date_yy):
     return PROGRESS_DIR / f"daily_progress_{date_yy}.json"
 
 
+def _atomic_write(path, data):
+    """Write JSON with a temp file + rename to avoid reader/writer races."""
+    tmp = path.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    tmp.replace(path)
+
+
+def _read_progress(path):
+    for _ in range(3):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError):
+            time.sleep(0.05)
+    return None
+
+
 def _init_progress(date_yy):
     now = datetime.now().isoformat()
     steps = {}
@@ -101,21 +119,22 @@ def _step_start(date_yy, step):
     path = _progress_file(date_yy)
     if not path.exists():
         return
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    data = _read_progress(path)
+    if data is None:
+        return
     data["steps"][step]["status"] = "running"
     data["steps"][step]["started_at"] = datetime.now().isoformat()
     data["updated_at"] = datetime.now().isoformat()
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    _atomic_write(path, data)
 
 
 def _step_done(date_yy, step, error=None):
     path = _progress_file(date_yy)
     if not path.exists():
         return
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    data = _read_progress(path)
+    if data is None:
+        return
     s = data["steps"][step]
     s["status"] = "error" if error else "done"
     s["finished_at"] = datetime.now().isoformat()
@@ -124,20 +143,21 @@ def _step_done(date_yy, step, error=None):
         started = datetime.fromisoformat(s["started_at"])
         s["elapsed_s"] = round((datetime.now() - started).total_seconds())
     data["updated_at"] = datetime.now().isoformat()
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    _atomic_write(path, data)
 
 
 def _mark_done(date_yy):
     path = _progress_file(date_yy)
     if not path.exists():
         return
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    data = _read_progress(path)
+    if data is None:
+        return
+    started = datetime.fromisoformat(data["started_at"])
+    data["total_elapsed_s"] = round((datetime.now() - started).total_seconds())
     data["status"] = "done"
     data["updated_at"] = datetime.now().isoformat()
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    _atomic_write(path, data)
 
 
 # ── stage runners ──

@@ -309,7 +309,7 @@ bloom/state/snapshots/bloom_state_before_<YYYYMMDD>.csv
 
 报告分区：
 
-1. 今日新进入
+1. 全量活跃观察（全部活跃标的，含结构评分；今日新进入标 🆕 标记）
 2. 今日结构升级
 3. 成熟/触发重点观察
 4. 高风险阻断
@@ -317,7 +317,7 @@ bloom/state/snapshots/bloom_state_before_<YYYYMMDD>.csv
 6. 数据异常
 7. 待估值候选
 
-Markdown 的“池子变化”分区中，“今日新进入”和“移出”都使用紧凑多列表格展示，表头保持为空，单元格包含股票代码、名称和 Bloom 状态；不得把大量移出标的拼成单行长文本。
+Markdown 的”全量观察”分区中，”活跃观察”展示全部活跃标的（EARLY/FORMING/MATURE/TRIGGERED/RISK_BLOCKED），每只显示代码、名称、Bloom 状态和结构评分，今日新进入的额外标注 🆕；”移出”使用紧凑多列表格展示，表头保持为空，单元格包含股票代码、名称和 Bloom 状态；不得把大量移出标的拼成单行长文本。
 
 Markdown 的“重点观察”表格列为：
 

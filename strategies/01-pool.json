@@ -14,7 +14,7 @@
     "filters": [
       "营收同比增长率大于15%",
       "净利润同比增长率大于20%",
-      "毛利率大于15%",
+      "毛利率大于10%",
       "研发费用占营收比例大于2.5%",
       "排除ST股"
     ],
@@ -56,8 +56,19 @@
     "min_listing_days": 365,
     "max_debt_ratio_pct": 70.0,
     "normal_gross_margin_floor_pct": 20.0,
-    "semiconductor_gross_margin_floor_pct": 15.0,
     "semiconductor_revenue_growth_gate_pct": 25.0,
+    "gross_margin_tiers": {
+      "集成电路封测": 12.0,
+      "半导体材料": 15.0,
+      "分立器件": 15.0,
+      "半导体制造": 15.0,
+      "模拟芯片设计": 20.0,
+      "数字芯片设计": 20.0,
+      "半导体设备": 20.0,
+      "集成电路设计": 20.0,
+      "_semiconductor_default": 20.0,
+      "_normal_default": 20.0
+    },
     "np_min_annual": 50000000,
     "ocf_np_threshold_by_period": {
       "Q1": 0.0,

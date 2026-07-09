@@ -1161,6 +1161,7 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False):
 
     sections = {
         "new_entries": [r for r in rows if r["event_type"] == "NEW_ENTRY"],
+        "active": [r for r in rows if is_active_status(r.get("bloom_status"))],
         "upgrades": [r for r in rows if r["bloom_signal"] == "UPGRADE"],
         "triggered": [r for r in rows if r["bloom_status"] == "TRIGGERED" or r["bloom_signal"] == "SETUP_TRIGGER"],
         "focus": [r for r in rows if r["pool_decision"] == "KEEP_FOCUS"],
@@ -1291,10 +1292,17 @@ def _format_setup_cell(row):
     return " / ".join(str(p) for p in parts if p)
 
 
-def append_compact_stock_table(lines, title, rows, empty_text, cols_per_row=8):
+def append_compact_stock_table(lines, title, rows, empty_text, cols_per_row=8, format_cell=None):
     if not rows:
         lines.extend(["", empty_text, ""])
         return
+
+    if format_cell is None:
+        def format_cell(r):
+            code = r.get("code", "")
+            name = r.get("name", "")
+            status = r.get("bloom_status", "")
+            return f"`{code}` {name}<br>{status}"
 
     lines.append(f"**{title} {len(rows)} 只**")
     lines.append("")
@@ -1304,12 +1312,7 @@ def append_compact_stock_table(lines, title, rows, empty_text, cols_per_row=8):
     lines.append(sep)
     for i in range(0, len(rows), cols_per_row):
         chunk = rows[i:i + cols_per_row]
-        cells = []
-        for r in chunk:
-            code = r.get("code", "")
-            name = r.get("name", "")
-            status = r.get("bloom_status", "")
-            cells.append(f"`{code}` {name}<br>{status}")
+        cells = [format_cell(r) for r in chunk]
         while len(cells) < cols_per_row:
             cells.append("")
         lines.append("| " + " | ".join(cells) + " |")
@@ -1399,13 +1402,25 @@ def build_markdown(bloom):
         lines.extend(["", "*今日无符合条件的结构*", ""])
     lines.append("")
 
-    # ── 📋 池子变化（紧凑多列表格）──
-    lines.append("## 📋 池子变化")
-    new_entries = sections.get("new_entries", [])
-    exits = sections.get("exits", [])
+    # ── 📋 全量观察 ──
+    lines.append("## 📋 全量观察")
+    active_rows = sections.get("active", [])
+    new_codes = {r.get("code") for r in sections.get("new_entries", [])}
 
-    append_compact_stock_table(lines, "新进入", new_entries, "*无新进入*")
-    append_compact_stock_table(lines, "移出", exits, "*无移出*")
+    def _format_active_cell(r):
+        code = r.get("code", "")
+        name = r.get("name", "")
+        status = r.get("bloom_status", "")
+        score = r.get("structure_score", "")
+        tag = " 🔰" if code in new_codes else ""
+        score_str = f" / {score}分" if score else ""
+        return f"`{code}` {name}{tag}<br>{status}{score_str}"
+
+    append_compact_stock_table(lines, "活跃观察", active_rows, "*无活跃观察标的*",
+                               cols_per_row=6, format_cell=_format_active_cell)
+
+    exits = sections.get("exits", [])
+    append_compact_stock_table(lines, "移出", exits, "*无移出*", cols_per_row=6)
 
     # ── 📖 字段说明 ──
     lines.extend([
@@ -1413,14 +1428,39 @@ def build_markdown(bloom):
         "",
         "| 字段 | 说明 |",
         "|------|------|",
-        "| `bloom_status` | EARLY=早期 / FORMING=形成中 / MATURE=成熟 / TRIGGERED=已触发 / RISK_BLOCKED=风险阻断 / COOLDOWN=冷却 / INVALID=失效 / EXIT=移出 / DATA_ISSUE=数据异常 |",
-        "| `bloom_signal` | NEW_ENTRY=新进入 / UPGRADE=升级 / DOWNGRADE=降级 / SETUP_TRIGGER=交易触发 / RISK_BLOCK=风险阻断 / COOLDOWN=进入冷却 / EXIT=移出 / DATA_HOLD=数据维持 / CONTINUED=延续 |",
-        "| `pool_decision` | ADD=入池 / KEEP_FOCUS=重点观察 / KEEP_LOW=低优先观察 / COOLDOWN=冷却保留 / EXIT=移出 / DATA_HOLD=维持 |",
-        "| `risk_level` | LOW=低 / MEDIUM=中 / HIGH=高 / HARD=硬风险 |",
-        "| `signal_quality` | HIGH / MEDIUM / LOW / BLOCKED / NONE |",
-        "| `valuation_priority` | HIGH / MEDIUM / LOW / NONE（由 Bloom 层判断，不读取模型三估值） |",
+        "| 代码 | 股票代码 |",
+        "| 名称 | 股票简称 |",
+        "| 结构 | `VCP阶段 / 结构评分`，如 `VCP_FORMING / 83分`；阶段越高结构越成熟 |",
+        "| Bloom | 生命周期状态（见下方状态枚举） |",
+        "| 买点 | `信号类型 / 评分 / 质量 / 仓位`；无买点显示 `-` |",
+        "| 风险 | `LOW` / `MEDIUM` / `HIGH` / `HARD`；⚠️ 前缀 = 高风险及以上 |",
+        "| 观察要点 | LLM 生成的解读摘要，未生成时回退为规则文本 |",
+        "| 🔰 | 日式新手标 = 今日新进入观察池 |",
+        "| ↳ 收缩明细 | `N段：-x.xx%（d天） → ...`，每轮 VCP 回调幅度及持续天数 |",
         "",
-        f"> strategy: {summary['strategy_version']}",
+        "**bloom_status 枚举：**",
+        "",
+        "| 状态 | 含义 |",
+        "|------|------|",
+        "| `EARLY` | 早期结构，低优先级观察 |",
+        "| `FORMING` | 结构形成中，正常跟踪 |",
+        "| `MATURE` | 结构成熟/紧致，重点观察 |",
+        "| `TRIGGERED` | 触发买点信号（PULLBACK_BUY / BREAKOUT_BUY / RETEST_BUY） |",
+        "| `RISK_BLOCKED` | 结构存在但风险过高，暂不推进 |",
+        "| `COOLDOWN` | 模型二临时出局，冷却保留期 |",
+        "| `INVALID` | 结构失效 |",
+        "| `EXIT` | 移出观察池 |",
+        "| `DATA_ISSUE` | 数据异常，维持原判断 |",
+        "",
+        "**买点信号：**",
+        "",
+        "| 信号 | 含义 |",
+        "|------|------|",
+        "| `PULLBACK_BUY` | 结构内回踩低吸 — 股价回调至均线或支撑位附近的低吸机会 |",
+        "| `BREAKOUT_BUY` | 枢轴突破参与 — 放量突破前期波段高点（枢轴）时跟进 |",
+        "| `RETEST_BUY` | 突破后回踩确认 — 突破枢轴后回踩不破，确认支撑有效 |",
+        "",
+        "",
     ])
     return "\n".join(lines) + "\n"
 

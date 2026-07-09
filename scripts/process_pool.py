@@ -26,15 +26,44 @@ SOFT_TAG_CFG = POOL_STRATEGY["soft_tags"]
 INDUSTRY_EXCLUDE = INDUSTRY_CFG["exclude_keywords"]
 SEMICONDUCTOR_KW = INDUSTRY_CFG["semiconductor_keyword"]
 
-# Relaxed thresholds for semiconductor stocks with high revenue growth
-SEMI_RELAX_GM = HARD_FILTER_CFG["semiconductor_gross_margin_floor_pct"]
-SEMI_RELAX_REV_GROWTH = HARD_FILTER_CFG["semiconductor_revenue_growth_gate_pct"]
+# Tiered gross margin floors by sub-industry
+GM_TIERS = HARD_FILTER_CFG["gross_margin_tiers"]
 NORMAL_GM_FLOOR = HARD_FILTER_CFG["normal_gross_margin_floor_pct"]
+SEMI_RELAX_REV_GROWTH = HARD_FILTER_CFG["semiconductor_revenue_growth_gate_pct"]
 MIN_MARKET_CAP = HARD_FILTER_CFG["min_market_cap"]
 SMALL_CAP_TAG_CEILING = SOFT_TAG_CFG["small_cap_tag_ceiling"]
 TAG_PENALTIES = SOFT_TAG_CFG["tag_penalties"]
 
 # ── Helpers ──────────────────────────────────────────────
+
+def row_get(row: dict, *patterns, default=None):
+    """Resolve a key from *row* using *patterns*, per-row.
+
+    Unlike the global KEY_* variables resolved once from a sample stock,
+    this searches the actual row each time — safe against date-suffix
+    mismatches when xuangu files span multiple fetch dates.
+    """
+    key = find_key(row, *patterns)
+    return row.get(key) if key else default
+
+
+def get_gm_floor(industry_raw: str) -> float:
+    """Return the gross margin floor for a given industry string.
+
+    Matches sub-industry keywords from gross_margin_tiers first,
+    falls back to _semiconductor_default if '半导体' is in the string,
+    otherwise uses _normal_default.
+    """
+    industry = str(industry_raw) if industry_raw else ""
+    for keyword, floor in GM_TIERS.items():
+        if keyword.startswith("_"):
+            continue
+        if keyword in industry:
+            return floor
+    if SEMICONDUCTOR_KW in industry:
+        return GM_TIERS["_semiconductor_default"]
+    return GM_TIERS["_normal_default"]
+
 
 def detect_period(v) -> str:
     """从值字符串检测报告期。'5096.36万|2026一季报' → 'Q1'"""
@@ -212,6 +241,18 @@ KEY_INDUSTRY = find_key(sample, "INDUSTRY", require_all=False)  # 东财二级
 KEY_MCAP = find_key(sample, "TOAL_MARKET_VALUE")
 KEY_PE = find_key(sample, "PETTM")
 KEY_PB = find_key(sample, "PB") if find_key(sample, "PB") else find_key(sample, "市净率", require_all=False)
+
+# Per-row fallback patterns for date-sensitive keys.
+# When xuangu files span multiple fetch dates, the date suffix in the key
+# (e.g. {2026-07-08} vs {2026-07-09}) drifts and row.get(KEY_*) returns None.
+# row_get re-resolves against the actual row, safe against suffix drift.
+_MCAP_PATTERN = ("TOAL_MARKET_VALUE",)
+_PE_PATTERN = ("PETTM",)
+_PB_PATTERN = ("PB",)
+_ROE_PATTERN = ("ROE_WEIGHT",)
+_DEBT_PATTERN = ("ZCFZL",)
+_GM_PATTERN = ("XSMLL",)
+_RD_PATTERN = ("RSEXPENSE_RATIO",)
 # Be more specific for PB: exclude PB that's part of something else
 for k in sample:
     if "PB<" in k or k.endswith("_PB_"):
@@ -257,21 +298,18 @@ rejected = {
     "OCF/NP比率≤阈值": 0,
     "负债率≥70%": 0, "归母净利<阈值": 0,
     "上市不足1年": 0, "净利≤0": 0,
-    "毛利率<20%(非半导体)": 0, "毛利率<15%(半导体高增长)": 0,
+    "毛利率<行业门槛": 0,
 }
 
 for code, row in all_stocks.items():
-    # Determine if semiconductor
+    # Industry: no date suffix in key, direct lookup is safe
     industry_raw = str(row.get(KEY_INDUSTRY, "")) if KEY_INDUSTRY else ""
+    gm_floor = get_gm_floor(industry_raw)
     is_semi = SEMICONDUCTOR_KW in industry_raw
 
-    # Parse financials
-    mcap = parse_num(row.get(KEY_MCAP)) if KEY_MCAP else None
-    rev_growth = parse_pct(row.get(KEY_REV_GROWTH)) if KEY_REV_GROWTH else None
-    gm = parse_pct(row.get(KEY_GM)) if KEY_GM else None
-
-    # Check if eligible for semiconductor relaxation
-    semi_relax = is_semi and rev_growth is not None and rev_growth > SEMI_RELAX_REV_GROWTH
+    # Parse financials — row_get for date-sensitive keys (safe against suffix drift)
+    mcap = parse_num(row_get(row, *_MCAP_PATTERN))
+    gm = parse_pct(row_get(row, *_GM_PATTERN))
 
     # Condition 0: Market cap >= 50亿
     if mcap is None:
@@ -299,7 +337,7 @@ for code, row in all_stocks.items():
         rejected["净利≤0"] += 1
         continue
 
-    if not semi_relax:
+    if not is_semi:
         if ocf is not None and np_val is not None and np_val > 0:
             threshold = OCF_NP_THRESHOLD.get(period, OCF_NP_THRESHOLD["unknown"])
             if ocf / np_val <= threshold:
@@ -313,21 +351,15 @@ for code, row in all_stocks.items():
         continue
 
     # Condition D: Debt ratio < 70%
-    debt = parse_pct(row.get(KEY_DEBT)) if KEY_DEBT else None
+    debt = parse_pct(row_get(row, *_DEBT_PATTERN))
     if debt is not None and debt >= HARD_FILTER_CFG["max_debt_ratio_pct"]:
         rejected["负债率≥70%"] += 1
         continue
 
-    # Condition E: Gross margin check
-    if gm is not None:
-        if semi_relax:
-            if gm < SEMI_RELAX_GM:
-                rejected["毛利率<15%(半导体高增长)"] += 1
-                continue
-        else:
-            if gm < NORMAL_GM_FLOOR:
-                rejected["毛利率<20%(非半导体)"] += 1
-                continue
+    # Condition E: Gross margin check (tiered by sub-industry)
+    if gm is not None and gm < gm_floor:
+        rejected["毛利率<行业门槛"] += 1
+        continue
 
     passed[code] = row
 
@@ -395,10 +427,10 @@ for code in sorted(final):
     list_date = parse_date(row.get(KEY_LIST_DATE)) if KEY_LIST_DATE else None
     list_days = (TODAY - list_date.date()).days if list_date else None
 
-    mcap = parse_num(row.get(KEY_MCAP)) if KEY_MCAP else None
-    pe = parse_pct(row.get(KEY_PE)) if KEY_PE else None
-    pb = parse_pct(row.get(KEY_PB)) if KEY_PB else None
-    roe = parse_pct(row.get(KEY_ROE)) if KEY_ROE else None
+    mcap = parse_num(row_get(row, *_MCAP_PATTERN))
+    pe = parse_pct(row_get(row, *_PE_PATTERN))
+    pb = parse_pct(row_get(row, *_PB_PATTERN))
+    roe = parse_pct(row_get(row, *_ROE_PATTERN))
     revenue = parse_num(row.get(KEY_REVENUE_ANNUAL)) if KEY_REVENUE_ANNUAL else None
     rev_g = parse_pct(row.get(KEY_REV_GROWTH)) if KEY_REV_GROWTH else None
     np_val = parse_num(row.get(KEY_NP)) if KEY_NP else None
@@ -406,9 +438,9 @@ for code in sorted(final):
     period = detect_period(np_raw)
     np_g = parse_pct(row.get(KEY_NP_GROWTH)) if KEY_NP_GROWTH else None
     ocf = parse_num(row.get(KEY_OCF)) if KEY_OCF else None
-    gm = parse_pct(row.get(KEY_GM)) if KEY_GM else None
-    rd = parse_pct(row.get(KEY_RD)) if KEY_RD else None
-    debt = parse_pct(row.get(KEY_DEBT)) if KEY_DEBT else None
+    gm = parse_pct(row_get(row, *_GM_PATTERN))
+    rd = parse_pct(row_get(row, *_RD_PATTERN))
+    debt = parse_pct(row_get(row, *_DEBT_PATTERN))
     eps = parse_pct(row.get(KEY_EPS)) if KEY_EPS else None
     industry = str(row.get(industry_key, "")) if industry_key else ""
     is_semi = SEMICONDUCTOR_KW in industry

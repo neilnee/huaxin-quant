@@ -59,6 +59,7 @@ QUANT_STRATEGY, QUANT_STRATEGY_PATH = load_strategy_config(QUANT_STRATEGY_FILE)
 STRATEGY_VERSION = QUANT_STRATEGY["strategy_version"]
 
 VCP_CFG = QUANT_STRATEGY["vcp"]
+POST_BREAKOUT_CFG = VCP_CFG["post_breakout"]
 BASE_CFG = QUANT_STRATEGY["base_rules"]
 CONTRACTION_CFG = QUANT_STRATEGY["contraction_rules"]
 STAGE_CFG = QUANT_STRATEGY["stage_rules"]
@@ -617,15 +618,50 @@ def evaluate_vcp_group(df, group):
     post_structure_gain = (post_high - structure_pivot) / structure_pivot * 100 if structure_pivot else 0
     post_structure_drawdown = (close - post_high) / post_high * 100 if post_high else 0
 
+    breakout = None
+    for idx in range(last_end_idx + 1, len(df)):
+        row = df.iloc[idx]
+        if row["close"] > structure_pivot * POST_BREAKOUT_CFG["price_breakout_ratio"]:
+            breakout = {
+                "idx": idx,
+                "date": str(row["date"]),
+                "level": structure_pivot,
+                "close": float(row["close"]),
+                "volume": float(row["volume"]),
+                "vol_ma20": safe_float(row.get("vol_ma20")),
+            }
+            break
+
+    post_breakout_state = "PRE_BREAKOUT"
+    breakout_days = None
+    if breakout:
+        breakout_days = len(df) - breakout["idx"] - 1
+        pivot_fail = structure_pivot * POST_BREAKOUT_CFG["pivot_fail_close_ratio"]
+        if close < pivot_fail or post_structure_drawdown < VCP_MAX_POST_DRAWDOWN:
+            post_breakout_state = "POST_BREAKOUT_FAILED"
+        elif breakout_days > POST_BREAKOUT_CFG["expiry_days"]:
+            post_breakout_state = "POST_BREAKOUT_EXPIRED"
+        elif (
+            breakout_days <= POST_BREAKOUT_CFG["retest_max_days"]
+            and pivot_fail <= close <= structure_pivot * POST_BREAKOUT_CFG["retest_max_close_ratio"]
+        ):
+            post_breakout_state = "POST_BREAKOUT_RETEST"
+        elif breakout_days <= POST_BREAKOUT_CFG["retest_max_days"]:
+            post_breakout_state = "POST_BREAKOUT_HOT"
+        else:
+            post_breakout_state = "POST_BREAKOUT_CONSOLIDATING"
+
     invalid_reasons = []
     if structure_age_days > VCP_MAX_STRUCTURE_AGE_DAYS:
         invalid_reasons.append("structure_too_old")
     if pivot_distance is not None and pivot_distance < VCP_MIN_PIVOT_DISTANCE:
         invalid_reasons.append("far_below_structure_pivot")
-    if post_structure_gain > VCP_MAX_POST_GAIN:
+    if not breakout and post_structure_gain > VCP_MAX_POST_GAIN:
         invalid_reasons.append("post_structure_extended")
-    if post_structure_drawdown < VCP_MAX_POST_DRAWDOWN:
+    if post_breakout_state == "POST_BREAKOUT_FAILED":
         invalid_reasons.append("post_structure_drawdown")
+    if post_breakout_state == "POST_BREAKOUT_EXPIRED":
+        invalid_reasons.append("post_breakout_expired")
 
     return {
         "group": group,
@@ -639,6 +675,9 @@ def evaluate_vcp_group(df, group):
         "structure_invalid_reason": ";".join(invalid_reasons),
         "post_structure_gain": post_structure_gain,
         "post_structure_drawdown": post_structure_drawdown,
+        "post_breakout_state": post_breakout_state,
+        "breakout": breakout,
+        "breakout_days": breakout_days,
     }
 
 
@@ -724,6 +763,9 @@ def detect_vcp_structure(df):
         "structure_invalid_reason": "",
         "post_structure_gain": None,
         "post_structure_drawdown": None,
+        "post_breakout_state": "PRE_BREAKOUT",
+        "breakout": None,
+        "breakout_days": None,
         "vcp_quality": "D",
         "watch_priority": "none",
         "structure_risk_flags": [],
@@ -764,6 +806,9 @@ def detect_vcp_structure(df):
     structure_risk_flags = []
     post_structure_gain = current["post_structure_gain"] if current else None
     post_structure_drawdown = current["post_structure_drawdown"] if current else None
+    post_breakout_state = current["post_breakout_state"] if current else "PRE_BREAKOUT"
+    breakout = current["breakout"] if current else None
+    breakout_days = current["breakout_days"] if current else None
 
     if not current and invalid_group:
         structure_pivot = invalid_group["structure_pivot"]
@@ -775,6 +820,9 @@ def detect_vcp_structure(df):
         structure_invalid_reason = invalid_group["structure_invalid_reason"]
         post_structure_gain = invalid_group["post_structure_gain"]
         post_structure_drawdown = invalid_group["post_structure_drawdown"]
+        post_breakout_state = invalid_group["post_breakout_state"]
+        breakout = invalid_group["breakout"]
+        breakout_days = invalid_group["breakout_days"]
 
     if contractions:
         conditions.append(f"历史扫描共{len(contractions)}轮收缩")
@@ -850,10 +898,12 @@ def detect_vcp_structure(df):
         state = "TREND_WATCH"
         conditions.append("强趋势但未形成收缩轮次")
     elif base_ok and structure_invalid_reason:
+        if post_breakout_state in {"POST_BREAKOUT_FAILED", "POST_BREAKOUT_EXPIRED"}:
+            state = post_breakout_state
         if "post_structure_extended" in structure_invalid_reason:
             state = "POST_BREAKOUT"
         elif "post_structure_drawdown" in structure_invalid_reason:
-            state = "TREND_REBUILD"
+            state = "POST_BREAKOUT_FAILED"
 
     quality_map = {
         "VCP_TIGHT": "A",
@@ -892,6 +942,9 @@ def detect_vcp_structure(df):
         "structure_invalid_reason": structure_invalid_reason,
         "post_structure_gain": post_structure_gain,
         "post_structure_drawdown": post_structure_drawdown,
+        "post_breakout_state": post_breakout_state,
+        "breakout": breakout,
+        "breakout_days": breakout_days,
         "vcp_quality": quality_map.get(state, "D"),
         "watch_priority": priority_map.get(state, "none"),
         "structure_risk_flags": structure_risk_flags,
@@ -1196,6 +1249,8 @@ def score_retest_setup(df, breakout):
 def detect_pullback_buy(df, structure, overheat):
     latest = df.iloc[-1]
     cfg = SETUP_CFG["pullback_buy"]
+    if structure.get("post_breakout_state") != "PRE_BREAKOUT":
+        return base_setup_result(False, "原VCP已突破，禁止旧结构PULLBACK_BUY")
     if structure.get("state") not in set(cfg["allowed_stages"]):
         return base_setup_result(False, "VCP结构阶段不足")
     if setup_hard_reject(overheat, cfg):
@@ -1299,6 +1354,8 @@ def detect_pullback_buy(df, structure, overheat):
 def detect_breakout_buy(df, structure, overheat):
     latest = df.iloc[-1]
     cfg = SETUP_CFG["breakout_buy"]
+    if structure.get("post_breakout_state") != "PRE_BREAKOUT":
+        return base_setup_result(False, "原VCP已突破，禁止重复BREAKOUT_BUY")
     if setup_hard_reject(overheat, cfg):
         return base_setup_result(False, "风险硬排除")
     if not structure.get("structure_valid"):
@@ -1468,13 +1525,15 @@ def detect_retest_buy(df, structure, overheat, code=None):
         return base_setup_result(False, "无当前有效VCP结构")
     if structure.get("state") not in set(cfg["allowed_stages"]):
         return base_setup_result(False, "结构阶段未达到突破回踩前提")
+    if structure.get("post_breakout_state") != "POST_BREAKOUT_RETEST":
+        return base_setup_result(False, "未处于突破后受控回踩窗口")
     volume_alignment = {
         "decreasing": "ALIGNED",
         "drying": "ALIGNED",
         "mixed": "CAUTION",
         "failed": "BLOCKED",
     }.get(structure.get("volume_pattern"), "CAUTION")
-    breakout = find_recent_breakout(df, lookback=cfg["lookback_days"])
+    breakout = structure.get("breakout")
     if not breakout:
         return base_setup_result(False, "近期无有效突破")
 
@@ -1659,6 +1718,8 @@ def structure_stage_from_internal(state):
         "VCP_TIGHT": "VCP_TIGHT",
         "TREND_WATCH": "TREND_WATCH",
         "POST_BREAKOUT": "POST_BREAKOUT",
+        "POST_BREAKOUT_FAILED": "POST_BREAKOUT",
+        "POST_BREAKOUT_EXPIRED": "POST_BREAKOUT",
         "TREND_REBUILD": "TREND_REBUILD",
         "DATA_INSUFFICIENT": "DATA_ISSUE",
         "REJECT": "NONE",
@@ -1690,6 +1751,7 @@ def setup_position(setup_signal, setup_quality):
 
 def classify_result(structure, pullback, breakout, retest, score, overheat):
     internal_stage = structure.get("state")
+    post_breakout_state = structure.get("post_breakout_state", "PRE_BREAKOUT")
     if retest.get("hit"):
         position = setup_position("RETEST_BUY", retest.get("setup_quality", "D"))
         return "VCP", "RETEST_BUY", "BUY_STANDARD", position
@@ -1699,6 +1761,12 @@ def classify_result(structure, pullback, breakout, retest, score, overheat):
         return "VCP", "PULLBACK_BUY", "BUY_LIGHT", setup_position("PULLBACK_BUY", pullback.get("setup_quality", "D"))
     if retest.get("hard_block"):
         return "VCP", "NONE", "WAIT_REBUILD", CLASSIFICATION_CFG["no_position"]
+    if post_breakout_state in {"POST_BREAKOUT_FAILED", "POST_BREAKOUT_EXPIRED"}:
+        return "VCP", "NONE", "WAIT_REBUILD", CLASSIFICATION_CFG["no_position"]
+    if post_breakout_state == "POST_BREAKOUT_HOT":
+        return "VCP", "NONE", "AVOID_CHASE", CLASSIFICATION_CFG["no_position"]
+    if post_breakout_state in {"POST_BREAKOUT_RETEST", "POST_BREAKOUT_CONSOLIDATING"}:
+        return "VCP", "NONE", "WATCH", CLASSIFICATION_CFG["no_position"]
     if internal_stage in ["VCP_TIGHT", "VCP_MATURE", "VCP_FORMING", "VCP_EARLY"]:
         return "VCP", "NONE", "AVOID_CHASE" if overheat["hard_reject"] else "WATCH", CLASSIFICATION_CFG["no_position"]
     if internal_stage == "TREND_WATCH":
@@ -1719,6 +1787,9 @@ def build_reason(structure, pullback, breakout, retest, overheat):
         return pullback["reason"]
     if retest.get("hard_block"):
         return retest["reason"]
+    post_breakout_state = structure.get("post_breakout_state", "PRE_BREAKOUT")
+    if post_breakout_state != "PRE_BREAKOUT":
+        return f"{post_breakout_state}：原VCP突破后生命周期管理"
     if structure.get("state") == "TREND_WATCH":
         return "趋势偏强但未形成有效收缩轮次"
     if structure.get("state") in {"POST_BREAKOUT", "TREND_REBUILD"}:
@@ -1782,6 +1853,10 @@ def screen(df, code=None):
             "structure_invalid_reason": "data_issue",
             "post_structure_gain": None,
             "post_structure_drawdown": None,
+            "post_breakout_state": "PRE_BREAKOUT",
+            "structure_breakout_date": "",
+            "structure_breakout_level": None,
+            "breakout_days": None,
             "vcp_quality": "D",
             "contractions": [],
             "contraction_group": [],
@@ -1857,6 +1932,10 @@ def screen(df, code=None):
         "structure_invalid_reason": structure.get("structure_invalid_reason", ""),
         "post_structure_gain": round_or_none(structure.get("post_structure_gain")),
         "post_structure_drawdown": round_or_none(structure.get("post_structure_drawdown")),
+        "post_breakout_state": structure.get("post_breakout_state", "PRE_BREAKOUT"),
+        "structure_breakout_date": (structure.get("breakout") or {}).get("date", ""),
+        "structure_breakout_level": round_or_none((structure.get("breakout") or {}).get("level")),
+        "breakout_days": structure.get("breakout_days"),
         "vcp_quality": final_quality,
         "contractions": structure.get("contractions", []),
         "contraction_group": structure.get("contraction_group", []),
@@ -1878,7 +1957,7 @@ CSV_COLUMNS = [
     "contraction_count", "contraction_pcts", "contraction_days", "volume_pattern",
     "pivot_price", "structure_pivot", "market_pivot", "pivot_distance", "last_contraction_low",
     "structure_age_days", "structure_valid", "structure_invalid_reason",
-    "post_structure_gain", "post_structure_drawdown", "vcp_quality",
+    "post_structure_gain", "post_structure_drawdown", "post_breakout_state", "structure_breakout_date", "structure_breakout_level", "breakout_days", "vcp_quality",
     "close", "MA20", "MA60", "MA120", "MA20_slope", "MA60_slope",
     "range_10", "range_20", "range_60",
     "volume", "vol_ma5", "vol_ma20", "vol_ma60", "vol_ratio", "volume_dry_up",
@@ -1971,6 +2050,10 @@ def write_csv(results, quant_path):
                 r["structure_invalid_reason"],
                 r["post_structure_gain"] if r["post_structure_gain"] is not None else "",
                 r["post_structure_drawdown"] if r["post_structure_drawdown"] is not None else "",
+                r.get("post_breakout_state", ""),
+                r.get("structure_breakout_date", ""),
+                r["structure_breakout_level"] if r.get("structure_breakout_level") is not None else "",
+                r["breakout_days"] if r.get("breakout_days") is not None else "",
                 r["vcp_quality"],
                 r["close"] if r["close"] is not None else "",
                 r["MA20"] if r["MA20"] is not None else "",

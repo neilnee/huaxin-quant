@@ -112,12 +112,44 @@ class CloseBasedContractionTests(unittest.TestCase):
         for idx in range(61, 70):
             df.loc[idx, ["open", "high", "low", "close", "volume"]] = [102.0, 103.0, 100.0, 102.0, 80.0]
         df = quant.calc_indicators(df)
-        structure = {"structure_valid": True, "state": "VCP_MATURE", "volume_pattern": "failed"}
+        structure = {
+            "structure_valid": True,
+            "state": "VCP_MATURE",
+            "volume_pattern": "failed",
+            "post_breakout_state": "POST_BREAKOUT_RETEST",
+            "breakout": {"idx": 60, "date": str(df.iloc[60]["date"]), "level": 101.0, "volume": 200.0, "vol_ma20": 100.0},
+        }
         result = quant.detect_retest_buy(
             df, structure, {"risk_flags": [], "risk_score": 0, "hard_reject": False}, code="600000"
         )
         self.assertTrue(result["hard_block"])
         self.assertEqual(result["structure_volume_alignment"], "BLOCKED")
+
+    def test_post_breakout_pivot_failure_closes_old_vcp_lifecycle(self):
+        df = make_frame([99, 100, 98, 99, 102, 104, 100, 96])
+        group = [{"start_idx": 0, "end_idx": 2, "high_price": 100.0, "low_price": 95.0}]
+
+        info = quant.evaluate_vcp_group(df, group)
+
+        self.assertEqual(info["post_breakout_state"], "POST_BREAKOUT_FAILED")
+        self.assertFalse(info["structure_valid"])
+        self.assertIn("post_structure_drawdown", info["structure_invalid_reason"])
+
+    def test_post_breakout_expiry_closes_old_vcp_lifecycle(self):
+        closes = [99, 100, 98, 99, 102] + [103] * 21
+        df = make_frame(closes)
+        group = [{"start_idx": 0, "end_idx": 2, "high_price": 100.0, "low_price": 95.0}]
+
+        info = quant.evaluate_vcp_group(df, group)
+
+        self.assertEqual(info["post_breakout_state"], "POST_BREAKOUT_EXPIRED")
+        self.assertFalse(info["structure_valid"])
+
+    def test_old_vcp_cannot_emit_pullback_after_price_breakout(self):
+        structure = {"state": "VCP_FORMING", "post_breakout_state": "POST_BREAKOUT_HOT"}
+        result = quant.detect_pullback_buy(make_frame([100] * 20), structure, {"risk_flags": [], "risk_score": 0})
+        self.assertFalse(result["hit"])
+        self.assertIn("禁止旧结构PULLBACK_BUY", result["reason"])
 
 
 if __name__ == "__main__":

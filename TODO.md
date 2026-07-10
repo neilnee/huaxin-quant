@@ -84,9 +84,9 @@ Bloom 信号层已完成（发现侧），下阶段补齐持仓管理和估值�
 
 ### P1 — 突破后状态管理
 
-- [ ] 建立 `POST_BREAKOUT_HOT` / `POST_BREAKOUT_VOLATILE` / `RETEST_CANDIDATE` 状态机：旧 VCP 有效突破并快速拉升后，不得因价格回到旧 pivot 附近重新评为 `VCP_TIGHT`。
-- [ ] 突破后快速回撤、冲高长上影等风险使用专属规则评估；等待新的独立收缩 cluster 后，才重新评价 VCP 阶段和高优先级。
-- [ ] 以 002979 雷赛智能（2026-07：两板突破 → 回撤 → 长上影）作为回归案例，验证“历史结构质量”与“当前交易状态”分离。
+- [x] 建立 `PRE_BREAKOUT` / `POST_BREAKOUT_HOT` / `POST_BREAKOUT_RETEST` / `POST_BREAKOUT_CONSOLIDATING` / `POST_BREAKOUT_FAILED` / `POST_BREAKOUT_EXPIRED` 状态机；旧 VCP 突破后永久关闭 PULLBACK 和重复 BREAKOUT。
+- [x] 突破后收盘跌破 Pivot × 0.97、回撤过深或时间超期时，关闭旧 VCP 生命周期并等待新 cluster 重建。
+- [x] 以 002281 光迅科技（旧 VCP 突破后回落）与 002979 雷赛智能（两板突破后受控回踩）作为回归案例，验证“历史结构质量”与“当前交易状态”分离。
 
 ### 核心逻辑
 

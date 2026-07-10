@@ -75,6 +75,50 @@ class CloseBasedContractionTests(unittest.TestCase):
         ]
         self.assertTrue(quant.contraction_group_has_reset_expansion(expanded))
 
+    def test_time_gap_splits_independent_vcp_clusters(self):
+        contractions = [
+            {"start_idx": 10, "end_idx": 15},
+            {"start_idx": 42, "end_idx": 46},
+            {"start_idx": 50, "end_idx": 54},
+        ]
+        clusters = quant.split_contraction_clusters(contractions)
+        self.assertEqual([len(cluster) for cluster in clusters], [1, 2])
+        self.assertEqual(quant.contraction_group_span_days(clusters[-1]), 13)
+
+    def test_retest_selling_uses_board_specific_drop_threshold(self):
+        df = make_frame([100, 101, 102, 101, 100, 99, 98, 82])
+        df["open"] = [100, 101, 102, 101, 100, 99, 98, 100]
+        df["volume"] = [100, 100, 100, 100, 100, 100, 100, 145]
+        df["ATR14_pct"] = 3.0
+        breakout = {"volume": 150.0}
+        cfg = quant.SETUP_CFG["retest_buy"]["failed_retest_selling"]
+
+        blocked, details = quant.detect_failed_retest_selling(df, breakout, "688392", cfg)
+
+        self.assertTrue(blocked)
+        self.assertEqual(details["drop_threshold_pct"], 10.0)
+        self.assertEqual(quant.failed_retest_drop_threshold("600000", df.iloc[-1], cfg), 7.0)
+        high_atr = df.iloc[-1].copy()
+        high_atr["ATR14_pct"] = 12.0
+        self.assertEqual(quant.failed_retest_drop_threshold("688392", high_atr, cfg), 15.0)
+
+    def test_mixed_structure_volume_caps_retest_quality_at_b(self):
+        result = quant.base_setup_result(True, "test", score=85, quality_cap="B")
+        self.assertEqual(result["setup_quality"], "B")
+
+    def test_failed_structure_volume_blocks_retest_before_buy_point_scoring(self):
+        df = make_frame([100.0] * 70)
+        df.loc[60, ["open", "high", "low", "close", "volume"]] = [100.0, 106.0, 100.0, 105.0, 200.0]
+        for idx in range(61, 70):
+            df.loc[idx, ["open", "high", "low", "close", "volume"]] = [102.0, 103.0, 100.0, 102.0, 80.0]
+        df = quant.calc_indicators(df)
+        structure = {"structure_valid": True, "state": "VCP_MATURE", "volume_pattern": "failed"}
+        result = quant.detect_retest_buy(
+            df, structure, {"risk_flags": [], "risk_score": 0, "hard_reject": False}, code="600000"
+        )
+        self.assertTrue(result["hard_block"])
+        self.assertEqual(result["structure_volume_alignment"], "BLOCKED")
+
 
 if __name__ == "__main__":
     unittest.main()

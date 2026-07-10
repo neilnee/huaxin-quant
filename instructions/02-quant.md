@@ -607,6 +607,8 @@ abs(Cn.pullback) <= abs(Cn-1.pullback) * 1.05
 组内轮次足够，但早期噪声回调不得污染主收缩序列
 ```
 
+收缩先按时间切分为独立 cluster：相邻两段之间超过 **25 个交易日**，即视为新的底部结构。当前 VCP 只从最新 cluster 选择，组内首尾跨度最多 **60 个交易日**。旧 cluster 仍保留在 `contractions` 供审计，但不得参与当前 `contraction_group` 的轮次、递减判定、阶段和买点评分。
+
 相邻收缩轮次允许轻微扩张，但明显扩张会打断旧 VCP 组，后一轮应视为新结构的起点：
 
 ```text
@@ -728,6 +730,27 @@ breakout_level = 最近 60 日箱体上沿/突破前高
 最新收盘重新站回 breakout_level 或 MA10
 setup_score >= 55
 ```
+
+### RETEST 的结构量能准入与卖压阻断
+
+RETEST 必须同时确认“当前回踩缩量”和“VCP 各收缩段没有明显供给扩张”：
+
+| structure volume_pattern | 处理 |
+|---|---|
+| `decreasing` / `drying` | 保持原 RETEST 评分 |
+| `mixed` | RETEST 可触发，但最高质量为 B |
+| `failed` | 禁止 RETEST，输出 `WAIT_REBUILD` |
+
+最新确认日还会检查 `FAILED_RETEST_SELLING`。仅对已满足其他 RETEST 前提的标的，当以下条件同时成立时硬阻断 RETEST：
+
+```text
+close < open
+当日跌幅达到 max(板块阈值, min(ATR14_pct × 2, 涨跌停幅度 × 75%))
+当日量 >= 前 5 日均量 × 1.20（前 5 日不含当天）
+且当日量 >= 突破日量 × 0.80，或 >= 突破后前 5 日均量 × 1.35
+```
+
+板块基础跌幅阈值：主板 7%、创业板/科创板 10%、北交所 15%。该信号是 `setup_risk_flags`，只否决 `RETEST_BUY`，不改变 VCP 结构、PULLBACK_BUY 或 BREAKOUT_BUY 的规则。
 
 ---
 

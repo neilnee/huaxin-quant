@@ -559,6 +559,28 @@ def contraction_group_has_reset_expansion(group):
     return False
 
 
+def split_contraction_clusters(contractions):
+    """Split contractions into independent VCP bases using the configured time gap."""
+    if not contractions:
+        return []
+    max_gap = CONTRACTION_CFG.get("max_gap_between_contractions_days")
+    clusters = [[contractions[0]]]
+    for contraction in contractions[1:]:
+        previous = clusters[-1][-1]
+        gap_days = contraction["start_idx"] - previous["end_idx"] - 1
+        if max_gap is not None and gap_days > max_gap:
+            clusters.append([contraction])
+        else:
+            clusters[-1].append(contraction)
+    return clusters
+
+
+def contraction_group_span_days(group):
+    if not group:
+        return 0
+    return group[-1]["end_idx"] - group[0]["start_idx"] + 1
+
+
 def _check_bottom_lifting(contractions, threshold_pct=0.0):
     """检查收缩轮次的低点是否在收敛（底部不再创新低）。
 
@@ -628,10 +650,14 @@ def select_current_vcp_group(df, contractions):
     latest = df.iloc[-1]
     candidates = []
     best_invalid = None
-    max_size = min(CONTRACTION_CFG["max_recent_contractions"], len(contractions))
+    active_cluster = split_contraction_clusters(contractions)[-1]
+    max_size = min(CONTRACTION_CFG["max_recent_contractions"], len(active_cluster))
+    max_span = CONTRACTION_CFG.get("max_group_span_days")
     for size in range(max_size, 0, -1):
-        for end in range(len(contractions), size - 1, -1):
-            group = contractions[end - size:end]
+        for end in range(len(active_cluster), size - 1, -1):
+            group = active_cluster[end - size:end]
+            if max_span is not None and contraction_group_span_days(group) > max_span:
+                continue
             if contraction_group_has_reset_expansion(group):
                 continue
             info = evaluate_vcp_group(df, group)
@@ -1003,12 +1029,16 @@ def finalize_setup_score(setup_signal, action_quality_score, action_reasons, act
 def base_setup_result(hit=False, reason="", score=0, reasons=None, misses=None, pattern_score=None, **kwargs):
     setup_score = max(0, min(100, int(round(score))))
     setup_pattern_score = setup_score if pattern_score is None else max(0, min(100, int(round(pattern_score))))
+    quality = setup_quality(setup_score)
+    quality_cap = kwargs.pop("quality_cap", None)
+    if quality_cap and "ABCD".index(quality) < "ABCD".index(quality_cap):
+        quality = quality_cap
     result = {
         "hit": hit,
         "reason": reason,
         "setup_pattern_score": setup_pattern_score,
         "setup_score": setup_score,
-        "setup_quality": setup_quality(setup_score),
+        "setup_quality": quality,
         "setup_reasons": reasons or [],
         "setup_misses": misses or [],
     }
@@ -1381,7 +1411,55 @@ def find_recent_breakout(df, lookback=None):
     return None
 
 
-def detect_retest_buy(df, structure, overheat):
+def failed_retest_drop_threshold(code, latest, cfg):
+    code = normalize_code(code or "")
+    if code.startswith(("300", "301", "688", "689")):
+        base = cfg["growth_board_drop_pct"]
+        price_limit_pct = 20.0
+    elif code.startswith(("4", "8")):
+        base = cfg["beijing_drop_pct"]
+        price_limit_pct = 30.0
+    else:
+        base = cfg["mainboard_drop_pct"]
+        price_limit_pct = 10.0
+    atr_threshold = safe_float(latest.get("ATR14_pct"), 0) * cfg["atr14_multiple"]
+    atr_cap = price_limit_pct * cfg["atr14_threshold_cap_of_limit"]
+    return max(base, min(atr_threshold, atr_cap))
+
+
+def detect_failed_retest_selling(df, breakout, code, cfg):
+    """Detect a latest-day distribution bar that invalidates a RETEST entry."""
+    latest = df.iloc[-1]
+    if len(df) < 2:
+        return False, {}
+
+    previous_close = safe_float(df.iloc[-2].get("close"), 0)
+    daily_drop_pct = pct(latest["close"] - previous_close, previous_close)
+    prior_volumes = df["volume"].iloc[max(0, len(df) - 1 - cfg["previous_volume_days"]):len(df) - 1]
+    previous_volume_avg = safe_float(prior_volumes.mean(), 0)
+    latest_volume = safe_float(latest.get("volume"), 0)
+    breakout_volume = safe_float(breakout.get("volume"), 0)
+    drop_threshold = failed_retest_drop_threshold(code, latest, cfg)
+    bearish = latest["close"] < latest["open"]
+    abnormal_drop = daily_drop_pct <= -drop_threshold
+    volume_spike = previous_volume_avg > 0 and latest_volume >= previous_volume_avg * cfg["volume_vs_previous_avg"]
+    breakout_scale_selling = (
+        (breakout_volume > 0 and latest_volume >= breakout_volume * cfg["volume_vs_breakout"])
+        or (previous_volume_avg > 0 and latest_volume >= previous_volume_avg * cfg["volume_vs_post_avg"])
+    )
+    details = {
+        "daily_drop_pct": round_or_none(daily_drop_pct),
+        "drop_threshold_pct": round_or_none(drop_threshold),
+        "latest_volume": round_or_none(latest_volume, 0),
+        "previous_volume_avg": round_or_none(previous_volume_avg, 0),
+        "breakout_volume": round_or_none(breakout_volume, 0),
+        "volume_vs_previous_avg": round_or_none(latest_volume / previous_volume_avg if previous_volume_avg else None, 2),
+        "volume_vs_breakout": round_or_none(latest_volume / breakout_volume if breakout_volume else None, 2),
+    }
+    return bearish and abnormal_drop and volume_spike and breakout_scale_selling, details
+
+
+def detect_retest_buy(df, structure, overheat, code=None):
     latest = df.iloc[-1]
     cfg = SETUP_CFG["retest_buy"]
     if setup_hard_reject(overheat, cfg):
@@ -1390,6 +1468,12 @@ def detect_retest_buy(df, structure, overheat):
         return base_setup_result(False, "无当前有效VCP结构")
     if structure.get("state") not in set(cfg["allowed_stages"]):
         return base_setup_result(False, "结构阶段未达到突破回踩前提")
+    volume_alignment = {
+        "decreasing": "ALIGNED",
+        "drying": "ALIGNED",
+        "mixed": "CAUTION",
+        "failed": "BLOCKED",
+    }.get(structure.get("volume_pattern"), "CAUTION")
     breakout = find_recent_breakout(df, lookback=cfg["lookback_days"])
     if not breakout:
         return base_setup_result(False, "近期无有效突破")
@@ -1416,6 +1500,7 @@ def detect_retest_buy(df, structure, overheat):
         "max_days_after_breakout": cfg["max_days_after_breakout"],
         "max_allowed_days_after_breakout": cfg.get("max_allowed_days_after_breakout", cfg["max_days_after_breakout"]),
         "blocked_risk_flags": cfg["blocked_risk_flags"],
+        "structure_volume_alignment": volume_alignment,
     }
     if days_after < 1 or days_after > cfg.get("max_allowed_days_after_breakout", cfg["max_days_after_breakout"]):
         return base_setup_result(
@@ -1429,12 +1514,35 @@ def detect_retest_buy(df, structure, overheat):
     pullback_low = post["low"].min()
     volume_days = min(cfg["volume_compare_days"], len(post))
     volume_ok = safe_float(post["volume"].tail(volume_days).mean(), 0) < safe_float(df.iloc[breakout["idx"]]["volume"], 0)
+    selling_signal, selling_details = detect_failed_retest_selling(
+        df, breakout, code, cfg["failed_retest_selling"]
+    )
+    plan_inputs["failed_retest_selling"] = selling_details
     close_ok = latest["close"] >= breakout["level"] or (pd.notna(latest.get("MA10")) and latest["close"] >= latest["MA10"])
-    hard_conditions = [
+    price_and_confirmation_ok = all([
         pullback_low >= breakout["level"] * cfg["max_pullback_below_breakout_ratio"],
         pullback_low <= breakout["level"] * cfg.get("max_pullback_above_breakout_ratio", 999),
         volume_ok,
         close_ok,
+        not is_long_upper_shadow(latest),
+        not any(flag in overheat["risk_flags"] for flag in cfg["blocked_risk_flags"]),
+    ])
+    if volume_alignment == "BLOCKED" and price_and_confirmation_ok:
+        return base_setup_result(
+            False,
+            "结构收缩量能failed，等待结构重建",
+            misses=["结构收缩量能failed，禁止RETEST_BUY"],
+            hard_block=True,
+            structure_volume_alignment=volume_alignment,
+            breakout_level=breakout["level"],
+            support_price=breakout["level"],
+            invalid_price=breakout["level"] * cfg["invalid_support_ratio"],
+            plan_inputs=plan_inputs,
+        )
+    selling_blocked = selling_signal and price_and_confirmation_ok
+    hard_conditions = [
+        price_and_confirmation_ok,
+        not selling_blocked,
         not is_long_upper_shadow(latest),
         not any(flag in overheat["risk_flags"] for flag in cfg["blocked_risk_flags"]),
     ]
@@ -1442,6 +1550,7 @@ def detect_retest_buy(df, structure, overheat):
     score, pattern_score, reasons, misses = finalize_setup_score(
         "RETEST_BUY", action_quality_score, reasons, misses, structure, overheat
     )
+    quality_cap = "B" if volume_alignment == "CAUTION" else None
     hit = all(hard_conditions) and score >= cfg["min_setup_score"]
     if pullback_low < breakout["level"] * cfg["max_pullback_below_breakout_ratio"]:
         misses.append("回踩有效跌破突破位")
@@ -1454,6 +1563,8 @@ def detect_retest_buy(df, structure, overheat):
         misses.append("回踩未缩量")
     if not close_ok:
         misses.append("未收回突破位或MA10")
+    if selling_blocked:
+        misses.append("FAILED_RETEST_SELLING：当日放量阴线破坏回踩确认")
     if is_long_upper_shadow(latest):
         misses.append("确认日长上影")
     if any(flag in overheat["risk_flags"] for flag in cfg["blocked_risk_flags"]):
@@ -1467,6 +1578,10 @@ def detect_retest_buy(df, structure, overheat):
         reasons,
         misses,
         pattern_score=pattern_score,
+        quality_cap=quality_cap,
+        hard_block=selling_blocked,
+        setup_risk_flags=["FAILED_RETEST_SELLING"] if selling_blocked else [],
+        structure_volume_alignment=volume_alignment,
         breakout_level=breakout["level"],
         support_price=breakout["level"],
         invalid_price=breakout["level"] * cfg["invalid_support_ratio"],
@@ -1582,6 +1697,8 @@ def classify_result(structure, pullback, breakout, retest, score, overheat):
         return "VCP", "BREAKOUT_BUY", "BUY_BREAKOUT", setup_position("BREAKOUT_BUY", breakout.get("setup_quality", "D"))
     if pullback.get("hit"):
         return "VCP", "PULLBACK_BUY", "BUY_LIGHT", setup_position("PULLBACK_BUY", pullback.get("setup_quality", "D"))
+    if retest.get("hard_block"):
+        return "VCP", "NONE", "WAIT_REBUILD", CLASSIFICATION_CFG["no_position"]
     if internal_stage in ["VCP_TIGHT", "VCP_MATURE", "VCP_FORMING", "VCP_EARLY"]:
         return "VCP", "NONE", "AVOID_CHASE" if overheat["hard_reject"] else "WATCH", CLASSIFICATION_CFG["no_position"]
     if internal_stage == "TREND_WATCH":
@@ -1600,6 +1717,8 @@ def build_reason(structure, pullback, breakout, retest, overheat):
         return breakout["reason"]
     if pullback.get("hit"):
         return pullback["reason"]
+    if retest.get("hard_block"):
+        return retest["reason"]
     if structure.get("state") == "TREND_WATCH":
         return "趋势偏强但未形成有效收缩轮次"
     if structure.get("state") in {"POST_BREAKOUT", "TREND_REBUILD"}:
@@ -1619,10 +1738,12 @@ def choose_setup_detail(setup_signal, pullback, breakout, retest):
         return breakout
     if setup_signal == "PULLBACK_BUY":
         return pullback
+    if retest.get("hard_block"):
+        return retest
     return base_setup_result(False, "无买点触发")
 
 
-def screen(df):
+def screen(df, code=None):
     """确定性识别 VCP 结构阶段和触发信号，返回结构化结果。"""
     latest = df.iloc[-1]
     if pd.isna(latest.get("MA20")):
@@ -1640,6 +1761,8 @@ def screen(df):
             "setup_quality": "D",
             "setup_reasons": [],
             "setup_misses": ["数据不足"],
+            "setup_risk_flags": [],
+            "structure_volume_alignment": "",
             "support_price": None, "invalid_price": None, "breakout_level": None,
             "reason": f"MA20=NaN，仅{len(df)}个有效交易日", "structure_risk_flags": [],
             "score_components": {},
@@ -1682,7 +1805,7 @@ def screen(df):
     structure["structure_score_estimate"] = score["structure_score"]
     pullback = detect_pullback_buy(df, structure, overheat)
     breakout = detect_breakout_buy(df, structure, overheat)
-    retest = detect_retest_buy(df, structure, overheat)
+    retest = detect_retest_buy(df, structure, overheat, code=code)
     structure_type, setup_signal, action_hint, suggested_position = classify_result(structure, pullback, breakout, retest, score, overheat)
     structure_stage = structure_stage_from_internal(structure.get("state"))
     setup_detail = choose_setup_detail(setup_signal, pullback, breakout, retest)
@@ -1710,6 +1833,8 @@ def screen(df):
         "setup_quality": setup_detail.get("setup_quality", "D"),
         "setup_reasons": setup_detail.get("setup_reasons", []),
         "setup_misses": setup_detail.get("setup_misses", []),
+        "setup_risk_flags": setup_detail.get("setup_risk_flags", []),
+        "structure_volume_alignment": setup_detail.get("structure_volume_alignment", ""),
         "support_price": round_or_none(support),
         "invalid_price": round_or_none(invalid),
         "breakout_level": round_or_none(breakout_level),
@@ -1748,7 +1873,7 @@ def screen(df):
 CSV_COLUMNS = [
     "股票代码", "股票名称", "structure_type", "structure_stage", "setup_signal",
     "action_hint", "suggested_position", "model2_include", "structure_score", "structure_risk_score",
-    "setup_pattern_score", "setup_score", "setup_quality", "setup_reasons", "setup_misses",
+    "setup_pattern_score", "setup_score", "setup_quality", "setup_reasons", "setup_misses", "setup_risk_flags", "structure_volume_alignment",
     "structure_risk_flags", "support_price", "invalid_price", "breakout_level",
     "contraction_count", "contraction_pcts", "contraction_days", "volume_pattern",
     "pivot_price", "structure_pivot", "market_pivot", "pivot_distance", "last_contraction_low",
@@ -1764,7 +1889,7 @@ CSV_COLUMNS = [
 
 def result_from_df(code, name, df, run_date):
     latest = df.iloc[-1]
-    decision = screen(df)
+    decision = screen(df, code=code)
     result = {
         "code": code,
         "name": name,
@@ -1826,6 +1951,8 @@ def write_csv(results, quant_path):
                 r["setup_quality"],
                 ";".join(r["setup_reasons"]),
                 ";".join(r["setup_misses"]),
+                ";".join(r.get("setup_risk_flags", [])),
+                r.get("structure_volume_alignment", ""),
                 ";".join(r["structure_risk_flags"]),
                 r["support_price"] if r["support_price"] is not None else "",
                 r["invalid_price"] if r["invalid_price"] is not None else "",

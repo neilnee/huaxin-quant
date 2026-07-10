@@ -120,6 +120,10 @@ VCP 结构观察的交易含义：
 - 筹码正在稳定。
 - 后续需要等待 `PULLBACK_BUY` 或 `RETEST_BUY`。
 
+> **收缩幅度测量口径**（model2_quant_v8 起）：VCP 收缩的转折点与振幅都使用**收盘价 Swing**。每轮回调从收盘价局部高点到后续收盘价局部低点计算：`close_pullback_pct = (end_close - start_close) / start_close`，且必须 `end_close < start_close`。日内最高/最低价不参与收缩轮次、递减判定或收盘修复；它们只用于 Pivot、失效位和影线风险审计。这样收缩的定位与测量口径一致，排除影线造成的伪收缩。
+
+若同一收缩段的日内振幅比收盘振幅大 8pct 以上，标记 `INTRADAY_CLOSE_DIVERGENCE`：保留收盘结构，但降低买点评分并提示人工复核。
+
 ### PULLBACK_BUY：结构内缩量回踩低吸
 
 `PULLBACK_BUY` 是 VCP 未突破前的低吸机会，适合轻仓试探。
@@ -548,10 +552,10 @@ VCP 不再使用 `range_10/range_20/range_60` 等截面指标做 `6选3` 判定�
 
 ### 1.1 收缩轮次识别
 
-在最近 80-120 个交易日中识别局部高点和后续局部低点。一轮 contraction 定义为：
+在最近 80-120 个交易日中识别收盘价局部高点和后续收盘价局部低点。一轮 contraction 定义为：
 
 ```text
-从局部高点回撤到后续局部低点
+从收盘价局部高点回撤到后续收盘价局部低点
 回撤幅度 >= 4%
 持续时间 3-45 个交易日，按包含首尾的 K 线数量计算
 低点后有一定修复，不能是单边下跌未止
@@ -561,8 +565,10 @@ VCP 不再使用 `range_10/range_20/range_60` 等截面指标做 `6选3` 判定�
 
 ```text
 start_date / end_date
-high_price / low_price
-pullback_pct
+start_close / end_close / close_pullback_pct（VCP 判定口径）
+intraday_high / intraday_low / intraday_pullback_pct（审计口径）
+high_price / low_price（兼容字段，等同于 intraday_high / intraday_low）
+pullback_pct（兼容字段，等同于 close_pullback_pct）
 duration_days
 avg_volume
 recovery_pct
@@ -600,6 +606,8 @@ abs(Cn.pullback) <= abs(Cn-1.pullback) * 1.05
 最后一轮收缩距离当前更近
 组内轮次足够，但早期噪声回调不得污染主收缩序列
 ```
+
+收缩先按时间切分为独立 cluster：相邻两段之间超过 **25 个交易日**，即视为新的底部结构。当前 VCP 只从最新 cluster 选择，组内首尾跨度最多 **60 个交易日**。旧 cluster 仍保留在 `contractions` 供审计，但不得参与当前 `contraction_group` 的轮次、递减判定、阶段和买点评分。
 
 相邻收缩轮次允许轻微扩张，但明显扩张会打断旧 VCP 组，后一轮应视为新结构的起点：
 
@@ -722,6 +730,27 @@ breakout_level = 最近 60 日箱体上沿/突破前高
 最新收盘重新站回 breakout_level 或 MA10
 setup_score >= 55
 ```
+
+### RETEST 的结构量能准入与卖压阻断
+
+RETEST 必须同时确认“当前回踩缩量”和“VCP 各收缩段没有明显供给扩张”：
+
+| structure volume_pattern | 处理 |
+|---|---|
+| `decreasing` / `drying` | 保持原 RETEST 评分 |
+| `mixed` | RETEST 可触发，但最高质量为 B |
+| `failed` | 禁止 RETEST，输出 `WAIT_REBUILD` |
+
+最新确认日还会检查 `FAILED_RETEST_SELLING`。仅对已满足其他 RETEST 前提的标的，当以下条件同时成立时硬阻断 RETEST：
+
+```text
+close < open
+当日跌幅达到 max(板块阈值, min(ATR14_pct × 2, 涨跌停幅度 × 75%))
+当日量 >= 前 5 日均量 × 1.20（前 5 日不含当天）
+且当日量 >= 突破日量 × 0.80，或 >= 突破后前 5 日均量 × 1.35
+```
+
+板块基础跌幅阈值：主板 7%、创业板/科创板 10%、北交所 15%。该信号是 `setup_risk_flags`，只否决 `RETEST_BUY`，不改变 VCP 结构、PULLBACK_BUY 或 BREAKOUT_BUY 的规则。
 
 ---
 

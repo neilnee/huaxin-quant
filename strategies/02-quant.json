@@ -1,5 +1,5 @@
 {
-  "strategy_version": "model2_quant_v6",
+  "strategy_version": "model2_quant_v9",
   "description": "Model 2 VCP structure and setup signal parameters. This file contains thresholds and weights only; algorithms stay in scripts/quant_filter.py.",
   "vcp": {
     "lookback_days": 120,
@@ -14,7 +14,8 @@
     "max_post_drawdown_pct": -18.0,
     "min_recovery_pct": 3.0,
     "min_recovery_pullback_ratio": 0.25,
-    "recovery_grace_days": 5
+    "recovery_grace_days": 5,
+    "intraday_close_divergence_pct": 8.0
   },
   "base_rules": {
     "min_data_days": 80,
@@ -32,6 +33,8 @@
     "near_decrease_ratio": 1.05,
     "max_expansion_ratio": 1.5,
     "min_expansion_reset_pct": 5.0,
+    "max_gap_between_contractions_days": 25,
+    "max_group_span_days": 60,
     "volume_decrease_ratio": 0.95,
     "volume_dry_up_threshold": 0.85,
     "volume_failed_ratio": 1.2
@@ -72,7 +75,8 @@
       "DOWNTREND": 35,
       "MA20_DECLINE": 15,
       "DEEP_FALL": 35,
-      "BELOW_MA120": 20
+      "BELOW_MA120": 20,
+      "INTRADAY_CLOSE_DIVERGENCE": 5
     },
     "hard_reject_flags": [
       "OVERHEAT_CHG5",
@@ -165,7 +169,18 @@
       "blocked_risk_flags": [
         "LONG_UPPER_SHADOW",
         "VOLUME_STALL"
-      ]
+      ],
+      "failed_retest_selling": {
+        "mainboard_drop_pct": 7.0,
+        "growth_board_drop_pct": 10.0,
+        "beijing_drop_pct": 15.0,
+        "atr14_multiple": 2.0,
+        "atr14_threshold_cap_of_limit": 0.75,
+        "previous_volume_days": 5,
+        "volume_vs_previous_avg": 1.2,
+        "volume_vs_breakout": 0.8,
+        "volume_vs_post_avg": 1.35
+      }
     }
   },
   "scores": {
@@ -257,7 +272,8 @@
         "OVERHEAT_CHG5": -12,
         "OVERHEAT_CHG20": -12,
         "DOWNTREND": -20,
-        "DEEP_FALL": -20
+        "DEEP_FALL": -20,
+        "INTRADAY_CLOSE_DIVERGENCE": -3
       }
     }
   }

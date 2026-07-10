@@ -1,7 +1,7 @@
 # Signal Plan: 次日信号计划层指令卡
 
 - **版本管理**: 由 Git 分支与提交历史管理
-- **最近更新**: 2026-07-09
+- **最近更新**: 2026-07-10
 - **所属模型**: 模型四 Tracker
 - **策略配置**: `strategies/04-signal-plan.json`
 - **核心目标**: 基于模型二已经识别出的成熟 VCP 结构和当日买点事实，生成下一交易日可执行的量价触发计划，提前标出 A/B 类买点所需的收盘价区间、成交量区间和失效位。
@@ -96,6 +96,7 @@ chg_5
 chg_20
 run_date
 strategy_version
+post_breakout_state
 ```
 
 若模型二 JSON 缺少 `volume` / `vol_ma20` 等量能字段，Signal Plan 不得输出抽象公式作为执行计划；对应标的必须降级为 `DATA_ISSUE` 或跳过，并在 summary 中记录原因。若缺少 `setup_plan_inputs`，Signal Plan 可以使用兼容回退逻辑，但新版本模型二应提供该字段。
@@ -130,6 +131,20 @@ structure_risk_flags 命中 hard_risk_flags
 `VCP_FORMING` 仅在当日已经触发 `PULLBACK_BUY` / `BREAKOUT_BUY` / `RETEST_BUY` 时允许生成 `FOLLOW_SETUP_PLAN`，不得作为普通成熟结构生成首次买点计划。
 
 成熟结构若价格已经超过突破计划上沿，不输出追高计划，需进入 `excluded` 并在 summary 中计数。
+
+### 突破后生命周期约束
+
+`post_breakout_state` 是模型二对同一轮 VCP 首次有效突破后的状态判定。Signal Plan 不得把突破前的收缩结构跨越突破日重复用于新买点：
+
+| 模型二状态 | 允许的 Signal Plan |
+|---|---|
+| `PRE_BREAKOUT`（或旧版数据缺失该字段） | `PULLBACK`、`BREAKOUT`，沿用常规成熟结构规则 |
+| `POST_BREAKOUT_RETEST` | 仅 `RETEST`；当日未触发时生成 `RETEST` 的 `NEW` 计划，当日已触发时生成 `RETEST_FOLLOW` |
+| `POST_BREAKOUT_HOT` | 不生成计划，避免追高 |
+| `POST_BREAKOUT_CONSOLIDATING` | 不生成计划，等待新的结构或有效回踩状态 |
+| `POST_BREAKOUT_FAILED` / `POST_BREAKOUT_EXPIRED` | 不生成计划，等待 VCP 重新构建 |
+
+因此，突破后状态不得输出旧结构的 `PULLBACK` 或 `BREAKOUT` 计划；这项约束优先于成熟阶段和当日信号的普通分支。
 
 ---
 
@@ -305,6 +320,7 @@ target_quality
 plan_priority
 model2_stage
 model2_setup_signal
+post_breakout_state
 structure_score
 structure_risk_score
 structure_risk_flags
@@ -351,5 +367,6 @@ Markdown 报告分区：
 - 公式不得出现在 Markdown 主表的执行区间中。
 - 缺少量能字段时不得输出伪区间。
 - 高风险或硬风险标的不得进入 A/B 主表。
+- 突破后生命周期必须限制计划类型：`POST_BREAKOUT_RETEST` 只允许 `RETEST`，其余突破后状态不得沿用旧 VCP 输出 `PULLBACK` / `BREAKOUT`。
 - `FOLLOW_SETUP_PLAN` 不等同于昨日买点自动顺延，必须重新计算次日可参与区间。
 - Signal Plan 不更新 Bloom 状态、不写持仓账本、不输出最终交易建议。

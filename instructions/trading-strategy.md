@@ -1,6 +1,6 @@
 # Huaxin Quant 交易策略文档
 
-最近更新：2026-07-08
+最近更新：2026-07-10（v1.7）
 
 本文记录当前交易策略口径，作为后续持续迭代的基础。内容只描述策略、指标和评分规则，不描述工程执行流程。
 
@@ -190,11 +190,13 @@ close < MA120 → 触发 BELOW_MA120 风险标记
 一轮 contraction 定义为：
 
 ```text
-从局部高点回撤到后续局部低点
+从收盘价局部高点回撤到后续收盘价局部低点
 回撤幅度 >= 4%
 持续时间 3-45 个交易日
 低点后有一定修复，不能是单边下跌未止
 ```
+
+收缩的转折定位、回撤幅度和修复均使用收盘价 Swing，且必须 `end_close < start_close`。日内 high/low 不参与收缩轮次或递减判定，只用于 Pivot、失效位和影线风险审计；避免长影线把并非收盘回撤的波动误判为 VCP 收缩。
 
 每轮 contraction 记录：
 
@@ -261,6 +263,16 @@ abs(Cn.pullback) > abs(Cn-1.pullback) * 1.50
 | post_structure_gain | <= 25% |
 | post_structure_drawdown | >= -18% |
 
+时间连续性约束：
+
+```text
+相邻 contraction 间隔 > 25 个交易日 → 切分为新 cluster
+当前 VCP 只能从最新 cluster 选取
+当前 contraction_group 首尾跨度 <= 60 个交易日
+```
+
+旧 cluster 保留在 `contractions` 供审计和趋势背景参考，但不得计入当前 `contraction_group`、收缩递减、结构阶段或买点评分。这样不会将数月前的旧基底与当期整理机械拼接成 MATURE VCP。
+
 失效状态：
 
 | 原因 | 含义 |
@@ -287,6 +299,16 @@ C3.avg_volume < C2.avg_volume * 0.95
 volume_dry_up < 0.85
 vol_ma20 < vol_ma60
 ```
+
+结构量能与 RETEST 的联动：
+
+| structure volume_pattern | RETEST 处理 |
+|---|---|
+| decreasing / drying | 原有 RETEST 评分不变 |
+| mixed | 允许 RETEST，但最高质量为 B |
+| failed | 仅当其他 RETEST 回踩条件已满足时，禁止 RETEST，输出 WAIT_REBUILD |
+
+该联动只约束 RETEST；PULLBACK 和 BREAKOUT 的触发逻辑不变。
 
 ### 3.7 结构阶段
 
@@ -418,6 +440,17 @@ close <= structure_pivot * 1.08
 无 LONG_UPPER_SHADOW / VOLUME_STALL
 最终 setup_score >= 买点触发阈值
 ```
+
+最终确认日还必须通过 `FAILED_RETEST_SELLING` 检查。该规则只针对已具备其他 RETEST 回踩条件的标的，以下条件同时成立即硬阻断 RETEST：
+
+```text
+close < open
+当日跌幅 <= -max(板块基础阈值, min(ATR14_pct × 2, 涨跌停幅度 × 75%))
+当日量 >= 前 5 日均量 × 1.20（前 5 日不含当天）
+且当日量 >= 突破日量 × 0.80，或 >= 突破后前 5 日均量 × 1.35
+```
+
+板块基础阈值：主板 7%、创业板/科创板 10%、北交所 15%。命中时写入 `setup_risk_flags = FAILED_RETEST_SELLING`，只否决 RETEST_BUY，不改变 VCP 结构、PULLBACK_BUY 或 BREAKOUT_BUY。
 
 交易含义：
 
@@ -555,6 +588,8 @@ upper_shadow_ratio <= 0.25
 | 回踩量能 | 回踩期均量 < 突破日量 * 0.70 得 5；< 0.85 得 3；< 1.0 得 1；其他 0 |
 | 重新确认 | close >= breakout_level 且收盘强得 5；close >= breakout_level 或 close >= MA10 得 2；其他 0 |
 
+在上述动作分和风险分计算后，仍应用结构量能准入：`mixed` 的 RETEST 即使分数达到 A 阈值也封顶为 B；`failed` 不产生 RETEST 买点。
+
 收盘强参考：
 
 ```text
@@ -564,7 +599,7 @@ upper_shadow_ratio <= 0.30
 
 ### 5.5 风险修正分
 
-风险修正直接使用模型二风险标识，不另建复杂判断。
+风险修正使用模型二结构风险标识；RETEST 另有买点级 `setup_risk_flags`。其中 `FAILED_RETEST_SELLING` 是硬阻断而不是扣分项，因此不与结构风险混合计分。
 
 ```text
 risk_adjust = clamp(sum(flag_adjustments), -20, +10)

@@ -1,6 +1,6 @@
 # Huaxin Quant 交易策略文档
 
-最近更新：2026-07-10（v1.7）
+最近更新：2026-07-10（feature/post-breakout-state，model2_quant_v10，待合并）
 
 本文记录当前交易策略口径，作为后续持续迭代的基础。内容只描述策略、指标和评分规则，不描述工程执行流程。
 
@@ -273,6 +273,21 @@ abs(Cn.pullback) > abs(Cn-1.pullback) * 1.50
 
 旧 cluster 保留在 `contractions` 供审计和趋势背景参考，但不得计入当前 `contraction_group`、收缩递减、结构阶段或买点评分。这样不会将数月前的旧基底与当期整理机械拼接成 MATURE VCP。
 
+### 3.5.1 突破后生命周期
+
+原 VCP 在收盘站上 `structure_pivot × 1.01` 后，进入突破后状态。旧结构保留用于评价突破、跟随与回踩质量，但不再属于突破前形态。
+
+| 状态 | 条件 | 交易含义 |
+|---|---|---|
+| PRE_BREAKOUT | 尚未价格突破 | 可 PULLBACK / BREAKOUT |
+| POST_BREAKOUT_HOT | 突破后快速上冲 | 不追高 |
+| POST_BREAKOUT_RETEST | 15 日内受控回踩 Pivot | 只可评估 RETEST |
+| POST_BREAKOUT_CONSOLIDATING | 突破后 16-20 日横向整理 | 观察新 base |
+| POST_BREAKOUT_FAILED | 收盘 < Pivot × 0.97，或突破后回撤过深 | WAIT_REBUILD |
+| POST_BREAKOUT_EXPIRED | 突破后 >20 日 | 原买点窗口关闭，等待新 base |
+
+任何突破后状态都永久禁止旧 VCP 的 PULLBACK_BUY 与重复 BREAKOUT_BUY。失败或过期后，只有突破后重新形成的独立收缩 cluster 才可产生下一轮 VCP 买点。
+
 失效状态：
 
 | 原因 | 含义 |
@@ -400,6 +415,7 @@ VCP_EARLY 只观察，不触发买点
 ```text
 structure_stage ∈ VCP_FORMING / VCP_MATURE / VCP_TIGHT
 无 DOWNTREND / DEEP_FALL
+post_breakout_state = PRE_BREAKOUT
 ```
 
 硬触发：
@@ -428,6 +444,7 @@ MA20_slope >= -0.03
 structure_valid = true
 structure_stage ∈ VCP_FORMING / VCP_MATURE / VCP_TIGHT
 无 DOWNTREND / DEEP_FALL
+post_breakout_state = PRE_BREAKOUT
 ```
 
 硬触发：
@@ -440,17 +457,6 @@ close <= structure_pivot * 1.08
 无 LONG_UPPER_SHADOW / VOLUME_STALL
 最终 setup_score >= 买点触发阈值
 ```
-
-最终确认日还必须通过 `FAILED_RETEST_SELLING` 检查。该规则只针对已具备其他 RETEST 回踩条件的标的，以下条件同时成立即硬阻断 RETEST：
-
-```text
-close < open
-当日跌幅 <= -max(板块基础阈值, min(ATR14_pct × 2, 涨跌停幅度 × 75%))
-当日量 >= 前 5 日均量 × 1.20（前 5 日不含当天）
-且当日量 >= 突破日量 × 0.80，或 >= 突破后前 5 日均量 × 1.35
-```
-
-板块基础阈值：主板 7%、创业板/科创板 10%、北交所 15%。命中时写入 `setup_risk_flags = FAILED_RETEST_SELLING`，只否决 RETEST_BUY，不改变 VCP 结构、PULLBACK_BUY 或 BREAKOUT_BUY。
 
 交易含义：
 
@@ -468,15 +474,14 @@ close < open
 structure_valid = true
 structure_stage ∈ VCP_FORMING / VCP_MATURE / VCP_TIGHT
 无 DOWNTREND / DEEP_FALL
-最近 12 日内曾经有效突破
+post_breakout_state = POST_BREAKOUT_RETEST
 ```
 
 有效突破定义：
 
 ```text
-突破日 close > 最近 60 日高点 * 1.01
-突破日 volume > vol_ma20
-突破日不是长上影
+原 VCP 突破日 close > structure_pivot * 1.01
+突破事实由结构层统一记录（Pivot、突破日、成交量和突破后天数）
 ```
 
 回踩硬触发：
@@ -491,6 +496,17 @@ structure_stage ∈ VCP_FORMING / VCP_MATURE / VCP_TIGHT
 无 LONG_UPPER_SHADOW / VOLUME_STALL
 最终 setup_score >= 买点触发阈值
 ```
+
+最终确认日还必须通过 `FAILED_RETEST_SELLING` 检查。该规则只针对已具备其他 RETEST 回踩条件的标的，以下条件同时成立即硬阻断 RETEST：
+
+```text
+close < open
+当日跌幅 <= -max(板块基础阈值, min(ATR14_pct × 2, 涨跌停幅度 × 75%))
+当日量 >= 前 5 日均量 × 1.20（前 5 日不含当天）
+且当日量 >= 突破日量 × 0.80，或 >= 突破后前 5 日均量 × 1.35
+```
+
+板块基础阈值：主板 7%、创业板/科创板 10%、北交所 15%。命中时写入 `setup_risk_flags = FAILED_RETEST_SELLING`，只否决 RETEST_BUY，不改变 VCP 结构、PULLBACK_BUY 或 BREAKOUT_BUY。
 
 交易含义：
 

@@ -417,7 +417,9 @@ def detect_contractions(df):
         if duration < VCP_MIN_PULLBACK_DAYS or duration > VCP_MAX_PULLBACK_DAYS:
             continue
 
-        pullback_pct = (low["price"] - high["price"]) / high["price"] * 100
+        start_close = float(df.iloc[high["idx"]]["close"])
+        end_close = float(df.iloc[low["idx"]]["close"])
+        pullback_pct = (end_close - start_close) / start_close * 100
         abs_pullback = abs(pullback_pct)
         if abs_pullback < VCP_MIN_PULLBACK_PCT or abs_pullback > VCP_MAX_PULLBACK_PCT:
             continue
@@ -428,8 +430,8 @@ def detect_contractions(df):
                 next_high_idx = later["idx"]
                 break
         recovery_slice = df.iloc[low["idx"] + 1:(next_high_idx + 1 if next_high_idx else len(df))]
-        max_after = recovery_slice["high"].max() if not recovery_slice.empty else df.iloc[-1]["close"]
-        recovery_pct = (max_after - low["price"]) / low["price"] * 100 if low["price"] else 0
+        max_after = recovery_slice["close"].max() if not recovery_slice.empty else df.iloc[-1]["close"]
+        recovery_pct = (max_after - end_close) / end_close * 100 if end_close else 0
         min_recovery = min(VCP_CFG["min_recovery_pct"], abs_pullback * VCP_CFG["min_recovery_pullback_ratio"])
         if recovery_pct < min_recovery and low["idx"] < len(df) - VCP_CFG["recovery_grace_days"]:
             continue
@@ -442,6 +444,8 @@ def detect_contractions(df):
             "end_date": str(low["date"]),
             "high_price": high["price"],
             "low_price": low["price"],
+            "start_close": round(float(start_close), 2),
+            "end_close": round(float(end_close), 2),
             "pullback_pct": round(pullback_pct, 2),
             "duration_days": int(duration),
             "avg_volume": float(segment["volume"].mean()),

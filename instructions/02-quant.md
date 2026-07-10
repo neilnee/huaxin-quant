@@ -120,6 +120,8 @@ VCP 结构观察的交易含义：
 - 筹码正在稳定。
 - 后续需要等待 `PULLBACK_BUY` 或 `RETEST_BUY`。
 
+> **收缩幅度测量口径**（model2_quant_v7 起）：每轮 VCP 回调的振幅使用摆动高点日的**收盘价** → 摆动低点日的**收盘价**计算（`(end_close - start_close) / start_close`）。Swing 检测仍基于日内最高/最低价定位转折点，Pivot（枢轴价）取收缩组内最高日内高价。这样排除长上/下影线的日内杂音，只保留收盘价结构的真实收敛。
+
 ### PULLBACK_BUY：结构内缩量回踩低吸
 
 `PULLBACK_BUY` 是 VCP 未突破前的低吸机会，适合轻仓试探。

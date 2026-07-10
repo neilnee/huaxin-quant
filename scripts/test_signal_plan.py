@@ -44,9 +44,9 @@ class SignalPlanLifecycleTests(unittest.TestCase):
         plans = plans_for_row(sample_row())
         self.assertEqual([p["setup_family"] for p in plans], ["PULLBACK", "BREAKOUT"])
 
-    def test_retest_state_only_generates_new_retest_plan(self):
+    def test_unconfirmed_retest_state_generates_no_plan(self):
         plans = plans_for_row(sample_row("POST_BREAKOUT_RETEST"))
-        self.assertEqual([(p["setup_family"], p["plan_action"]) for p in plans], [("RETEST", "NEW")])
+        self.assertEqual(plans, [])
 
     def test_triggered_retest_generates_follow_plan(self):
         plans = plans_for_row(sample_row("POST_BREAKOUT_RETEST", "RETEST_BUY"))

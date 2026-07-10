@@ -500,14 +500,13 @@ def plans_for_row(row):
     plans = []
     allowed_families, _ = lifecycle_plan_permission(row)
 
-    # Only a confirmed post-breakout retest can reuse this structure.  It may
-    # produce a next-session RETEST plan even before today's confirmation
-    # signal fires; PULLBACK/BREAKOUT remain permanently unavailable here.
+    # A lifecycle retest state is only an observation window, not a tradable
+    # setup.  Requiring Model 2's confirmed RETEST_BUY prevents volatile
+    # post-limit-up pullbacks from being promoted to a next-session plan.
+    # PULLBACK/BREAKOUT remain permanently unavailable after the breakout.
     if allowed_families == {"RETEST"}:
         if signal == "RETEST_BUY":
             plans.append(build_retest_plan(row, follow=True))
-        else:
-            plans.append(build_retest_plan(row, follow=False))
         return plans
 
     if signal == "PULLBACK_BUY" and "PULLBACK" in allowed_families:
@@ -540,6 +539,8 @@ def valid_plan_exclusion(row):
     signal = row.get("setup_signal")
     close = safe_float(row.get("close"))
     pivot = safe_float(row.get("structure_pivot") or row.get("pivot_price"))
+    if post_breakout_state(row) == "POST_BREAKOUT_RETEST" and signal != "RETEST_BUY":
+        return "突破后回踩尚未获模型二确认，不生成 RETEST 计划"
     if (
         stage in CONFIG["candidate_rules"]["allowed_new_stages"]
         and signal not in CONFIG["candidate_rules"]["allowed_follow_signals"]

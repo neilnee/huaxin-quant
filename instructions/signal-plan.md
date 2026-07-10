@@ -139,12 +139,12 @@ structure_risk_flags 命中 hard_risk_flags
 | 模型二状态 | 允许的 Signal Plan |
 |---|---|
 | `PRE_BREAKOUT`（或旧版数据缺失该字段） | `PULLBACK`、`BREAKOUT`，沿用常规成熟结构规则 |
-| `POST_BREAKOUT_RETEST` | 仅 `RETEST`；当日未触发时生成 `RETEST` 的 `NEW` 计划，当日已触发时生成 `RETEST_FOLLOW` |
+| `POST_BREAKOUT_RETEST` | 仅在模型二当日确认 `RETEST_BUY` 时生成 `RETEST_FOLLOW`；未确认时只观察，不生成 `RETEST` 的 `NEW` 计划 |
 | `POST_BREAKOUT_HOT` | 不生成计划，避免追高 |
 | `POST_BREAKOUT_CONSOLIDATING` | 不生成计划，等待新的结构或有效回踩状态 |
 | `POST_BREAKOUT_FAILED` / `POST_BREAKOUT_EXPIRED` | 不生成计划，等待 VCP 重新构建 |
 
-因此，突破后状态不得输出旧结构的 `PULLBACK` 或 `BREAKOUT` 计划；这项约束优先于成熟阶段和当日信号的普通分支。
+因此，突破后状态不得输出旧结构的 `PULLBACK` 或 `BREAKOUT` 计划。`POST_BREAKOUT_RETEST` 本身只表示可继续评估的窗口，不等同于可执行买点；它必须先通过模型二的缩量、价格确认、长上影/风险和卖压阻断检查。这项约束优先于成熟阶段和当日信号的普通分支。
 
 ---
 
@@ -367,6 +367,6 @@ Markdown 报告分区：
 - 公式不得出现在 Markdown 主表的执行区间中。
 - 缺少量能字段时不得输出伪区间。
 - 高风险或硬风险标的不得进入 A/B 主表。
-- 突破后生命周期必须限制计划类型：`POST_BREAKOUT_RETEST` 只允许 `RETEST`，其余突破后状态不得沿用旧 VCP 输出 `PULLBACK` / `BREAKOUT`。
+- 突破后生命周期必须限制计划类型：`POST_BREAKOUT_RETEST` 仅可在模型二已输出 `RETEST_BUY` 时生成 `RETEST_FOLLOW`；其余突破后状态不得沿用旧 VCP 输出 `PULLBACK` / `BREAKOUT`。
 - `FOLLOW_SETUP_PLAN` 不等同于昨日买点自动顺延，必须重新计算次日可参与区间。
 - Signal Plan 不更新 Bloom 状态、不写持仓账本、不输出最终交易建议。

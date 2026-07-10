@@ -1,20 +1,21 @@
 {
-  "strategy_version": "model2_quant_v7",
+  "strategy_version": "model2_quant_v8",
   "description": "Model 2 VCP structure and setup signal parameters. This file contains thresholds and weights only; algorithms stay in scripts/quant_filter.py.",
   "vcp": {
     "lookback_days": 120,
     "swing_window": 3,
-    "min_pullback_pct": 3.0,
-    "max_pullback_pct": 25.0,
+    "min_pullback_pct": 4.0,
+    "max_pullback_pct": 35.0,
     "min_pullback_days": 3,
     "max_pullback_days": 45,
     "max_structure_age_days": 45,
     "min_pivot_distance_pct": -18.0,
     "max_post_gain_pct": 25.0,
     "max_post_drawdown_pct": -18.0,
-    "min_recovery_pct": 2.0,
+    "min_recovery_pct": 3.0,
     "min_recovery_pullback_ratio": 0.25,
-    "recovery_grace_days": 5
+    "recovery_grace_days": 5,
+    "intraday_close_divergence_pct": 8.0
   },
   "base_rules": {
     "min_data_days": 80,
@@ -40,7 +41,7 @@
     "early_min_contractions": 1,
     "forming_min_contractions": 2,
     "mature_min_contractions": 3,
-    "tight_max_last_pullback_pct": 7.0,
+    "tight_max_last_pullback_pct": 10.0,
     "tight_min_pivot_distance_pct": -8.0
   },
   "risk_rules": {
@@ -72,7 +73,8 @@
       "DOWNTREND": 35,
       "MA20_DECLINE": 15,
       "DEEP_FALL": 35,
-      "BELOW_MA120": 20
+      "BELOW_MA120": 20,
+      "INTRADAY_CLOSE_DIVERGENCE": 5
     },
     "hard_reject_flags": [
       "OVERHEAT_CHG5",
@@ -257,7 +259,8 @@
         "OVERHEAT_CHG5": -12,
         "OVERHEAT_CHG20": -12,
         "DOWNTREND": -20,
-        "DEEP_FALL": -20
+        "DEEP_FALL": -20,
+        "INTRADAY_CLOSE_DIVERGENCE": -3
       }
     }
   }

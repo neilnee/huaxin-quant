@@ -372,7 +372,7 @@ def detect_overheat(df):
 
 
 def find_swings(df, lookback=VCP_LOOKBACK, window=VCP_SWING_WINDOW):
-    """Find alternating local highs/lows in the recent window."""
+    """Find alternating intraday high/low swings for pivot and risk analysis."""
     start = max(0, len(df) - lookback)
     swings = []
     for idx in range(start + window, len(df) - window):
@@ -405,8 +405,47 @@ def find_swings(df, lookback=VCP_LOOKBACK, window=VCP_SWING_WINDOW):
     return alternating
 
 
+def find_close_swings(df, lookback=VCP_LOOKBACK, window=VCP_SWING_WINDOW):
+    """Find alternating local closing-price swings for VCP contraction detection."""
+    start = max(0, len(df) - lookback)
+    swings = []
+    for idx in range(start + window, len(df) - window):
+        close = float(df.iloc[idx]["close"])
+        local_closes = df.iloc[idx - window:idx + window + 1]["close"].to_numpy(dtype=float)
+        other_closes = np.concatenate([local_closes[:window], local_closes[window + 1:]])
+        if close >= local_closes.max() and close > other_closes.max():
+            swings.append({"idx": idx, "type": "high", "price": close, "date": df.iloc[idx]["date"]})
+        if close <= local_closes.min() and close < other_closes.min():
+            swings.append({"idx": idx, "type": "low", "price": close, "date": df.iloc[idx]["date"]})
+
+    swings.sort(key=lambda x: x["idx"])
+    alternating = []
+    for swing in swings:
+        if not alternating or alternating[-1]["type"] != swing["type"]:
+            alternating.append(swing)
+            continue
+        prev = alternating[-1]
+        if swing["type"] == "high" and swing["price"] > prev["price"]:
+            alternating[-1] = swing
+        elif swing["type"] == "low" and swing["price"] < prev["price"]:
+            alternating[-1] = swing
+    return alternating
+
+
+def contraction_pullback_pct(contraction):
+    """Read the close-based contraction measure while remaining compatible with v7 data."""
+    return safe_float(contraction.get("close_pullback_pct", contraction.get("pullback_pct")), 0.0)
+
+
+def has_intraday_close_divergence(contraction):
+    """Flag unusually large wick-driven range without changing the close-based structure."""
+    intraday_pct = abs(safe_float(contraction.get("intraday_pullback_pct"), 0.0))
+    close_pct = abs(contraction_pullback_pct(contraction))
+    return intraday_pct - close_pct >= VCP_CFG.get("intraday_close_divergence_pct", 8.0)
+
+
 def detect_contractions(df):
-    swings = find_swings(df)
+    swings = find_close_swings(df)
     contractions = []
     for i, swing in enumerate(swings[:-1]):
         if swing["type"] != "high" or swings[i + 1]["type"] != "low":
@@ -417,10 +456,12 @@ def detect_contractions(df):
         if duration < VCP_MIN_PULLBACK_DAYS or duration > VCP_MAX_PULLBACK_DAYS:
             continue
 
-        start_close = float(df.iloc[high["idx"]]["close"])
-        end_close = float(df.iloc[low["idx"]]["close"])
+        start_close = float(high["price"])
+        end_close = float(low["price"])
+        if end_close >= start_close:
+            continue
         pullback_pct = (end_close - start_close) / start_close * 100
-        abs_pullback = abs(pullback_pct)
+        abs_pullback = -pullback_pct
         if abs_pullback < VCP_MIN_PULLBACK_PCT or abs_pullback > VCP_MAX_PULLBACK_PCT:
             continue
 
@@ -437,15 +478,24 @@ def detect_contractions(df):
             continue
 
         segment = df.iloc[high["idx"]:low["idx"] + 1]
+        intraday_high = float(segment["high"].max())
+        intraday_low = float(segment["low"].min())
+        intraday_pullback_pct = (intraday_low - intraday_high) / intraday_high * 100 if intraday_high else 0
         contractions.append({
             "start_idx": high["idx"],
             "end_idx": low["idx"],
             "start_date": str(high["date"]),
             "end_date": str(low["date"]),
-            "high_price": high["price"],
-            "low_price": low["price"],
+            # Keep the historical names as intraday anchors for downstream pivot/stop logic.
+            "high_price": intraday_high,
+            "low_price": intraday_low,
             "start_close": round(float(start_close), 2),
             "end_close": round(float(end_close), 2),
+            "close_pullback_pct": round(pullback_pct, 2),
+            "intraday_high": round(intraday_high, 2),
+            "intraday_low": round(intraday_low, 2),
+            "intraday_pullback_pct": round(intraday_pullback_pct, 2),
+            # Compatibility alias for Bloom and historical consumers; always close-based in v8+.
             "pullback_pct": round(pullback_pct, 2),
             "duration_days": int(duration),
             "avg_volume": float(segment["volume"].mean()),
@@ -461,8 +511,8 @@ def contraction_decrease_status(contractions):
     strict_pairs = 0
     near_pairs = 0
     for prev, cur in zip(recent, recent[1:]):
-        prev_abs = abs(prev["pullback_pct"])
-        cur_abs = abs(cur["pullback_pct"])
+        prev_abs = abs(contraction_pullback_pct(prev))
+        cur_abs = abs(contraction_pullback_pct(cur))
         if cur_abs <= prev_abs * CONTRACTION_CFG["strict_decrease_ratio"]:
             strict_pairs += 1
         if cur_abs <= prev_abs * CONTRACTION_CFG["near_decrease_ratio"]:
@@ -500,8 +550,8 @@ def contraction_group_has_reset_expansion(group):
     if not max_ratio:
         return False
     for prev, cur in zip(group, group[1:]):
-        prev_abs = abs(safe_float(prev.get("pullback_pct"), 0))
-        cur_abs = abs(safe_float(cur.get("pullback_pct"), 0))
+        prev_abs = abs(contraction_pullback_pct(prev))
+        cur_abs = abs(contraction_pullback_pct(cur))
         if prev_abs <= 0:
             continue
         if cur_abs > prev_abs * max_ratio and cur_abs - prev_abs >= min_reset_pct:
@@ -650,6 +700,7 @@ def detect_vcp_structure(df):
         "post_structure_drawdown": None,
         "vcp_quality": "D",
         "watch_priority": "none",
+        "structure_risk_flags": [],
     }
     if n < BASE_CFG["min_data_days"]:
         return empty
@@ -684,6 +735,7 @@ def detect_vcp_structure(df):
     structure_age_days = current["structure_age_days"] if current else None
     structure_valid = bool(current)
     structure_invalid_reason = ""
+    structure_risk_flags = []
     post_structure_gain = current["post_structure_gain"] if current else None
     post_structure_drawdown = current["post_structure_drawdown"] if current else None
 
@@ -722,6 +774,9 @@ def detect_vcp_structure(df):
         misses.append("距离pivot偏远")
     if last_low is not None and close > last_low * (1 + BASE_CFG["last_low_buffer_pct"] / 100):
         conditions.append("最近收缩低点守住")
+    if any(has_intraday_close_divergence(c) for c in recent):
+        structure_risk_flags.append("INTRADAY_CLOSE_DIVERGENCE")
+        misses.append("日内影线波动显著大于收盘收缩")
 
     state = "REJECT"
     has_structure = False
@@ -734,7 +789,7 @@ def detect_vcp_structure(df):
         else:
             state = "VCP_EARLY"
 
-        last_abs = abs(recent[-1]["pullback_pct"]) if recent else 99
+        last_abs = abs(contraction_pullback_pct(recent[-1])) if recent else 99
         if (
             state == "VCP_MATURE"
             and last_abs <= STAGE_CFG["tight_max_last_pullback_pct"]
@@ -798,7 +853,7 @@ def detect_vcp_structure(df):
         "contractions": contractions,
         "contraction_group": group,
         "contraction_count": count,
-        "contraction_pcts": " -> ".join(f'{c["pullback_pct"]:.2f}%' for c in recent),
+        "contraction_pcts": " -> ".join(f'{contraction_pullback_pct(c):.2f}%' for c in recent),
         "contraction_days": " -> ".join(str(c["duration_days"]) for c in recent),
         "volume_pattern": volume_pattern,
         "pivot_price": pivot_price,
@@ -813,6 +868,7 @@ def detect_vcp_structure(df):
         "post_structure_drawdown": post_structure_drawdown,
         "vcp_quality": quality_map.get(state, "D"),
         "watch_priority": priority_map.get(state, "none"),
+        "structure_risk_flags": structure_risk_flags,
     }
 
 
@@ -862,8 +918,8 @@ def recent_two_contractions_decreasing(structure):
     group = structure.get("contraction_group") or []
     if len(group) < 2:
         return False
-    prev_abs = abs(group[-2]["pullback_pct"])
-    cur_abs = abs(group[-1]["pullback_pct"])
+    prev_abs = abs(contraction_pullback_pct(group[-2]))
+    cur_abs = abs(contraction_pullback_pct(group[-1]))
     return cur_abs <= prev_abs * CONTRACTION_CFG["near_decrease_ratio"]
 
 
@@ -1615,6 +1671,13 @@ def screen(df):
 
     overheat = detect_overheat(df)
     structure = detect_vcp_structure(df)
+    for flag in structure.get("structure_risk_flags", []):
+        if flag not in overheat["risk_flags"]:
+            overheat["risk_flags"].append(flag)
+            overheat["risk_score"] = min(
+                SCORE_CFG["max_score"],
+                overheat["risk_score"] + RISK_CFG["risk_scores"].get(flag, 0),
+            )
     score = score_setup(df, structure, {}, {}, overheat)
     structure["structure_score_estimate"] = score["structure_score"]
     pullback = detect_pullback_buy(df, structure, overheat)

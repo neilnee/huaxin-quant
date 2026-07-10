@@ -120,7 +120,9 @@ VCP 结构观察的交易含义：
 - 筹码正在稳定。
 - 后续需要等待 `PULLBACK_BUY` 或 `RETEST_BUY`。
 
-> **收缩幅度测量口径**（model2_quant_v7 起）：每轮 VCP 回调的振幅使用摆动高点日的**收盘价** → 摆动低点日的**收盘价**计算（`(end_close - start_close) / start_close`）。Swing 检测仍基于日内最高/最低价定位转折点，Pivot（枢轴价）取收缩组内最高日内高价。这样排除长上/下影线的日内杂音，只保留收盘价结构的真实收敛。
+> **收缩幅度测量口径**（model2_quant_v8 起）：VCP 收缩的转折点与振幅都使用**收盘价 Swing**。每轮回调从收盘价局部高点到后续收盘价局部低点计算：`close_pullback_pct = (end_close - start_close) / start_close`，且必须 `end_close < start_close`。日内最高/最低价不参与收缩轮次、递减判定或收盘修复；它们只用于 Pivot、失效位和影线风险审计。这样收缩的定位与测量口径一致，排除影线造成的伪收缩。
+
+若同一收缩段的日内振幅比收盘振幅大 8pct 以上，标记 `INTRADAY_CLOSE_DIVERGENCE`：保留收盘结构，但降低买点评分并提示人工复核。
 
 ### PULLBACK_BUY：结构内缩量回踩低吸
 
@@ -550,10 +552,10 @@ VCP 不再使用 `range_10/range_20/range_60` 等截面指标做 `6选3` 判定�
 
 ### 1.1 收缩轮次识别
 
-在最近 80-120 个交易日中识别局部高点和后续局部低点。一轮 contraction 定义为：
+在最近 80-120 个交易日中识别收盘价局部高点和后续收盘价局部低点。一轮 contraction 定义为：
 
 ```text
-从局部高点回撤到后续局部低点
+从收盘价局部高点回撤到后续收盘价局部低点
 回撤幅度 >= 4%
 持续时间 3-45 个交易日，按包含首尾的 K 线数量计算
 低点后有一定修复，不能是单边下跌未止
@@ -563,8 +565,10 @@ VCP 不再使用 `range_10/range_20/range_60` 等截面指标做 `6选3` 判定�
 
 ```text
 start_date / end_date
-high_price / low_price
-pullback_pct
+start_close / end_close / close_pullback_pct（VCP 判定口径）
+intraday_high / intraday_low / intraday_pullback_pct（审计口径）
+high_price / low_price（兼容字段，等同于 intraday_high / intraday_low）
+pullback_pct（兼容字段，等同于 close_pullback_pct）
 duration_days
 avg_volume
 recovery_pct

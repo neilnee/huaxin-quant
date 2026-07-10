@@ -254,7 +254,10 @@ def contraction_display_fields(row):
     if group:
         return {
             "count": str(len(group)),
-            "pcts": " -> ".join(f'{safe_float(c.get("pullback_pct")):.2f}%' for c in group),
+            "pcts": " -> ".join(
+                f'{safe_float(c.get("close_pullback_pct", c.get("pullback_pct"))):.2f}%'
+                for c in group
+            ),
             "days": " -> ".join(str(c.get("duration_days", "")) for c in group),
             "group": group,
         }

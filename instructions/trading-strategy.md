@@ -200,8 +200,9 @@ close < MA120 → 触发 BELOW_MA120 风险标记
 
 ```text
 start_date / end_date
-high_price / low_price
-pullback_pct
+start_close / end_close / close_pullback_pct
+intraday_high / intraday_low / intraday_pullback_pct
+pullback_pct（兼容字段，等同于 close_pullback_pct）
 duration_days
 avg_volume
 recovery_pct

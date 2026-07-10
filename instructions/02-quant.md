@@ -1,7 +1,7 @@
 # 模型二：量价精筛模型（自执行指令）
 
 - **版本管理**: 由 Git 分支与提交历史管理，文件名不再携带版本号
-- **最近更新**: 2026-07-08
+- **最近更新**: 2026-07-10（model2_quant_v10，待合并）
 - **核心目标**: 在模型一基本面候选池中，寻找 VCP 蓄力结构和可交易触发，输出可复现、可回测、可供模型三/四复用的结构化量价结果。
 - **核心哲学**: 基本面先过滤烂公司，模型二只判断资金行为和价格位置。脚本负责确定性计算，LLM 只做可选解释，不参与结构阶段或交易触发判定。
 - **输入**: `pool/pool_<YYMMDD>.csv`，或命令行指定 `--code/--codes`
@@ -609,6 +609,21 @@ abs(Cn.pullback) <= abs(Cn-1.pullback) * 1.05
 
 收缩先按时间切分为独立 cluster：相邻两段之间超过 **25 个交易日**，即视为新的底部结构。当前 VCP 只从最新 cluster 选择，组内首尾跨度最多 **60 个交易日**。旧 cluster 仍保留在 `contractions` 供审计，但不得参与当前 `contraction_group` 的轮次、递减判定、阶段和买点评分。
 
+### 突破后生命周期
+
+原 VCP 的 `price_breakout` 发生在最后一轮收缩后，收盘价首次站上 `structure_pivot × 1.01`。突破并不立即删除原结构：它仍用于记录完整的“收缩 → 突破 → 跟随/回踩”质量，但买点权限转入突破后状态管理。
+
+| post_breakout_state | 含义 | 买点权限 |
+|---|---|---|
+| `PRE_BREAKOUT` | 尚未发生价格突破 | PULLBACK / BREAKOUT |
+| `POST_BREAKOUT_HOT` | 突破后快速上冲 | 不追高 |
+| `POST_BREAKOUT_RETEST` | 突破后 15 日内受控回踩 Pivot | 仅 RETEST |
+| `POST_BREAKOUT_CONSOLIDATING` | 突破后 16-20 日仍未深度失守 | 观察新 base，不沿用旧买点 |
+| `POST_BREAKOUT_FAILED` | 收盘跌破 Pivot × 0.97，或突破后回撤过深 | WAIT_REBUILD |
+| `POST_BREAKOUT_EXPIRED` | 突破后超过 20 日，旧买点窗口结束 | WAIT_REBUILD |
+
+硬边界：一旦进入任何 `POST_BREAKOUT_*` 状态，原 `contraction_group` 永久禁止 `PULLBACK_BUY` 与重复 `BREAKOUT_BUY`。当状态失败或过期后，旧结构仅保留审计；之后必须从突破后开始形成新的 contraction cluster，才能重新产生 PULLBACK / BREAKOUT。
+
 相邻收缩轮次允许轻微扩张，但明显扩张会打断旧 VCP 组，后一轮应视为新结构的起点：
 
 ```text
@@ -685,6 +700,8 @@ vol_ma20 < vol_ma60
 
 必须先有 `VCP_FORMING`、`VCP_MATURE` 或 `VCP_TIGHT`，`VCP_EARLY` 只观察，不触发 `PULLBACK_BUY`。
 
+且 `post_breakout_state = PRE_BREAKOUT`。已经突破的旧 VCP 即使价格回到 MA20 或旧 Pivot 附近，也不得重新触发 PULLBACK。
+
 ```text
 volume_dry_up < 0.80
 或：收缩段 avg_volume 逐轮下降，且最近 1-3 日均量 <= 最近收缩段 avg_volume × 1.10
@@ -699,6 +716,8 @@ setup_score >= 55
 
 必须先有 `VCP_FORMING`、`VCP_MATURE` 或 `VCP_TIGHT`，`VCP_EARLY` 只观察，不触发 `BREAKOUT_BUY`。
 
+且 `post_breakout_state = PRE_BREAKOUT`；已发生价格突破的原结构不允许重复触发 BREAKOUT。
+
 ```text
 structure_valid = true
 close > structure_pivot × 1.01
@@ -709,6 +728,8 @@ close <= structure_pivot × 1.08
 无 DOWNTREND / DEEP_FALL
 setup_score >= 55
 ```
+
+且 `post_breakout_state = POST_BREAKOUT_RETEST`。RETEST 统一使用结构层记录的原 Pivot、突破日和突破后天数，不再另行从 60 日高点扫描一个可能与当前 VCP 无关的突破。
 
 ### RETEST_BUY：突破后回踩确认
 

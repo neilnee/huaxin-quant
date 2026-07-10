@@ -232,6 +232,33 @@ def setup_plan_inputs(row, family):
     return value if isinstance(value, dict) else {}
 
 
+def post_breakout_state(row):
+    """Return the Model 2 lifecycle state, preserving compatibility with v9 runs."""
+    return str(row.get("post_breakout_state") or "PRE_BREAKOUT").strip().upper()
+
+
+def lifecycle_plan_permission(row):
+    """State which plan families may use this VCP structure.
+
+    A VCP pivot is only actionable as PULLBACK/BREAKOUT before its first valid
+    breakout.  Afterwards, the old contraction cannot be reused as a new
+    setup: a qualifying retest may only produce RETEST plans; all other
+    post-breakout states remain observation or rebuild states.
+    """
+    state = post_breakout_state(row)
+    if state == "PRE_BREAKOUT":
+        return {"PULLBACK", "BREAKOUT"}, ""
+    if state == "POST_BREAKOUT_RETEST":
+        return {"RETEST"}, ""
+    if state == "POST_BREAKOUT_HOT":
+        return set(), "突破后延伸中，不生成追高计划"
+    if state == "POST_BREAKOUT_CONSOLIDATING":
+        return set(), "突破后整理中，旧 VCP 不生成买点计划"
+    if state in {"POST_BREAKOUT_FAILED", "POST_BREAKOUT_EXPIRED"}:
+        return set(), "突破后结构已失效，等待重新构建"
+    return set(), f"未知突破后状态 {state}，不生成计划"
+
+
 def base_plan(row, setup_family, plan_action, setup_type, quality):
     setup_signal = f"{setup_family}_BUY" if setup_family in {"PULLBACK", "BREAKOUT", "RETEST"} else setup_type
     return {
@@ -246,6 +273,7 @@ def base_plan(row, setup_family, plan_action, setup_type, quality):
         "plan_priority": priority_for_quality(quality),
         "model2_stage": row.get("structure_stage", ""),
         "model2_setup_signal": row.get("setup_signal", ""),
+        "post_breakout_state": post_breakout_state(row),
         "model2_action_hint": row.get("action_hint", ""),
         "suggested_position": row.get("suggested_position", ""),
         "structure_score": safe_float(row.get("structure_score"), 0.0),
@@ -435,6 +463,10 @@ def valid_candidate(row):
     if risk_blocked(row):
         return False, "风险阻断"
 
+    allowed_families, lifecycle_reason = lifecycle_plan_permission(row)
+    if not allowed_families:
+        return False, lifecycle_reason
+
     stage = row.get("structure_stage")
     signal = row.get("setup_signal")
     is_new_stage = stage in rules["allowed_new_stages"]
@@ -466,26 +498,33 @@ def plans_for_row(row):
     close = safe_float(row.get("close"))
     pivot = safe_float(row.get("structure_pivot") or row.get("pivot_price"))
     plans = []
+    allowed_families, _ = lifecycle_plan_permission(row)
 
-    if signal == "PULLBACK_BUY":
+    # A lifecycle retest state is only an observation window, not a tradable
+    # setup.  Requiring Model 2's confirmed RETEST_BUY prevents volatile
+    # post-limit-up pullbacks from being promoted to a next-session plan.
+    # PULLBACK/BREAKOUT remain permanently unavailable after the breakout.
+    if allowed_families == {"RETEST"}:
+        if signal == "RETEST_BUY":
+            plans.append(build_retest_plan(row, follow=True))
+        return plans
+
+    if signal == "PULLBACK_BUY" and "PULLBACK" in allowed_families:
         plans.append(build_pullback_plan(row, follow=True))
         if (
             stage in CONFIG["candidate_rules"]["allowed_new_stages"]
             and pivot and close
             and close < pivot * CONFIG["breakout_buy"]["close_buffer_ratio"]
         ):
-            plans.append(build_breakout_plan(row, follow=False))
+            if "BREAKOUT" in allowed_families:
+                plans.append(build_breakout_plan(row, follow=False))
         return plans
 
-    if signal == "BREAKOUT_BUY":
+    if signal == "BREAKOUT_BUY" and "BREAKOUT" in allowed_families:
         plans.append(build_breakout_plan(row, follow=True))
         return plans
 
-    if signal == "RETEST_BUY":
-        plans.append(build_retest_plan(row, follow=True))
-        return plans
-
-    if stage in CONFIG["candidate_rules"]["allowed_new_stages"]:
+    if stage in CONFIG["candidate_rules"]["allowed_new_stages"] and allowed_families == {"PULLBACK", "BREAKOUT"}:
         if pivot and close and close > pivot * CONFIG["breakout_buy"]["overextended_ratio"]:
             return plans
         plans.append(build_pullback_plan(row, follow=False))
@@ -500,6 +539,8 @@ def valid_plan_exclusion(row):
     signal = row.get("setup_signal")
     close = safe_float(row.get("close"))
     pivot = safe_float(row.get("structure_pivot") or row.get("pivot_price"))
+    if post_breakout_state(row) == "POST_BREAKOUT_RETEST" and signal != "RETEST_BUY":
+        return "突破后回踩尚未获模型二确认，不生成 RETEST 计划"
     if (
         stage in CONFIG["candidate_rules"]["allowed_new_stages"]
         and signal not in CONFIG["candidate_rules"]["allowed_follow_signals"]

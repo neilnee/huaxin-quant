@@ -2,8 +2,8 @@
 数据源抽象层 — 日线数据获取的统一入口
 
 当前实现:
-  - MiaoxiangSource: 东方财富妙想 API（主数据源）
-  - TDXSource: 通达信 mootdx（备用数据源）
+  - TDXSource: 通达信 mootdx（主数据源）
+  - MiaoxiangSource: 东方财富妙想 API（备用数据源）
 
 设计原则:
   - DataSource 抽象基类定义 fetch_bars(code, name) → DataFrame | None 接口
@@ -69,7 +69,7 @@ class DataSource(abc.ABC):
         ...
 
 
-# ===================== 妙想 API 数据源 =====================
+# ===================== 妙想 API 数据源（备用） =====================
 
 class MiaoxiangSource(DataSource):
     """东方财富妙想 API 数据源。
@@ -278,12 +278,12 @@ class MiaoxiangSource(DataSource):
         return pd.DataFrame(rows)
 
 
-# ===================== 通达信数据源（mootdx） =====================
+# ===================== 通达信数据源（mootdx，主） =====================
 
 class TDXSource(DataSource):
     """通达信数据源，基于 mootdx 库连接公共行情服务器。
 
-    作为妙想 API 限流时的备用数据源，免费、无额度限制。
+    作为日线主数据源，免费、无额度限制。
     每次初始化时用 sync=False 轻量探测（与 CLI 行为一致），
     取延迟最低的服务器直连。不同于 factory(bestip=True)，
     后者用 sync=True 探测后立即建连，会被服务器限流。

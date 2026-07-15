@@ -5,7 +5,7 @@ Huaxin Quant 共享工具模块
   - PROJECT_ROOT: 项目根路径（从本文件位置推导，消除硬编码）
   - RateLimiter: API 请求限流（基础间隔 + 随机抖动 + 指数退避 + 批次歇息）
   - DailyCache: 日线数据本地缓存层（load/save/cleanup）
-  - fetch_daily: 统一日线数据获取入口（缓存 → 妙想 API → 通达信）
+  - fetch_daily: 统一日线数据获取入口（缓存 → 通达信 → 妙想 API）
   - find_key / find_field: 字段名模糊匹配
   - get_latest_annual_period: 推断最新可用年报报告期
   - expected_trade_date / cache_is_fresh: 缓存新鲜度检查
@@ -320,7 +320,7 @@ def _fresh_as_of(df, as_of_date):
 
 
 def _fetch_daily_from_tdx(code, name, datestr, cache, as_of_date):
-    """尝试使用通达信备用源，成功时写入统一日线缓存。"""
+    """尝试使用通达信日线源，成功时写入统一日线缓存。"""
     try:
         tdx = _ensure_tdx_source()
         df, err_msg = tdx.fetch_bars(code, name)
@@ -342,7 +342,7 @@ def _fetch_daily_from_tdx(code, name, datestr, cache, as_of_date):
 def fetch_daily(code, name, datestr, use_cache=True, as_of_date=None):
     """统一日线数据获取入口（替代 quant_filter / tracker 各自的 fetch_daily）。
 
-    链路: 缓存 → 妙想 API → 通达信 mootdx
+    链路: 缓存 → 通达信 mootdx → 妙想 API
     as_of_date 不传时使用 expected_trade_date()，保留 15:00 分隔线；
     传入时按调用方指定交易日做缓存新鲜度判断和未来数据截断。
 
@@ -368,42 +368,31 @@ def fetch_daily(code, name, datestr, use_cache=True, as_of_date=None):
         if cached is not None:
             return cached, f"cache({cache_date})"
 
-    # ── 第 2 步：妙想 API ──
+    # ── 第 2 步：通达信 mootdx ──
+    df, tdx_msg = _fetch_daily_from_tdx(code, name, datestr, cache, expected_date)
+    if df is not None:
+        return df, tdx_msg
+
+    # ── 第 3 步：妙想 API 回退 ──
     api_key = os.environ.get("MX_APIKEY")
     if not api_key:
-        df, tdx_msg = _fetch_daily_from_tdx(code, name, datestr, cache, expected_date)
-        if df is not None:
-            return df, tdx_msg
-        return None, f"妙想API不可用: MX_APIKEY 未设置；通达信失败: {tdx_msg}"
+        return None, f"通达信失败: {tdx_msg}；妙想API不可用: MX_APIKEY 未设置"
 
     try:
         mx = _ensure_mx_source()
         df, err_msg = mx.fetch_bars(code, name)
     except Exception as exc:
-        df, tdx_msg = _fetch_daily_from_tdx(code, name, datestr, cache, expected_date)
-        if df is not None:
-            return df, tdx_msg
-        return None, f"妙想API异常: {exc}；通达信失败: {tdx_msg}"
+        return None, f"通达信失败: {tdx_msg}；妙想API异常: {exc}"
 
     if df is None:
         mx_error = err_msg or "妙想API返回空数据"
-        # ── 第 3 步：通达信回退 ──
-        df, tdx_msg = _fetch_daily_from_tdx(code, name, datestr, cache, expected_date)
-        if df is not None:
-            return df, tdx_msg
-        return None, f"{mx_error}；通达信失败: {tdx_msg}"
+        return None, f"通达信失败: {tdx_msg}；{mx_error}"
 
     if df.empty:
-        df, tdx_msg = _fetch_daily_from_tdx(code, name, datestr, cache, expected_date)
-        if df is not None:
-            return df, tdx_msg
-        return None, f"妙想API无有效交易日数据(可能长期停牌)；通达信失败: {tdx_msg}"
+        return None, f"通达信失败: {tdx_msg}；妙想API无有效交易日数据(可能长期停牌)"
 
     df = _fresh_as_of(df, expected_date)
     if df is None:
-        df, tdx_msg = _fetch_daily_from_tdx(code, name, datestr, cache, expected_date)
-        if df is not None:
-            return df, tdx_msg
-        return None, f"妙想API未覆盖目标交易日 {expected_date}；通达信失败: {tdx_msg}"
+        return None, f"通达信失败: {tdx_msg}；妙想API未覆盖目标交易日 {expected_date}"
     cache.save(code, datestr, df)
     return df, "api"

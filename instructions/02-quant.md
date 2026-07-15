@@ -206,14 +206,14 @@ date, open, high, low, close, volume, turnover
 
 ```text
 运行日缓存 → 最近可用缓存（不得晚于运行日，且最新 K 线不早于目标交易日）
-→ 妙想 API → 通达信 mootdx 备用源
+→ 通达信 mootdx → 妙想 API 备用源
 ```
 
 日线行情数据源实现位于 `scripts/data/market_data.py`，`scripts.shared.fetch_daily()` 负责统一缓存、主备源降级和返回标准 OHLCV 结构。
 
 模型二必须把本次 `run_date` 作为 `fetch_daily(..., as_of_date=run_date)` 传入数据层。未指定 `--date` 时，`run_date` 由共享数据层按 15:00 分隔线确定：15:00 前取前一交易日，15:00 后取当日，周末回退到周五。指定 `--date` 时，缓存新鲜度、最近缓存回退和回源后数据截断都以该指定交易日为准。
 
-妙想 API 是主数据源；当妙想限流、返回空数据、结构异常、异常抛出，或本地未配置 `MX_APIKEY` 时，脚本必须尝试通达信备用源。通达信通过 mootdx 获取日线 `frequency=9`，客户端使用内置 HQ 候选服务器、短超时和失败切换，避免批量运行长时间阻塞。通达信数据同样标准化为上述 OHLCV 结构并写入 `cache/daily/`。通达信不提供换手率，`turnover` 填 `0.0`；模型二判定不得依赖 `turnover`。
+通达信 mootdx 是主数据源；当通达信限流、返回空数据、结构异常、异常抛出或未覆盖目标交易日时，脚本才尝试妙想 API。若本地未配置 `MX_APIKEY`，则通达信失败会直接返回取数失败。通达信通过 mootdx 获取日线 `frequency=9`，客户端使用内置 HQ 候选服务器、短超时和失败切换，避免批量运行长时间阻塞。通达信数据同样标准化为上述 OHLCV 结构并写入 `cache/daily/`。通达信不提供换手率，`turnover` 填 `0.0`；模型二判定不得依赖 `turnover`。
 
 缓存目录：
 

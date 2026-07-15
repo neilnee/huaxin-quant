@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Daily pipeline: 模型一 → 模型二 → 模型四 Tracker。
+Daily pipeline: 模型一 → 模型二 → 模型四 Tracker → 东方财富自选重建。
 
 Launches each stage via subprocess, writes step-level progress to a shared
 JSON file consumed by monitor.py. This script is non-interactive and designed
@@ -60,6 +60,11 @@ def _load_dotenv():
                 os.environ[key] = value
 
 
+def _env_flag(name):
+    """Return True only for explicit, conventional true values."""
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _progress_path(date_yy):
     return PROGRESS_DIR / f"daily_progress_{date_yy}.json"
 
@@ -90,6 +95,14 @@ def run_tracker(date_yy, progress_path):
     return subprocess.run(
         ["python3", "scripts/tracker.py", "--date", date_yy,
          "--progress-file", str(progress_path)],
+        cwd=PROJECT_ROOT,
+    )
+
+
+def run_zixuan(date_yy):
+    """Rebuild Eastmoney's all-watchlist after Tracker has completed."""
+    return subprocess.run(
+        ["python3", "scripts/sync_zixuan.py", "--date", date_yy, "--yes"],
         cwd=PROJECT_ROOT,
     )
 
@@ -155,7 +168,7 @@ def main():
 
     progress_path = _progress_path(date_yy)
     tracker = ProgressTracker(progress_path)
-    tracker.init(["pool", "quant", "tracker"])
+    tracker.init(["pool", "quant", "tracker", "zixuan"])
     tracker.set_date(date_yy)
 
     print(f"[daily] 流水线启动 {date_yy}")
@@ -205,6 +218,24 @@ def main():
     else:
         tracker.step_done("tracker")
         print(f"[daily] ✓ tracker done")
+
+    # ── Step 4: Eastmoney all-watchlist rebuild ──
+    if not _env_flag("ENABLE_ZIXUAN_SYNC"):
+        tracker.step_done("zixuan")
+        print("[daily] - zixuan disabled (set ENABLE_ZIXUAN_SYNC=true in .env to enable)")
+    elif any("tracker" in e for e in errors):
+        tracker.step_done("zixuan", error="tracker failed; zixuan skipped")
+        print(f"[daily] - tracker failed; zixuan skipped")
+    else:
+        tracker.step_start("zixuan")
+        print(f"[daily] → 东方财富自选重建")
+        result = run_zixuan(date_yy)
+        if result.returncode != 0:
+            errors.append(f"zixuan: exit {result.returncode}")
+            tracker.step_done("zixuan", error=f"exit {result.returncode}")
+        else:
+            tracker.step_done("zixuan")
+            print(f"[daily] ✓ zixuan done")
 
     tracker.mark_done()
     publish_final_report(progress_path)

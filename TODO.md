@@ -219,11 +219,13 @@ for each stock in quant_output where structure_stage in {VCP_MATURE, VCP_TIGHT}:
 
 ### P0
 
-- [ ] **scripts/sync_zixuan.py 重构**：根据模型四产出维护自选股
-  - 入池条件：Bloom KEEP_FOCUS + 模型三估值通过（如有）
-  - 出池条件：Bloom EXIT 或连续 COOLDOWN 超期
-  - 操作仅对东方财富自选股"全部"分组生效
-- [ ] **instructions/sync-zixuan.md**：自选股同步指令卡
+- [x] **scripts/sync_zixuan.py 重构**：根据模型四产出维护自选股
+  - 每日删除本地账本记录的上一日工作流自选，再写入 Bloom 日报重点观察和三类买点标的
+  - 重点观察口径：成熟结构，或 FORMING/EARLY 且结构分至少 60；买点不受分数限制
+  - 接入 `daily.py` 最后一步，刷新后做目标集合校验
+  - 操作仅对东方财富自选股"全部"分组生效，保留同分组的手工自选
+- [x] **instructions/sync-zixuan.md**：自选股同步指令卡
+- [ ] **估值门槛机器字段接入**：模型三新增明确的估值通过枚举后，接入自选股目标集合；不得从 Markdown 文本猜测
 
 ---
 

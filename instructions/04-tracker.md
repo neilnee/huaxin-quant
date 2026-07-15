@@ -42,6 +42,14 @@ tracker 内部流程：
 
 tracker 不重复计算，不修改子模块逻辑。子模块仍可独立运行。
 
+每日完整工作流 `scripts/daily.py` 在 Tracker 成功后额外执行自选重建：
+
+```text
+5. 调 sync_zixuan.py → 删除本地账本中的上一日工作流自选 → 写入 Bloom 重点观察和买点 → 目标校验
+```
+
+该步骤不属于 `tracker.py` 的独立运行范围；每日完整工作流仅在 `.env` 中 `ENABLE_ZIXUAN_SYNC=true` 时执行。该环境变量是唯一的启停开关。
+
 ## 三、合并报告
 
 输出：`tracker/花期策览_<YYMMDD>.md`

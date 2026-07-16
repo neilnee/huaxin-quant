@@ -668,14 +668,24 @@ def write_dashboard_data(report: dict, sectors: list[dict], state_conn: sqlite3.
     stamp = today_stamp(as_of)
     context = build_market_context(report, sectors, state_conn, as_of)
     (DATA_OUTPUT_DIR / f"market_context_{stamp}.json").write_text(json.dumps(context, ensure_ascii=False, indent=2), encoding="utf-8")
-    available = sorted(path.stem.rsplit("_", 1)[-1] for path in DATA_OUTPUT_DIR.glob("market_context_*.json"))
+    available = [stamp]
     (DATA_OUTPUT_DIR / "latest.json").write_text(json.dumps({"latest": stamp, "available": available}, ensure_ascii=False, indent=2), encoding="utf-8")
-    contexts = {path.stem.rsplit("_", 1)[-1]: json.loads(path.read_text(encoding="utf-8")) for path in DATA_OUTPUT_DIR.glob("market_context_*.json")}
-    payload = {"latest": stamp, "contexts": contexts}
-    (DASHBOARD_DATA_DIR / "market_context.js").write_text(
-        "window.QUANT_DASHBOARD_MODULES = window.QUANT_DASHBOARD_MODULES || {};\n"
-        "window.QUANT_DASHBOARD_MODULES.market = " + json.dumps(payload, ensure_ascii=False) + ";\n", encoding="utf-8"
+    for path in DASHBOARD_DATA_DIR.glob("market_context_*.js"):
+        if path.stem.rsplit("_", 1)[-1] != stamp:
+            path.unlink()
+    (DASHBOARD_DATA_DIR / f"market_context_{stamp}.js").write_text(
+        "window.QUANT_DASHBOARD_MARKET_CONTEXTS = window.QUANT_DASHBOARD_MARKET_CONTEXTS || {};\n"
+        f"window.QUANT_DASHBOARD_MARKET_CONTEXTS[{json.dumps(stamp)}] = "
+        + json.dumps(context, ensure_ascii=False) + ";\n", encoding="utf-8"
     )
+    (DASHBOARD_DATA_DIR / "index.js").write_text(
+        "window.QUANT_DASHBOARD_INDEX = "
+        + json.dumps({"market": {"latest": stamp, "available": available}}, ensure_ascii=False)
+        + ";\n", encoding="utf-8"
+    )
+    legacy_path = DASHBOARD_DATA_DIR / "market_context.js"
+    if legacy_path.exists():
+        legacy_path.unlink()
 
 
 def write_outputs(report: dict, sectors: list[dict], stocks: list[dict], concepts: list[dict], state_conn: sqlite3.Connection, as_of: str) -> None:

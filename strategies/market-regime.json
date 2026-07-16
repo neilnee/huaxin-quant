@@ -32,10 +32,20 @@
     "volatility": {"atr": 0.45, "realized_vol": 0.35, "range": 0.20},
     "sector_heat": {"relative_strength": 0.30, "volume_activity": 0.20, "up_breadth": 0.20, "strong_density": 0.15, "persistence": 0.15}
   },
+  "reporting": {
+    "llm_max_tokens": 800,
+    "llm_max_retries": 2
+  },
   "state_thresholds": {
     "offensive": {"trend_min": 65, "breadth_min": 60, "volatility_max": 60, "rotation_max": 45},
     "defensive": {"breadth_max": 45, "volatility_min": 75, "rotation_min": 65},
     "confirmation_days": 2,
-    "confirmation_window_days": 3
+    "confirmation_window_days": 3,
+    "confirmation_by_state": {
+      "DEFENSIVE": 2,
+      "RECOVERY_WATCH": 3,
+      "OFFENSIVE": 3,
+      "SELECTIVE": 2
+    }
   }
 }

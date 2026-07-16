@@ -8,12 +8,14 @@ import csv
 import json
 import math
 import os
+import re
 import sqlite3
 import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import requests
 
 sys.path.insert(0, str(Path(os.path.abspath(__file__)).parents[1]))
 from scripts.data.market_data_service import MarketDataService, resolve_as_of
@@ -30,6 +32,21 @@ OUTPUT_DIR = ROOT / "market"
 DATA_OUTPUT_DIR = OUTPUT_DIR / "data"
 DASHBOARD_DIR = ROOT / "dashboard"
 DASHBOARD_DATA_DIR = DASHBOARD_DIR / "data"
+
+
+def load_local_env() -> None:
+    """Load local credentials without overriding process-level configuration."""
+    env_path = ROOT / ".env"
+    if not env_path.exists():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if key and key not in os.environ:
+            os.environ[key] = value.strip().strip('"').strip("'")
 
 
 def today_stamp(date_value: str) -> str:
@@ -61,6 +78,10 @@ def connect_state_db() -> sqlite3.Connection:
     if "history_basis" not in columns:
         conn.execute("ALTER TABLE sector_daily_metrics ADD COLUMN history_basis TEXT NOT NULL DEFAULT 'point_in_time'")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sector_daily_lookup ON sector_daily_metrics(block_kind, block_name, trade_date)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS market_state_history (
+        trade_date TEXT PRIMARY KEY, raw_state TEXT NOT NULL, confirmed_state TEXT NOT NULL,
+        candidate_days INTEGER NOT NULL, confirmation_days INTEGER NOT NULL
+    )""")
     conn.commit()
     return conn
 
@@ -185,9 +206,12 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
             "return_1": round(float(latest.ret1 * 100), 2), "return_5": round(float(latest.ret5 * 100), 2),
             "return_10": round(float(latest.ret10 * 100), 2), "return_20": round(float(latest.ret20 * 100), 2), "return_60": round(float(latest.ret60 * 100), 2),
             "above_ma20": bool(latest.close > latest.ma20), "above_ma60": bool(latest.close > latest.ma60),
+            "ma20_above_ma60": bool(latest.ma20 > latest.ma60),
             "ma20_slope_5": round(float(slope * 100), 3), "distance_high60_pct": round(float((latest.close / latest.high60 - 1) * 100), 2),
             "volume_ratio_20": round(float(latest.volume_ratio), 3), "atr14_pct": round(float(latest.atr14_pct * 100), 3),
             "trend_score": round(float(trend), 2), "volatility_score": round(float(volatility), 2),
+            "trend_series": [{"close": round(float(row.close), 4), "ma20": round(float(row.ma20), 4), "ma60": round(float(row.ma60), 4)}
+                for row in data.tail(20).dropna(subset=["ma20", "ma60"]).itertuples(index=False)],
         }
         trend_scores.append(trend); vol_scores.append(volatility)
 
@@ -245,10 +269,14 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
         else:
             row["sector_state"] = "弱势退潮"
     trend_score, volatility_score = float(np.median(trend_scores)), float(np.median(vol_scores))
+    above20 = sum(item["above_ma20"] for item in benchmark_metrics.values())
+    above60 = sum(item["above_ma60"] for item in benchmark_metrics.values())
     if breadth_score <= CONFIG["state_thresholds"]["defensive"]["breadth_max"] or (volatility_score >= CONFIG["state_thresholds"]["defensive"]["volatility_min"] and rotation >= CONFIG["state_thresholds"]["defensive"]["rotation_min"]):
         state = "DEFENSIVE"
     elif trend_score >= CONFIG["state_thresholds"]["offensive"]["trend_min"] and breadth_score >= CONFIG["state_thresholds"]["offensive"]["breadth_min"] and volatility_score <= CONFIG["state_thresholds"]["offensive"]["volatility_max"]:
         state = "OFFENSIVE"
+    elif above20 >= 3 and above60 <= 2 and breadth["advance_ratio"] >= 50:
+        state = "RECOVERY_WATCH"
     else:
         state = "SELECTIVE"
     security_context = pd.read_sql_query("""SELECT s.code,s.name,si.sw_industry_code
@@ -276,7 +304,7 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
         within = float((same_concept.ret20 <= row.ret20).mean() * 100)
         heat = concept_heat.get(name, {})
         concept_rows.append({"date": as_of, "code": code, "name": row.get("name", ""), "concept_name": name, "concept_relative_strength_20": heat.get("relative_strength_20"), "concept_rank": heat.get("rank_20"), "stock_return_20": round(float(row.ret20 * 100), 3), "rps20_within_concept": round(within, 2), "stock_vs_concept_return_20": round(float((row.ret20 - same_concept.ret20.mean()) * 100), 3)})
-    report = {"meta": {"run_date": as_of, "strategy_version": CONFIG["strategy_version"], "data_status": "VALID", "config": str(CONFIG_PATH)}, "state": {"current": state, "trend_score": round(trend_score, 2), "volatility_score": round(volatility_score, 2), "breadth_score": round(float(breadth_score), 2), "rotation_score": rotation}, "benchmarks": benchmark_metrics, "breadth": breadth, "rotation": {"top10_sets": {k: sorted(v) for k, v in top_sets.items()}}}
+    report = {"meta": {"run_date": as_of, "strategy_version": CONFIG["strategy_version"], "data_status": "VALID", "config": str(CONFIG_PATH)}, "state": {"current": state, "raw_state": state, "trend_score": round(trend_score, 2), "volatility_score": round(volatility_score, 2), "breadth_score": round(float(breadth_score), 2), "rotation_score": rotation}, "benchmarks": benchmark_metrics, "breadth": breadth, "rotation": {"top10_sets": {k: sorted(v) for k, v in top_sets.items()}}}
     return report, sector_rows, stock_rows, concept_rows
 
 
@@ -330,22 +358,69 @@ def write_markdown(report: dict, sectors: list[dict], stocks: list[dict], as_of:
     (OUTPUT_DIR / f"market_regime_{stamp}.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def state_label(state: str, report: dict) -> str:
+    if state == "DEFENSIVE":
+        return "弱势下行"
+    if state == "OFFENSIVE":
+        return "趋势扩散"
+    if state == "RECOVERY_WATCH":
+        return "修复观察"
+    return "震荡轮动" if report["state"]["rotation_score"] >= 60 else "结构性强势"
+
+
+def confirm_market_state(state_conn: sqlite3.Connection, as_of: str, report: dict) -> None:
+    raw = report["state"]["raw_state"]
+    settings = CONFIG["state_thresholds"]
+    required = settings["confirmation_by_state"][raw]
+    window = settings["confirmation_window_days"]
+    previous = state_conn.execute("""SELECT raw_state, confirmed_state FROM market_state_history
+        WHERE trade_date<? ORDER BY trade_date DESC LIMIT ?""", (as_of, window - 1)).fetchall()
+    last_confirmed = previous[0]["confirmed_state"] if previous else None
+    if not last_confirmed:
+        confirmed, candidate_days = raw, required
+    elif raw == last_confirmed:
+        confirmed, candidate_days = raw, required
+    else:
+        candidate_days = 1 + sum(row["raw_state"] == raw for row in previous)
+        confirmed = raw if candidate_days >= required else last_confirmed
+    state_conn.execute("""INSERT INTO market_state_history(trade_date,raw_state,confirmed_state,candidate_days,confirmation_days)
+        VALUES(?,?,?,?,?) ON CONFLICT(trade_date) DO UPDATE SET raw_state=excluded.raw_state,
+        confirmed_state=excluded.confirmed_state,candidate_days=excluded.candidate_days,confirmation_days=excluded.confirmation_days""",
+        (as_of, raw, confirmed, candidate_days, required))
+    history = state_conn.execute("""SELECT confirmed_state FROM market_state_history WHERE trade_date<=?
+        ORDER BY trade_date DESC""", (as_of,)).fetchall()
+    duration = 0
+    for row in history:
+        if row["confirmed_state"] != confirmed:
+            break
+        duration += 1
+    state_conn.commit()
+    report["state"].update({"current": confirmed, "confirmed_state": confirmed,
+        "duration_days": duration, "candidate_days": candidate_days, "confirmation_days": required})
+
+
 def market_state_view(report: dict) -> dict:
-    raw = report["state"]["current"]
+    confirmed = report["state"]["confirmed_state"]
+    raw = report["state"]["raw_state"]
     breadth = report["breadth"]
     indexes = report["benchmarks"]
     above20 = sum(item["above_ma20"] for item in indexes.values())
     above60 = sum(item["above_ma60"] for item in indexes.values())
-    if raw == "DEFENSIVE":
-        label = "弱势下行"
-    elif raw == "OFFENSIVE":
-        label = "趋势扩散"
-    elif above20 >= 3 and above60 <= 2 and breadth["advance_ratio"] >= 50:
-        label = "修复观察"
-    elif report["state"]["rotation_score"] >= 60:
-        label = "震荡轮动"
+    if confirmed == "DEFENSIVE":
+        analysis = (f"宽基仍处在偏弱结构：仅 {above20}/6 个宽基站上 MA20、{above60}/6 个站上 MA60；"
+                    f"全 A 上涨占比 {breadth['advance_ratio']:.2f}%，中期趋势尚未形成广泛支撑。"
+                    f"波动风险分 {report['state']['volatility_score']:.2f}，参与上应优先控制节奏与仓位。")
+    elif confirmed == "OFFENSIVE":
+        analysis = (f"宽基趋势与市场广度同步改善，{above20}/6 个宽基站上 MA20，"
+                    f"全 A 上涨占比 {breadth['advance_ratio']:.2f}%。波动风险分 {report['state']['volatility_score']:.2f}，"
+                    "市场具备更广泛的趋势参与条件。")
+    elif confirmed == "RECOVERY_WATCH":
+        analysis = (f"短期修复正在形成：{above20}/6 个宽基回到 MA20 上方，全 A 上涨占比 {breadth['advance_ratio']:.2f}%。"
+                    f"但仅 {above60}/6 个宽基站上 MA60，中期趋势仍需后续广度和量能验证。")
     else:
-        label = "结构性强势"
+        analysis = (f"市场尚未形成一致趋势，{above20}/6 个宽基站上 MA20、{above60}/6 个站上 MA60；"
+                    f"全 A 上涨占比 {breadth['advance_ratio']:.2f}%。"
+                    + ("板块轮动较快，机会更偏局部。" if report["state"]["rotation_score"] >= 60 else "强弱分化明显，机会集中在少数结构较强的方向。"))
     risks = []
     if report["state"]["volatility_score"] >= 75:
         risks.append("高波动")
@@ -353,11 +428,201 @@ def market_state_view(report: dict) -> dict:
         risks.append("多数宽基弱于MA20")
     if breadth["advance_ratio"] < 45:
         risks.append("市场广度偏弱")
-    return {"label": label, "raw_label": raw, "risk_tags": risks or ["暂无额外风险标签"], "evidence": [
-        f"{above20}/6 个宽基站上 MA20，{above60}/6 个宽基站上 MA60",
-        f"全A上涨占比 {breadth['advance_ratio']:.2f}%，站上MA60占比 {breadth['above_ma60_ratio']:.2f}%",
-        f"20日表现最强宽基：{max(indexes, key=lambda key: indexes[key]['return_20'])}",
-    ]}
+    transition = None
+    if raw != confirmed:
+        transition = f"潜在变化：{state_label(raw, report)}信号，第 {report['state']['candidate_days']}/{report['state']['confirmation_days']} 个确认日"
+    llm_analysis = str(report.get("llm", {}).get("analysis", "")).strip()
+    return {"label": state_label(confirmed, report), "raw_label": raw, "duration_days": report["state"]["duration_days"],
+        "risk_tags": risks or ["暂无额外风险标签"], "analysis": llm_analysis or analysis,
+        "analysis_source": "llm" if llm_analysis else "rule_fallback", "transition": transition}
+
+
+def market_state_explainer(report: dict) -> dict:
+    state = report["state"]
+    breadth = report["breadth"]
+    indexes = report["benchmarks"]
+    above20 = sum(item["above_ma20"] for item in indexes.values())
+    above60 = sum(item["above_ma60"] for item in indexes.values())
+    thresholds = CONFIG["state_thresholds"]
+    defensive_breadth = breadth["advance_ratio"] <= thresholds["defensive"]["breadth_max"]
+    defensive_risk = state["volatility_score"] >= thresholds["defensive"]["volatility_min"] and state["rotation_score"] >= thresholds["defensive"]["rotation_min"]
+    offensive = state["trend_score"] >= thresholds["offensive"]["trend_min"] and breadth["advance_ratio"] >= thresholds["offensive"]["breadth_min"] and state["volatility_score"] <= thresholds["offensive"]["volatility_max"]
+    recovery = above20 >= 3 and above60 <= 2 and breadth["advance_ratio"] >= 50
+    return {
+        "current": {
+            "label": state_label(state["confirmed_state"], report),
+            "raw_label": state_label(state["raw_state"], report),
+            "metrics": [
+                {"label": "趋势分", "value": state["trend_score"]}, {"label": "波动风险分", "value": state["volatility_score"]},
+                {"label": "广度分", "value": state["breadth_score"]}, {"label": "轮动分", "value": state["rotation_score"]},
+                {"label": "站上 MA20 宽基", "value": f"{above20}/6"}, {"label": "全 A 上涨占比", "value": f"{breadth['advance_ratio']:.2f}%"},
+            ],
+            "matched": [
+                "全 A 上涨占比不高于 45，满足弱势广度条件" if defensive_breadth else "全 A 上涨占比高于弱势广度阈值",
+                "高波动与高轮动同时满足弱势风险条件" if defensive_risk else "未同时满足高波动与高轮动的弱势风险条件",
+            ],
+        },
+        "states": [
+            {"name": "弱势下行", "rule": "全 A 上涨占比 ≤ 45；或波动风险分 ≥ 75 且轮动分 ≥ 65", "confirm": "2/3 日", "meaning": "趋势与广度偏弱，优先关注风险是否收敛。", "active": state["confirmed_state"] == "DEFENSIVE"},
+            {"name": "趋势扩散", "rule": "趋势分 ≥ 65、全 A 上涨占比 ≥ 60、波动风险分 ≤ 60", "confirm": "3/3 日", "meaning": "宽基趋势与市场广度同步改善。", "active": state["confirmed_state"] == "OFFENSIVE", "matched": offensive},
+            {"name": "修复观察", "rule": "至少 3/6 宽基站上 MA20、至多 2/6 站上 MA60、全 A 上涨占比 ≥ 50", "confirm": "3/3 日", "meaning": "短期修复出现，但中期趋势尚待确认。", "active": state["confirmed_state"] == "RECOVERY_WATCH", "matched": recovery},
+            {"name": "结构性强势", "rule": "未触发上述状态，且轮动分 < 60", "confirm": "2/3 日", "meaning": "整体未形成一致趋势，机会偏向局部强势结构。", "active": state["confirmed_state"] == "SELECTIVE" and state["rotation_score"] < 60},
+            {"name": "震荡轮动", "rule": "未触发上述状态，且轮动分 ≥ 60", "confirm": "2/3 日", "meaning": "板块更替较快，持续性较弱。", "active": state["confirmed_state"] == "SELECTIVE" and state["rotation_score"] >= 60},
+        ],
+        "score_rules": [
+            {"name": "趋势分", "rule": "六个宽基分别计算：是否站上 MA20、MA20 五日斜率的历史分位、MA20 是否高于 MA60、20 日收益的历史分位；每个宽基取四项均值，全体取中位数。", "direction": "越高代表趋势越强。"},
+            {"name": "波动风险分", "rule": "六个宽基分别计算 ATR14、10 日实现波动率、10 日振幅的历史分位；每个宽基取三项均值，全体取中位数。", "direction": "越高代表风险越高。"},
+            {"name": "广度分", "rule": "全 A 上涨占比、站上 MA20 比例、站上 MA60 比例，以及 60 日新高减新低比例（映射到 0–100）四项等权平均。", "direction": "越高代表上涨扩散更广。"},
+            {"name": "轮动分", "rule": "按行业、概念、风格、指数成分分别比较当日与前一日 Top10 的重合度；以 1 减去平均重合度后换算为分数。", "direction": "越高代表板块更替越快。"},
+        ],
+    }
+
+
+def market_llm_context(report: dict) -> dict:
+    indexes = report["benchmarks"]
+    above20 = sum(item["above_ma20"] for item in indexes.values())
+    above60 = sum(item["above_ma60"] for item in indexes.values())
+    index_details = {
+        name: {
+            "收盘": item["close"], "1日收益%": item["return_1"], "5日收益%": item["return_5"],
+            "20日收益%": item["return_20"], "站上MA20": item["above_ma20"], "站上MA60": item["above_ma60"],
+            "MA20五日斜率%": item["ma20_slope_5"], "量比20日均量": item["volume_ratio_20"],
+            "ATR14%": item["atr14_pct"],
+        }
+        for name, item in report["benchmarks"].items()
+    }
+    state = report["state"]
+    return {
+        "已确认状态": state_label(state["confirmed_state"], report),
+        "持续交易日": state["duration_days"],
+        "原始状态": state_label(state["raw_state"], report),
+        "潜在变化确认进度": f"{state['candidate_days']}/{state['confirmation_days']}",
+        "市场四维分数": {key: state[key] for key in ("trend_score", "volatility_score", "breadth_score", "rotation_score")},
+        "宽基覆盖摘要": {"站上MA20的宽基数量": f"{above20}/6", "站上MA60的宽基数量": f"{above60}/6"},
+        "全A广度": report["breadth"],
+        "宽基指标": index_details,
+    }
+
+
+def parse_llm_json_object(content: str) -> dict:
+    """Accept JSON Output wrapped in a Markdown fence, but reject non-object replies."""
+    text = str(content or "").strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else ""
+        if text.endswith("```"):
+            text = text[:-3].strip()
+    if not text.startswith("{"):
+        start, end = text.find("{"), text.rfind("}")
+        if start >= 0 and end > start:
+            text = text[start:end + 1]
+    parsed = json.loads(text)
+    if not isinstance(parsed, dict):
+        raise ValueError("LLM response is not a JSON object")
+    return parsed
+
+
+def extract_market_analysis(content: str) -> tuple[str, bool]:
+    """Prefer strict JSON, while tolerating a malformed wrapper from the provider."""
+    try:
+        parsed = parse_llm_json_object(content)
+        return str(parsed.get("analysis", "")).strip(), False
+    except (json.JSONDecodeError, ValueError):
+        text = str(content or "").strip()
+        if "</think>" in text:
+            text = text.rsplit("</think>", 1)[-1].strip()
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE)
+        match = re.search(r'"analysis"\s*:\s*"((?:\\.|[^"\\])*)"', text, flags=re.DOTALL)
+        if match:
+            try:
+                return json.loads('"' + match.group(1) + '"').strip(), True
+            except json.JSONDecodeError:
+                return match.group(1).replace("\\n", "").strip(), True
+        if not text.startswith("{"):
+            return text.strip(), True
+        return "", True
+
+
+def market_watch_sentence(report: dict) -> str:
+    state = report["state"]["confirmed_state"]
+    if state == "DEFENSIVE":
+        return "接下来重点观察市场广度能否连续改善、更多宽基能否重回 MA20 上方，以及波动是否回落。"
+    if state == "OFFENSIVE":
+        return "接下来重点观察广度能否维持、宽基趋势是否继续扩散，以及波动是否保持可控。"
+    if state == "RECOVERY_WATCH":
+        return "接下来重点观察上涨广度能否延续、更多宽基能否站稳 MA20，以及波动是否同步收敛。"
+    return "接下来重点观察广度与均线结构能否同步改善，以及波动是否回落到更稳定的区间。"
+
+
+def validate_market_analysis(analysis: str, report: dict) -> None:
+    indexes = report["benchmarks"]
+    above20 = sum(item["above_ma20"] for item in indexes.values())
+    above60 = sum(item["above_ma60"] for item in indexes.values())
+    if any(term in analysis for term in ("买入", "卖出", "仓位", "止损", "个股建议", "资金", "情绪", "赚钱效应", "承接", "持股风险", "空头主导")):
+        raise ValueError("analysis contains prohibited trading or unsupported narrative language")
+    if above20 and re.search(r"(全部|全线|均).{0,8}(失守|跌破|低于).{0,8}MA20", analysis, flags=re.IGNORECASE):
+        raise ValueError("analysis overstates MA20 coverage")
+    if above60 and re.search(r"(全部|全线|均).{0,8}(失守|跌破|低于).{0,8}MA60", analysis, flags=re.IGNORECASE):
+        raise ValueError("analysis overstates MA60 coverage")
+
+
+def call_market_llm_analysis(report: dict) -> dict:
+    """Return a constrained natural-language interpretation without affecting regime logic."""
+    api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    if not api_key:
+        return {"status": "skipped", "reason": "DEEPSEEK_API_KEY missing", "analysis": ""}
+    model = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
+    base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
+    system_prompt = (
+        "你是A股市场环境解读助手。只根据用户提供的结构化数据，用90-150字解释当前市场表现，"
+        "帮助读者理解趋势、广度、波动和强弱分化。"
+        "严格采用“主结论 → 两至三个关键证据 → 市场结构含义 → 后续观察”的顺序。"
+        "证据优先用宽基均线覆盖摘要、全A广度、波动和近期强弱分化；均线覆盖必须使用输入给出的“X/6”精确表述，"
+        "不得把非全量事实写成“全部”“全线”或“均”。除非解释明显分化，不得列举单个指数，"
+        "更不得逐一播报指数。页面已展示状态标签和持续天数，不要复述它们，也不要写“后续观察”“关注”“留意”之类的结尾句。"
+        "轮动分高才表示轮动快；轮动分低仅表示头部板块重合度较高或持续性较强，不能写成“缺乏轮动”。"
+        "已确认状态、持续天数和潜在变化进度是脚本确定的事实，必须原样尊重，不能改写或重新判定。"
+        "只能引用输入中的数字和事实；不得联网、不得引入新闻/政策/资金流等外部信息，也不得使用“资金”“情绪”“赚钱效应”“承接”“持股风险”等未经输入支持的叙事，不得预测涨跌。"
+        "不得给出具体买卖、仓位、止损或个股建议。语言应连贯易懂，不要使用项目符号。"
+        "只返回这一段正文，不要 JSON、标题、项目符号或解释。"
+    )
+    retries = int(CONFIG.get("reporting", {}).get("llm_max_retries", 2))
+    max_tokens = int(CONFIG.get("reporting", {}).get("llm_max_tokens", 400))
+    last_error = "unknown"
+    for _ in range(retries):
+        try:
+            response = requests.post(
+                f"{base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": json.dumps(market_llm_context(report), ensure_ascii=False)},
+                    ],
+                    "temperature": 0.2,
+                    "max_tokens": max_tokens,
+                    "stream": False,
+                },
+                timeout=60,
+            )
+            response.raise_for_status()
+            content = response.json()["choices"][0]["message"].get("content", "")
+            analysis, tolerant_parse = extract_market_analysis(content)
+            if not 60 <= len(analysis) <= 220:
+                raise ValueError("analysis length outside 60-220 characters")
+            if analysis.rstrip().endswith(("：", "，", "、", "和", "与", "及", "只")):
+                raise ValueError("analysis appears to end mid-sentence")
+            validate_market_analysis(analysis, report)
+            if "接下来重点观察" not in analysis:
+                analysis = analysis.rstrip("。") + "。" + market_watch_sentence(report)
+            analysis = re.sub(r"[，；]\s*。", "。", analysis)
+            if len(analysis) > 280:
+                raise ValueError("analysis with observation sentence exceeds 280 characters")
+            return {"status": "success", "provider": "deepseek", "model": model,
+                "parse_mode": "tolerant" if tolerant_parse else "json", "analysis": analysis}
+        except Exception as exc:
+            last_error = str(exc)[:300]
+    return {"status": "failed", "reason": last_error, "provider": "deepseek", "model": model, "analysis": ""}
 
 
 def build_market_context(report: dict, sectors: list[dict], state_conn: sqlite3.Connection, as_of: str) -> dict:
@@ -391,7 +656,7 @@ def build_market_context(report: dict, sectors: list[dict], state_conn: sqlite3.
     return {"meta": {**report["meta"], "generated_for": "market_dashboard", "history_window_days": 20,
         "sector_history_note": "当前成分快照回填（非严格点时）" if baseline_count else "每日快照（点时）",
         "baseline_history_days": baseline_count},
-        "market_state": market_state_view(report), "indexes": report["benchmarks"],
+        "market_state": market_state_view(report), "market_state_explainer": market_state_explainer(report), "indexes": report["benchmarks"],
         "breadth": {"all_a": report["breadth"], "top_scopes": top_scopes},
         "sector_rankings": rankings, "sector_history": sector_history, "sector_rank_matrix": rank_matrix}
 
@@ -451,11 +716,12 @@ def save_block_metrics(conn: sqlite3.Connection, as_of: str, sectors: list[dict]
 
 
 def main() -> int:
+    load_local_env()
     parser = argparse.ArgumentParser(description="Independent TDX market regime and block heat module")
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("init", "update"):
         cmd = sub.add_parser(name); cmd.add_argument("--date"); cmd.add_argument("--lookback", type=int, default=CONFIG["data"]["initial_lookback_days"]); cmd.add_argument("--max-codes", type=int); cmd.add_argument("--resume", action="store_true")
-    run = sub.add_parser("run"); run.add_argument("--date")
+    run = sub.add_parser("run"); run.add_argument("--date"); run.add_argument("--no-llm", action="store_true")
     sub.add_parser("status")
     args = parser.parse_args()
     if args.command in {"init", "update"}:
@@ -482,6 +748,10 @@ def main() -> int:
         except RuntimeError as exc:
             print(f"数据未就绪：{exc}", file=sys.stderr)
             return 2
+        confirm_market_state(state_conn, as_of, report)
+        report["llm"] = call_market_llm_analysis(report) if not args.no_llm else {
+            "status": "skipped", "reason": "disabled_by_flag", "analysis": ""
+        }
         save_block_metrics(state_conn, as_of, sectors); write_outputs(report, sectors, stocks, concepts, state_conn, as_of)
         print(json.dumps(report["state"], ensure_ascii=False, indent=2)); return 0
     finally:

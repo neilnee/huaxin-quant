@@ -1,0 +1,9 @@
+.state-title-row { display: flex; align-items: baseline; gap: 8px; }.state-help-toggle { padding: 0; border: 0; background: transparent; color: var(--muted); font: italic 12px/1.2 inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.state-help-toggle:hover { color: var(--accent); }.state-rules { margin-top: 12px; }
+.rules-current { display: grid; grid-template-columns: minmax(280px, .9fr) 1.1fr; gap: 22px; }
+.rules-current h3 { margin: 5px 0 8px; font-size: 18px; }.rules-current h3 span { color: var(--muted); font-size: 13px; font-weight: 400; }
+.rules-current ul { margin: 0; padding-left: 18px; color: #c8d2df; }.rule-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.rule-metrics div { padding: 8px; border-radius: 6px; background: #1d293a; }.rule-metrics span { display: block; color: var(--muted); font-size: 11px; }.rule-metrics b { display: block; margin-top: 2px; font-size: 15px; }
+.rules-all { margin-top: 18px; }.rules-all table { font-size: 12px; }.rules-all th, .rules-all td { white-space: normal; vertical-align: top; }.rules-all th:nth-child(-n+2), .rules-all td:nth-child(-n+2) { text-align: left; }.rules-all .active-rule { background: #223148; }
+.score-rules { margin-top: 18px; }.score-rules > div { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 8px; }.score-rules article { padding: 12px; border: 1px solid var(--line); border-radius: 7px; background: #141c29; }.score-rules h4 { margin: 0 0 6px; font-size: 14px; }.score-rules p { margin: 0; color: #c8d2df; font-size: 12px; }.score-rules span { display: block; margin-top: 7px; color: var(--accent); font-size: 12px; }
+@media (max-width: 900px) { .rules-current { grid-template-columns: 1fr; }.rule-metrics, .score-rules > div { grid-template-columns: repeat(2, 1fr); } }

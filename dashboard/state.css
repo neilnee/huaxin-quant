@@ -1,0 +1,12 @@
+.header-meta { text-align: right; }
+.header-meta .data-status { margin-top: 8px; font-size: 12px; }
+.state-summary { max-width: 35%; }
+.state-reading { line-height: 1.8; }
+.state-duration { margin-top: 4px; color: #c8d2df; }
+.state-analysis { margin-top: 10px; color: #d5deea; }
+.state-transition { margin-top: 12px; color: var(--warn); font-weight: 600; }
+
+@media (max-width: 900px) {
+  .header-meta { text-align: left; }
+  .state-summary { max-width: none; }
+}

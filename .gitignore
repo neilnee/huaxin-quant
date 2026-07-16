@@ -26,6 +26,7 @@ bloom/
 reports/
 signal_plan/
 tracker/
+dashboard/data/
 refer/
 .tmp/
 tmp_*/

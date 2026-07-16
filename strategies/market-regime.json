@@ -1,0 +1,41 @@
+{
+  "strategy_version": "market_regime_v1",
+  "description": "Independent market regime and TDX block heat parameters. It does not read or modify Model 2 Quant outputs.",
+  "benchmarks": {
+    "shanghai_composite": "000001",
+    "csi300": "399300",
+    "csi500": "000905",
+    "csi1000": "000852",
+    "chinext": "399006",
+    "star50": "000688"
+  },
+  "data": {
+    "initial_lookback_days": 300,
+    "minimum_history_days": 80,
+    "refresh_lookback_days": 15,
+    "minimum_coverage_ratio": 0.95,
+    "block_files": ["block_zs.dat", "block_fg.dat", "block_gn.dat"],
+    "block_chunk_size": 29952
+  },
+  "windows": {
+    "ma_short": 20,
+    "ma_long": 60,
+    "atr": 14,
+    "return_short": 5,
+    "return_medium": 20,
+    "new_high_low": 60,
+    "volume": 20,
+    "persistence": 5
+  },
+  "weights": {
+    "trend": {"above_ma20": 0.30, "ma20_slope": 0.25, "ma20_above_ma60": 0.25, "return_20": 0.20},
+    "volatility": {"atr": 0.45, "realized_vol": 0.35, "range": 0.20},
+    "sector_heat": {"relative_strength": 0.30, "volume_activity": 0.20, "up_breadth": 0.20, "strong_density": 0.15, "persistence": 0.15}
+  },
+  "state_thresholds": {
+    "offensive": {"trend_min": 65, "breadth_min": 60, "volatility_max": 60, "rotation_max": 45},
+    "defensive": {"breadth_max": 45, "volatility_min": 75, "rotation_min": 65},
+    "confirmation_days": 2,
+    "confirmation_window_days": 3
+  }
+}

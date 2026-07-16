@@ -209,6 +209,7 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
             "ma20_above_ma60": bool(latest.ma20 > latest.ma60),
             "ma20_slope_5": round(float(slope * 100), 3), "distance_high60_pct": round(float((latest.close / latest.high60 - 1) * 100), 2),
             "volume_ratio_20": round(float(latest.volume_ratio), 3), "atr14_pct": round(float(latest.atr14_pct * 100), 3),
+            "volume_ratio_5_20": round(float(data.volume.tail(5).mean() / data.volume.tail(20).mean()), 3),
             "trend_score": round(float(trend), 2), "volatility_score": round(float(volatility), 2),
             "trend_series": [{"close": round(float(row.close), 4), "ma20": round(float(row.ma20), 4), "ma60": round(float(row.ma60), 4)}
                 for row in data.tail(20).dropna(subset=["ma20", "ma60"]).itertuples(index=False)],

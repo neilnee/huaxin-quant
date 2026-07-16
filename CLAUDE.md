@@ -51,6 +51,18 @@ python3 scripts/quant_filter.py --code 603444            # 单只
 python3 scripts/quant_filter.py --codes 300442,688676    # 多只
 ```
 
+### 市场状态与板块热度（Market Regime）
+
+独立的市场环境旁路层：准备共享通达信行情，计算宽基趋势、全 A 广度、板块相对强度与阶段状态；不读取或改写 Pool、Quant、Bloom 结果。执行方式参考 `instructions/market-regime.md`。
+
+```bash
+python3 scripts/market_regime.py init --lookback 300  # 首次初始化
+python3 scripts/market_regime.py update               # 盘后增量更新
+python3 scripts/market_regime.py run                  # 生成市场报告与面板数据
+python3 scripts/market_regime.py run --no-llm         # 跳过 LLM 解读
+python3 scripts/market_regime.py status               # 检查数据就绪状态
+```
+
 ### Bloom 信号层
 
 消费模型二 JSON，维护跨日信号生命周期，LLM 解读重点观察标的。执行方式参考 `instructions/signal-bloom.md`。

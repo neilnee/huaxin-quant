@@ -303,7 +303,10 @@ bloom/state/bloom_state.csv
 bloom/state/bloom_events.jsonl
 bloom/state/bloom_input_<YYMMDD>.json
 bloom/state/snapshots/bloom_state_before_<YYYYMMDD>.csv
+dashboard/data/vcp_context_<YYMMDD>.js
 ```
+
+`dashboard_vcp.py` 仅读取当日 `bloom_input` 与同日模型二 JSON，发布 VCP 结构页所需的独立数据包。它不得改写 Bloom 状态、模型二输出或触发交易动作；Bloom 当日输出缺失时不得发布旧日期数据包。
 
 `bloom_state_before_<YYYYMMDD>.csv` 是当日首次写入前的状态快照，用于同日重复运行时保持 `consecutive_reject`、`days_tracked` 等生命周期字段的判断基准稳定。重复运行同一天时必须优先读取该快照，避免已写入的当日 state 覆盖昨日累计状态，导致 `EXIT` 判断被冲掉。
 

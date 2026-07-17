@@ -23,6 +23,7 @@ import requests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.shared import PROJECT_ROOT
+from scripts.dashboard_vcp import publish as publish_vcp_dashboard
 from scripts.strategy_config import load_strategy_config
 from scripts.progress_utils import ProgressTracker
 
@@ -1578,6 +1579,7 @@ def main():
 
     input_path = write_bloom_input(date_yy, bloom)
     report_path = write_markdown(date_yy, build_markdown(bloom))
+    dashboard_path = publish_vcp_dashboard(date_yy)
 
     print("=" * 70)
     print("Huaxin Bloom Signal")
@@ -1586,6 +1588,7 @@ def main():
     print(f"previous: {prev_path if prev_path else 'none'}")
     print(f"bloom input: {input_path}")
     print(f"bloom report: {report_path}")
+    print(f"dashboard data: {dashboard_path}")
     print(f"bloom state: {BLOOM_STATE_PATH}")
     print(f"state snapshot: {snapshot_path if snapshot_path else 'none'}")
     print(f"bloom events: {BLOOM_EVENTS_PATH}")

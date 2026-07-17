@@ -32,6 +32,7 @@ OUTPUT_DIR = ROOT / "market"
 DATA_OUTPUT_DIR = OUTPUT_DIR / "data"
 DASHBOARD_DIR = ROOT / "dashboard"
 DASHBOARD_DATA_DIR = DASHBOARD_DIR / "data"
+DASHBOARD_START_DATE = "260716"
 
 
 def load_local_env() -> None:
@@ -668,16 +669,20 @@ def write_dashboard_data(report: dict, sectors: list[dict], state_conn: sqlite3.
     stamp = today_stamp(as_of)
     context = build_market_context(report, sectors, state_conn, as_of)
     (DATA_OUTPUT_DIR / f"market_context_{stamp}.json").write_text(json.dumps(context, ensure_ascii=False, indent=2), encoding="utf-8")
-    available = [stamp]
+    available = sorted(path.stem.rsplit("_", 1)[-1] for path in DATA_OUTPUT_DIR.glob("market_context_*.json") if path.stem.rsplit("_", 1)[-1] >= DASHBOARD_START_DATE)
     (DATA_OUTPUT_DIR / "latest.json").write_text(json.dumps({"latest": stamp, "available": available}, ensure_ascii=False, indent=2), encoding="utf-8")
+    for path in DATA_OUTPUT_DIR.glob("market_context_*.json"):
+        date = path.stem.rsplit("_", 1)[-1]
+        month_dir = DASHBOARD_DATA_DIR / f"20{date[:4]}"
+        month_dir.mkdir(parents=True, exist_ok=True)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        (month_dir / f"market_context_{date}.js").write_text(
+            "window.QUANT_DASHBOARD_MARKET_CONTEXTS = window.QUANT_DASHBOARD_MARKET_CONTEXTS || {};\n"
+            f"window.QUANT_DASHBOARD_MARKET_CONTEXTS[{json.dumps(date)}] = "
+            + json.dumps(payload, ensure_ascii=False) + ";\n", encoding="utf-8"
+        )
     for path in DASHBOARD_DATA_DIR.glob("market_context_*.js"):
-        if path.stem.rsplit("_", 1)[-1] != stamp:
-            path.unlink()
-    (DASHBOARD_DATA_DIR / f"market_context_{stamp}.js").write_text(
-        "window.QUANT_DASHBOARD_MARKET_CONTEXTS = window.QUANT_DASHBOARD_MARKET_CONTEXTS || {};\n"
-        f"window.QUANT_DASHBOARD_MARKET_CONTEXTS[{json.dumps(stamp)}] = "
-        + json.dumps(context, ensure_ascii=False) + ";\n", encoding="utf-8"
-    )
+        path.unlink()
     (DASHBOARD_DATA_DIR / "index.js").write_text(
         "window.QUANT_DASHBOARD_INDEX = "
         + json.dumps({"market": {"latest": stamp, "available": available}}, ensure_ascii=False)
@@ -686,6 +691,23 @@ def write_dashboard_data(report: dict, sectors: list[dict], state_conn: sqlite3.
     legacy_path = DASHBOARD_DATA_DIR / "market_context.js"
     if legacy_path.exists():
         legacy_path.unlink()
+
+
+def publish_dashboard_archives() -> list[str]:
+    DASHBOARD_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    available = sorted(path.stem.rsplit("_", 1)[-1] for path in DATA_OUTPUT_DIR.glob("market_context_*.json") if path.stem.rsplit("_", 1)[-1] >= DASHBOARD_START_DATE)
+    for date in available:
+        payload = json.loads((DATA_OUTPUT_DIR / f"market_context_{date}.json").read_text(encoding="utf-8"))
+        month_dir = DASHBOARD_DATA_DIR / f"20{date[:4]}"; month_dir.mkdir(parents=True, exist_ok=True)
+        (month_dir / f"market_context_{date}.js").write_text("window.QUANT_DASHBOARD_MARKET_CONTEXTS = window.QUANT_DASHBOARD_MARKET_CONTEXTS || {};\n" + f"window.QUANT_DASHBOARD_MARKET_CONTEXTS[{json.dumps(date)}] = " + json.dumps(payload, ensure_ascii=False) + ";\n", encoding="utf-8")
+    for path in DASHBOARD_DATA_DIR.glob("market_context_*.js"):
+        path.unlink()
+    for path in DASHBOARD_DATA_DIR.glob("*/market_context_*.js"):
+        if path.stem.rsplit("_", 1)[-1] < DASHBOARD_START_DATE:
+            path.unlink()
+    latest = available[-1] if available else None
+    (DASHBOARD_DATA_DIR / "index.js").write_text("window.QUANT_DASHBOARD_INDEX = " + json.dumps({"market": {"latest": latest, "available": available}}, ensure_ascii=False) + ";\n", encoding="utf-8")
+    return available
 
 
 def write_outputs(report: dict, sectors: list[dict], stocks: list[dict], concepts: list[dict], state_conn: sqlite3.Connection, as_of: str) -> None:
@@ -733,7 +755,7 @@ def main() -> int:
     for name in ("init", "update"):
         cmd = sub.add_parser(name); cmd.add_argument("--date"); cmd.add_argument("--lookback", type=int, default=CONFIG["data"]["initial_lookback_days"]); cmd.add_argument("--max-codes", type=int); cmd.add_argument("--resume", action="store_true")
     run = sub.add_parser("run"); run.add_argument("--date"); run.add_argument("--no-llm", action="store_true")
-    sub.add_parser("status")
+    sub.add_parser("status"); sub.add_parser("publish-dashboard")
     args = parser.parse_args()
     if args.command in {"init", "update"}:
         if args.command == "update" and args.lookback == CONFIG["data"]["initial_lookback_days"]:
@@ -750,6 +772,8 @@ def main() -> int:
     if args.command == "status":
         print(json.dumps(MarketDataService.latest_status(), ensure_ascii=False, indent=2))
         return 0
+    if args.command == "publish-dashboard":
+        print(json.dumps({"available": publish_dashboard_archives()}, ensure_ascii=False)); return 0
     conn = connect_db(); create_schema(conn)
     state_conn = connect_state_db()
     try:

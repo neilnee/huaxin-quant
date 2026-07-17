@@ -309,6 +309,7 @@ chg_60
 | `structure_stage` | 形态发展阶段，只描述结构，不代表买点 |
 | `setup_signal` | 当日是否触发交易形态 |
 | `action_hint` | 模型二基于量价侧给出的动作提示，不考虑估值和持仓 |
+| `dashboard/data/<YYYYMM>/signals_context_<YYMMDD>.js` | 只读信号发现页面数据包，展示当日触发与次日计划，不改变模型二判定 |
 
 ### 0.1 structure_type：形态类型
 

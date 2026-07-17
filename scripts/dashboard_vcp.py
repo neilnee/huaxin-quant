@@ -18,6 +18,7 @@ ROOT = Path(PROJECT_ROOT)
 BLOOM_INPUT_DIR = ROOT / "bloom" / "state"
 QUANT_RUN_DIR = ROOT / "cache" / "quant_runs"
 DASHBOARD_DATA_DIR = ROOT / "dashboard" / "data"
+DASHBOARD_START_DATE = "260716"
 
 
 def normalize_date(value: str) -> str:
@@ -78,26 +79,31 @@ def build_context(date_yy: str) -> dict:
 def publish(date_yy: str) -> Path:
     context = build_context(date_yy)
     DASHBOARD_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    for path in DASHBOARD_DATA_DIR.glob("vcp_context_*.js"):
-        if path.stem.rsplit("_", 1)[-1] != date_yy:
-            path.unlink()
-    output = DASHBOARD_DATA_DIR / f"vcp_context_{date_yy}.js"
+    month_dir = DASHBOARD_DATA_DIR / f"20{date_yy[:4]}"
+    month_dir.mkdir(parents=True, exist_ok=True)
+    output = month_dir / f"vcp_context_{date_yy}.js"
     output.write_text(
         "window.QUANT_DASHBOARD_VCP_CONTEXTS = window.QUANT_DASHBOARD_VCP_CONTEXTS || {};\n"
         f"window.QUANT_DASHBOARD_VCP_CONTEXTS[{json.dumps(date_yy)}] = "
         + json.dumps(context, ensure_ascii=False) + ";\n",
         encoding="utf-8",
     )
+    for path in DASHBOARD_DATA_DIR.glob("vcp_context_*.js"):
+        path.unlink()
+    for path in DASHBOARD_DATA_DIR.glob("*/vcp_context_*.js"):
+        if path.stem.rsplit("_", 1)[-1] < DASHBOARD_START_DATE:
+            path.unlink()
     return output
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="发布 VCP 结构页数据包")
     parser.add_argument("--date", help="Bloom 日期，支持 YYMMDD 或 YYYY-MM-DD；默认最新 Bloom 输出")
+    parser.add_argument("--all", action="store_true", help="发布所有已有 Bloom 日期")
     args = parser.parse_args()
-    date_yy = normalize_date(args.date) if args.date else latest_date()
-    output = publish(date_yy)
-    print(json.dumps({"date": date_yy, "output": str(output)}, ensure_ascii=False))
+    dates = sorted(path.stem.rsplit("_", 1)[-1] for path in BLOOM_INPUT_DIR.glob("bloom_input_*.json") if path.stem.rsplit("_", 1)[-1] >= DASHBOARD_START_DATE) if args.all else [normalize_date(args.date) if args.date else latest_date()]
+    outputs = [str(publish(date_yy)) for date_yy in dates]
+    print(json.dumps({"dates": dates, "outputs": outputs}, ensure_ascii=False))
     return 0
 
 

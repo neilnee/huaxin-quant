@@ -2,7 +2,7 @@
 
 - **核心目标**：基于共享市场数据层，独立计算市场趋势、波动、广度、板块轮动与板块热度。
 - **策略边界**：不读取 Pool/Quant/Bloom 输出，不改写模型二 VCP 结构、评分或买点。
-- **数据源**：通达信行情服务器的宽基/个股日线、`tdxhy.cfg + zhb.zip/incon.dat` 行业映射，以及 `block_zs.dat`、`block_fg.dat`、`block_gn.dat` 板块文件。
+- **数据源**：统一 SQLite 日线库；缺口优先通过通达信 TDX/mootdx 补取，失败或未覆盖目标日时以妙想 API 备用源补取。板块成员来自 `tdxhy.cfg + zhb.zip/incon.dat`、`block_zs.dat`、`block_fg.dat`、`block_gn.dat`。
 - **策略配置**：`strategies/market-regime.json`。
 - **主脚本**：`scripts/market_regime.py`；基础数据由 `scripts/data/market_data_service.py` 管理。
 

@@ -45,7 +45,8 @@ import pandas as pd
 import requests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from scripts.shared import DailyCache, PROJECT_ROOT, VALUATION_INDEX_PATH, fetch_daily, expected_trade_date
+from scripts.shared import PROJECT_ROOT, VALUATION_INDEX_PATH, expected_trade_date
+from scripts.data.market_data_service import MarketDataService
 from scripts.strategy_config import load_strategy_config
 
 
@@ -56,6 +57,7 @@ QUANT_DIR = os.path.join(PROJECT_ROOT, "quant")
 QUANT_RUNS_DIR = os.path.join(PROJECT_ROOT, "cache", "quant_runs")
 QUANT_STRATEGY_FILE = "02-quant.json"
 QUANT_STRATEGY, QUANT_STRATEGY_PATH = load_strategy_config(QUANT_STRATEGY_FILE)
+MARKET_DATA_CONFIG, _ = load_strategy_config("market-regime.json")
 STRATEGY_VERSION = QUANT_STRATEGY["strategy_version"]
 
 VCP_CFG = QUANT_STRATEGY["vcp"]
@@ -2250,6 +2252,8 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True, p
         "api_calls": 0,
         "tdx_calls": 0,
     }
+    service = MarketDataService(MARKET_DATA_CONFIG)
+    frames = service.get_daily_bars(codes, run_date, max(200, BASE_CFG["min_runtime_data_days"]), force_refresh=not use_cache)
     fatal_stop = False
     retry_queue = []
 
@@ -2262,7 +2266,7 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True, p
             continue
 
         print(f"[{i+1}/{len(codes)}] {code} {name} ...", end=" ", flush=True)
-        df, source = fetch_daily(code, name, today_yy, use_cache=use_cache, as_of_date=run_date)
+        df, source = frames.get(code), "market_db"
         if df is None:
             if allow_retry and "112" in str(source):
                 print(f"失败: {source}，加入重试队列")
@@ -2274,7 +2278,7 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True, p
                     fatal_stop = True
             continue
 
-        count_data_source(stats, source)
+        stats["cache_hits"] += 1
         if len(df) < BASE_CFG["min_runtime_data_days"]:
             print(f"跳过: 数据不足({len(df)}天)")
             stats["data_insufficient"] += 1
@@ -2319,7 +2323,7 @@ def main():
     parser.add_argument("--json", action="store_true", help="同时将结构化结果打印到 stdout")
     parser.add_argument("--include-reject", action="store_true", help="CSV 中包含未纳入 model2_include 的标的")
     parser.add_argument("--no-cache", action="store_true", help="跳过缓存，重新拉取行情")
-    parser.add_argument("--refresh", action="store_true", help="清除今日缓存后重新拉取")
+    parser.add_argument("--refresh", action="store_true", help="强制刷新候选标的近期日线后重新计算")
     parser.add_argument("--with-llm", action="store_true", help="可选调用 LLM 对 top 标的做解释")
     parser.add_argument("--llm-top", type=int, default=10, help="LLM 解释 Top N，默认 10")
     parser.add_argument("--progress-file", help="进度文件路径（供 daily.py 流水线使用）")
@@ -2346,16 +2350,11 @@ def main():
     print("=" * 70)
     print("模型二：VCP 结构与触发信号精筛")
     print(f"模式: {mode} | 标的: {len(codes)} 只 | CSV: {quant_path}")
-    cleanup_cache = DailyCache()
-    print(f"缓存: {'关闭' if args.no_cache else '开启'} | 目录: {cleanup_cache.cache_dir}")
+    print("日线: 统一 SQLite 数据库（缺口自动主备源补数）")
     print("=" * 70)
 
-    cleaned = cleanup_cache.cleanup_old(keep_days=30)
-    if cleaned:
-        print(f"已清理 {cleaned} 个超过30天的旧缓存文件")
-    if args.refresh:
-        cleared = cleanup_cache.clear_today(today_yy)
-        print(f"已清除今日缓存 {cleared} 个文件")
+    if args.no_cache or args.refresh:
+        print("提示：强制从主备源刷新候选标的近期日线")
 
     results, stats = process_codes(codes, today_yy, run_date, use_cache=use_cache, progress_file=args.progress_file)
     csv_results = [r for r in results if should_write_to_quant(r, include_reject=args.include_reject)]

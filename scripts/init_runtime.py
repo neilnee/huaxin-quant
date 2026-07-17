@@ -19,7 +19,6 @@ ROOT = Path(PROJECT_ROOT)
 
 RUNTIME_DIRS = [
     "cache/xuangu",
-    "cache/daily",
     "cache/quant_runs",
     "cache/financial",
     "cache/briefing",

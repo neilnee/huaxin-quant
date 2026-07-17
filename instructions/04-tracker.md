@@ -42,7 +42,7 @@ tracker 内部流程：
 
 tracker 不重复计算，不修改子模块逻辑。子模块仍可独立运行。
 
-每日完整工作流 `scripts/daily.py` 在 Tracker 成功后额外执行自选重建：
+`tracker.py` 保留为按需生成合并日报的独立工具，不属于每日默认工作流。每日默认工作流在 Bloom、Signal Plan 和页面发布完成后额外执行自选重建：
 
 ```text
 5. 调 sync_zixuan.py → 删除本地账本中的上一日工作流自选 → 写入 Bloom 重点观察和买点 → 目标校验

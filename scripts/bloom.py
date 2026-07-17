@@ -1543,6 +1543,7 @@ def main():
     parser.add_argument("--date", help="Bloom 日期，支持 YYMMDD 或 YYYY-MM-DD；默认取最新 quant run")
     parser.add_argument("--allow-partial", action="store_true", help="允许单股/多股/测试模式生成 Bloom 输出")
     parser.add_argument("--no-state-update", action="store_true", help="只生成 bloom_input 和 Markdown，不更新状态层")
+    parser.add_argument("--skip-dashboard-publish", action="store_true", help="跳过页面数据包发布，供 daily.py 在全部信号产物完成后统一发布")
     parser.add_argument("--progress-file", default=None, help="进度文件路径（供 daily.py 流水线使用）")
     args = parser.parse_args()
 
@@ -1580,8 +1581,11 @@ def main():
 
     input_path = write_bloom_input(date_yy, bloom)
     report_path = write_markdown(date_yy, build_markdown(bloom))
-    dashboard_path = publish_vcp_dashboard(date_yy)
-    signals_dashboard_path = publish_signals_dashboard(date_yy)
+    dashboard_path = None
+    signals_dashboard_path = None
+    if not args.skip_dashboard_publish:
+        dashboard_path = publish_vcp_dashboard(date_yy)
+        signals_dashboard_path = publish_signals_dashboard(date_yy)
 
     print("=" * 70)
     print("Huaxin Bloom Signal")
@@ -1590,8 +1594,8 @@ def main():
     print(f"previous: {prev_path if prev_path else 'none'}")
     print(f"bloom input: {input_path}")
     print(f"bloom report: {report_path}")
-    print(f"dashboard data: {dashboard_path}")
-    print(f"signals dashboard data: {signals_dashboard_path}")
+    print(f"dashboard data: {dashboard_path if dashboard_path else 'skipped'}")
+    print(f"signals dashboard data: {signals_dashboard_path if signals_dashboard_path else 'skipped'}")
     print(f"bloom state: {BLOOM_STATE_PATH}")
     print(f"state snapshot: {snapshot_path if snapshot_path else 'none'}")
     print(f"bloom events: {BLOOM_EVENTS_PATH}")

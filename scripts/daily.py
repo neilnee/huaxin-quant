@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Daily pipeline: 模型一 → 模型二 → 模型四 Tracker → 东方财富自选重建。
+Daily pipeline: 数据更新 → Pool → Quant → Bloom → Signal Plan → 页面发布 → 打开面板 → 东方财富自选同步。
 
 Launches each stage via subprocess, writes step-level progress to a shared
 JSON file consumed by monitor.py. This script is non-interactive and designed
@@ -71,6 +71,14 @@ def _progress_path(date_yy):
 
 # ── stage runners ──
 
+def run_market_update(date_yy):
+    iso = datetime.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
+    return subprocess.run(
+        ["python3", "scripts/market_regime.py", "update", "--date", iso],
+        cwd=PROJECT_ROOT,
+    )
+
+
 def run_pool(date_yy, force_refresh=False):
     from datetime import datetime as _dt
     iso = _dt.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
@@ -90,39 +98,48 @@ def run_quant(date_yy, pool_path, progress_path):
     return subprocess.run(cmd, cwd=PROJECT_ROOT)
 
 
-def run_tracker(date_yy, progress_path):
-    """Run model 4 tracker (bloom → plan → assemble) as a subprocess."""
+def run_bloom(date_yy, progress_path):
     return subprocess.run(
-        ["python3", "scripts/tracker.py", "--date", date_yy,
+        ["python3", "scripts/bloom.py", "--date", date_yy,
+         "--progress-file", str(progress_path), "--skip-dashboard-publish"],
+        cwd=PROJECT_ROOT,
+    )
+
+
+def run_signal_plan(date_yy, progress_path):
+    return subprocess.run(
+        ["python3", "scripts/signal_plan.py", "--date", date_yy,
          "--progress-file", str(progress_path)],
         cwd=PROJECT_ROOT,
     )
 
 
+def run_dashboard_publish(date_yy):
+    iso = datetime.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
+    commands = [
+        ["python3", "scripts/market_regime.py", "run", "--date", iso],
+        ["python3", "scripts/dashboard_vcp.py", "--date", date_yy],
+        ["python3", "scripts/dashboard_signals.py", "--date", date_yy],
+    ]
+    for command in commands:
+        result = subprocess.run(command, cwd=PROJECT_ROOT)
+        if result.returncode != 0:
+            return result
+    return result
+
+
+def open_dashboard():
+    """Open the local dashboard in the system default browser after publishing."""
+    dashboard = Path(PROJECT_ROOT) / "dashboard" / "index.html"
+    return subprocess.run(["open", str(dashboard)], cwd=PROJECT_ROOT)
+
+
 def run_zixuan(date_yy):
-    """Rebuild Eastmoney's all-watchlist after Tracker has completed."""
+    """Rebuild Eastmoney's all-watchlist after Bloom has completed."""
     return subprocess.run(
         ["python3", "scripts/sync_zixuan.py", "--date", date_yy, "--yes"],
         cwd=PROJECT_ROOT,
     )
-
-
-def publish_final_report(progress_path):
-    """Publish the final tracker draft after progress is marked done."""
-    progress = ProgressTracker.read(progress_path)
-    if not progress:
-        return
-    assemble = progress.get("steps", {}).get("assemble", {})
-    tmp_path = assemble.get("final_report_tmp")
-    final_path = assemble.get("final_report_path")
-    if not tmp_path or not final_path:
-        return
-    src = Path(tmp_path)
-    dst = Path(final_path)
-    if not src.exists():
-        return
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
 
 
 # ── main ──
@@ -168,7 +185,7 @@ def main():
 
     progress_path = _progress_path(date_yy)
     tracker = ProgressTracker(progress_path)
-    tracker.init(["pool", "quant", "tracker", "zixuan"])
+    tracker.init(["data_update", "pool", "quant", "bloom", "signal_plan", "dashboard", "open_dashboard", "zixuan"])
     tracker.set_date(date_yy)
 
     print(f"[daily] 流水线启动 {date_yy}")
@@ -177,7 +194,23 @@ def main():
 
     errors = []
 
-    # ── Step 1: Pool ──
+    def stop_after(stage):
+        tracker.mark_done()
+        print(f"[daily] {stage} 失败，流水线中止。共 {len(errors)} 个错误")
+        sys.exit(1)
+
+    # ── Step 1: Shared market data update ──
+    tracker.step_start("data_update")
+    print("[daily] → 市场数据增量更新")
+    result = run_market_update(date_yy)
+    if result.returncode != 0:
+        errors.append(f"data_update: exit {result.returncode}")
+        tracker.step_done("data_update", error=f"exit {result.returncode}")
+        stop_after("数据更新")
+    tracker.step_done("data_update")
+    print("[daily] ✓ data update done")
+
+    # ── Step 2: Pool ──
     if not args.skip_pool:
         tracker.step_start("pool")
         print(f"[daily] → 模型一 Pool")
@@ -185,13 +218,14 @@ def main():
         if result.returncode != 0:
             errors.append(f"pool: exit {result.returncode}")
             tracker.step_done("pool", error=f"exit {result.returncode}")
+            stop_after("Pool")
         else:
             tracker.step_done("pool")
             print(f"[daily] ✓ pool done")
     else:
         tracker.step_done("pool")  # mark as done since we're skipping
 
-    # ── Step 2: Quant ──
+    # ── Step 3: Quant ──
     tracker.step_start("quant")
     print(f"[daily] → 模型二 Quant ({pool_path})")
     result = run_quant(date_yy, pool_path, progress_path)
@@ -202,30 +236,60 @@ def main():
         tracker.step_done("quant")
         print(f"[daily] ✓ quant done")
 
-    # Stop early if quant failed (no data for downstream)
     if any("quant" in e for e in errors):
-        tracker.mark_done()
-        print(f"[daily] quant 失败，流水线中止。共 {len(errors)} 个错误")
-        sys.exit(1)
+        stop_after("Quant")
 
-    # ── Step 3: Tracker (Bloom → Plan → Assemble) ──
-    tracker.step_start("tracker")
-    print(f"[daily] → 模型四 Tracker")
-    result = run_tracker(date_yy, progress_path)
-    if result.returncode not in (0, 3):  # 3 = Bloom LLM failed (non-fatal)
-        errors.append(f"tracker: exit {result.returncode}")
-        tracker.step_done("tracker", error=f"exit {result.returncode}")
+    # ── Step 4: Bloom ──
+    tracker.step_start("bloom")
+    print("[daily] → Bloom 信号")
+    result = run_bloom(date_yy, progress_path)
+    if result.returncode not in (0, 3):  # 3 = LLM failed after deterministic outputs were written
+        errors.append(f"bloom: exit {result.returncode}")
+        tracker.step_done("bloom", error=f"exit {result.returncode}")
+        stop_after("Bloom")
+    tracker.step_done("bloom")
+    if result.returncode == 3:
+        print("[daily] ⚠ Bloom LLM 解读失败，已使用规则产物继续")
     else:
-        tracker.step_done("tracker")
-        print(f"[daily] ✓ tracker done")
+        print("[daily] ✓ bloom done")
 
-    # ── Step 4: Eastmoney all-watchlist rebuild ──
+    # ── Step 5: Signal Plan ──
+    tracker.step_start("signal_plan")
+    print("[daily] → Signal Plan")
+    result = run_signal_plan(date_yy, progress_path)
+    if result.returncode != 0:
+        errors.append(f"signal_plan: exit {result.returncode}")
+        tracker.step_done("signal_plan", error=f"exit {result.returncode}")
+        stop_after("Signal Plan")
+    tracker.step_done("signal_plan")
+    print("[daily] ✓ signal plan done")
+
+    # ── Step 6: Dashboard packages ──
+    tracker.step_start("dashboard")
+    print("[daily] → 生成数据分析面板")
+    result = run_dashboard_publish(date_yy)
+    if result.returncode != 0:
+        errors.append(f"dashboard: exit {result.returncode}")
+        tracker.step_done("dashboard", error=f"exit {result.returncode}")
+        stop_after("页面发布")
+    tracker.step_done("dashboard")
+    print("[daily] ✓ dashboard done")
+
+    # ── Step 7: Open dashboard ──
+    tracker.step_start("open_dashboard")
+    print("[daily] → 打开数据分析面板")
+    result = open_dashboard()
+    if result.returncode != 0:
+        tracker.step_done("open_dashboard", error=f"exit {result.returncode}")
+        print("[daily] ⚠ 无法自动打开浏览器，页面数据已生成")
+    else:
+        tracker.step_done("open_dashboard")
+        print("[daily] ✓ dashboard opened")
+
+    # ── Step 8: Eastmoney all-watchlist rebuild ──
     if not _env_flag("ENABLE_ZIXUAN_SYNC"):
         tracker.step_done("zixuan")
         print("[daily] - zixuan disabled (set ENABLE_ZIXUAN_SYNC=true in .env to enable)")
-    elif any("tracker" in e for e in errors):
-        tracker.step_done("zixuan", error="tracker failed; zixuan skipped")
-        print(f"[daily] - tracker failed; zixuan skipped")
     else:
         tracker.step_start("zixuan")
         print(f"[daily] → 东方财富自选重建")
@@ -238,7 +302,6 @@ def main():
             print(f"[daily] ✓ zixuan done")
 
     tracker.mark_done()
-    publish_final_report(progress_path)
     print(f"[daily] 流水线完成，共 {len(errors)} 个错误")
     if errors:
         for e in errors:

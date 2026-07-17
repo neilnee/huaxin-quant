@@ -671,16 +671,13 @@ def write_dashboard_data(report: dict, sectors: list[dict], state_conn: sqlite3.
     (DATA_OUTPUT_DIR / f"market_context_{stamp}.json").write_text(json.dumps(context, ensure_ascii=False, indent=2), encoding="utf-8")
     available = sorted(path.stem.rsplit("_", 1)[-1] for path in DATA_OUTPUT_DIR.glob("market_context_*.json") if path.stem.rsplit("_", 1)[-1] >= DASHBOARD_START_DATE)
     (DATA_OUTPUT_DIR / "latest.json").write_text(json.dumps({"latest": stamp, "available": available}, ensure_ascii=False, indent=2), encoding="utf-8")
-    for path in DATA_OUTPUT_DIR.glob("market_context_*.json"):
-        date = path.stem.rsplit("_", 1)[-1]
-        month_dir = DASHBOARD_DATA_DIR / f"20{date[:4]}"
-        month_dir.mkdir(parents=True, exist_ok=True)
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        (month_dir / f"market_context_{date}.js").write_text(
+    month_dir = DASHBOARD_DATA_DIR / f"20{stamp[:4]}"
+    month_dir.mkdir(parents=True, exist_ok=True)
+    (month_dir / f"market_context_{stamp}.js").write_text(
             "window.QUANT_DASHBOARD_MARKET_CONTEXTS = window.QUANT_DASHBOARD_MARKET_CONTEXTS || {};\n"
-            f"window.QUANT_DASHBOARD_MARKET_CONTEXTS[{json.dumps(date)}] = "
-            + json.dumps(payload, ensure_ascii=False) + ";\n", encoding="utf-8"
-        )
+            f"window.QUANT_DASHBOARD_MARKET_CONTEXTS[{json.dumps(stamp)}] = "
+            + json.dumps(context, ensure_ascii=False) + ";\n", encoding="utf-8"
+    )
     for path in DASHBOARD_DATA_DIR.glob("market_context_*.js"):
         path.unlink()
     (DASHBOARD_DATA_DIR / "index.js").write_text(

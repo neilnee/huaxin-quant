@@ -605,8 +605,9 @@ def infer_share_adjustments(holdings, raw_trade_rows):
 
 
 def year_start_price(code, name, year_start, as_of, fallback_price=0, trades=None):
-    df = MarketDataService(MARKET_DATA_CONFIG).get_daily_bars([(code, name)], as_of, 200).get(code)
-    source = "market_db"
+    frames, status = MarketDataService(MARKET_DATA_CONFIG).get_daily_bars([(code, name)], as_of, 200)
+    df = frames.get(code)
+    source = status.get(code, {}).get("source", "market_db")
     if df is not None:
         start = parse_date(year_start)
         pre_year = df[df["date"].astype(str) < start.isoformat()]

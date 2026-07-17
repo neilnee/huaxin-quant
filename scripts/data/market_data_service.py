@@ -81,16 +81,18 @@ class MarketDataService:
         ]
 
     def fetch_stock_bars(self, source: TDXBlockSource, fallback: MiaoxiangSource, code: str, name: str, lookback: int, as_of: str) -> list[tuple]:
+        primary_error = ""
         try:
             bars = self.normalized_bars(source.fetch_stock_bars(code, lookback), code, as_of)
             if bars and bars[-1][1] == as_of:
                 return bars
-        except Exception:
-            pass
+            primary_error = "通达信未覆盖目标交易日"
+        except Exception as exc:
+            primary_error = str(exc)
         frame, error = fallback.fetch_bars(code, name)
         bars = self.normalized_bars(frame, code, as_of) if frame is not None else []
         if not bars or bars[-1][1] != as_of:
-            raise RuntimeError(error or "主备源均未覆盖目标交易日")
+            raise RuntimeError(f"TDX: {primary_error}; 妙想: {error or '未覆盖目标交易日'}")
         return [(*bar[:8], "miaoxiang", bar[9]) for bar in bars]
 
     @staticmethod
@@ -153,10 +155,10 @@ class MarketDataService:
         conn.commit()
         return summary
 
-    def ingest_bars(self, conn: sqlite3.Connection, source: TDXBlockSource, codes: list[str], as_of: str, lookback: int, run_id: str, job_type: str) -> dict:
+    def ingest_bars(self, conn: sqlite3.Connection, source: TDXBlockSource, codes: list[str], as_of: str, lookback: int, run_id: str, job_type: str, names: dict[str, str] | None = None) -> dict:
         completed = {row[0] for row in conn.execute("SELECT code FROM ingestion_jobs WHERE run_id=? AND job_type=? AND target_date=? AND status='success'", (run_id, job_type, as_of))}
-        stats = {"requested": len(codes), "success": 0, "failed": 0, "fallback": 0}
-        names = {row[0]: row[1] for row in conn.execute("SELECT code,name FROM securities WHERE code IN ({})".format(",".join("?" for _ in codes)), codes)} if codes else {}
+        stats = {"requested": len(codes), "success": 0, "failed": 0, "fallback": 0, "failed_codes": {}, "repaired_codes": []}
+        names = names or {row[0]: row[1] for row in conn.execute("SELECT code,name FROM securities WHERE code IN ({})".format(",".join("?" for _ in codes)), codes)} if codes else {}
         fallback = MiaoxiangSource()
         for index, code in enumerate(codes, 1):
             if code in completed:
@@ -170,11 +172,13 @@ class MarketDataService:
                     raise RuntimeError(f"有效日线不足 {len(bars)}")
                 self.save_bars(conn, bars)
                 stats["fallback"] += int(any(bar[8] == "miaoxiang" for bar in bars))
+                stats["repaired_codes"].append(code)
                 status, error = "success", None
                 stats["success"] += 1
             except Exception as exc:
                 status, error = "failed", str(exc)[:500]
                 stats["failed"] += 1
+                stats["failed_codes"][code] = error
             conn.execute(
                 """INSERT INTO ingestion_jobs VALUES(?,?,?,?,?,?,?,?)
                    ON CONFLICT(run_id,job_type,code,target_date) DO UPDATE SET status=excluded.status,
@@ -187,20 +191,26 @@ class MarketDataService:
         conn.commit()
         return stats
 
-    def get_daily_bars(self, codes: list[tuple[str, str]], as_of: str, minimum_days: int, force_refresh: bool = False) -> dict[str, pd.DataFrame]:
+    def get_daily_bars(self, codes: list[tuple[str, str]], as_of: str, minimum_days: int, force_refresh: bool = False) -> tuple[dict[str, pd.DataFrame], dict[str, dict]]:
         """Read canonical bars first; repair only codes missing history or target-date coverage."""
         conn = connect_db(); create_schema(conn)
         try:
             requested = [code for code, _ in codes]
             if not requested:
-                return {}
+                return {}, {}
             conn.executemany("INSERT INTO securities(code,name,market,is_st,first_seen_at,last_seen_at) VALUES(?,?,0,0,?,?) ON CONFLICT(code) DO UPDATE SET name=excluded.name,last_seen_at=excluded.last_seen_at", [(code, name, datetime.now().isoformat(timespec="seconds"), datetime.now().isoformat(timespec="seconds")) for code, name in codes])
             checks = {row[0]: (row[1], row[2]) for row in conn.execute("SELECT code,count(*),max(trade_date) FROM daily_bars WHERE code IN ({}) AND trade_date<=? GROUP BY code".format(",".join("?" for _ in requested)), [*requested, as_of])}
             missing = requested if force_refresh else [code for code in requested if code not in checks or checks[code][0] < minimum_days or checks[code][1] != as_of]
-            if missing:
-                self.ingest_bars(conn, TDXBlockSource(), missing, as_of, max(15, minimum_days), f"quant_{today_stamp(as_of)}", "quant_repair")
+            repair = self.ingest_bars(conn, TDXBlockSource(), missing, as_of, max(15, minimum_days), f"quant_{today_stamp(as_of)}", "quant_refresh" if force_refresh else "quant_repair", names=dict(codes)) if missing else {"failed_codes": {}, "repaired_codes": []}
             frame = pd.read_sql_query("SELECT code,trade_date AS date,open,high,low,close,volume,COALESCE(amount,0) AS turnover,source FROM daily_bars WHERE code IN ({}) AND trade_date<=? ORDER BY code,trade_date".format(",".join("?" for _ in requested)), conn, params=[*requested, as_of])
-            return {code: rows.drop(columns="code").reset_index(drop=True) for code, rows in frame.groupby("code")}
+            frames = {code: rows.drop(columns="code").reset_index(drop=True) for code, rows in frame.groupby("code")}
+            status = {code: {"source": "database", "error": None, "retryable": False} for code in frames}
+            for code, error in repair.get("failed_codes", {}).items():
+                status[code] = {"source": "repair_failed", "error": error, "retryable": "112" in error or "限流" in error}
+            for code in repair.get("repaired_codes", []):
+                if code in status:
+                    status[code]["source"] = str(frames[code].iloc[-1]["source"])
+            return frames, status
         finally:
             conn.close()
 

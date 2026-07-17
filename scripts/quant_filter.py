@@ -2253,7 +2253,7 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True, p
         "tdx_calls": 0,
     }
     service = MarketDataService(MARKET_DATA_CONFIG)
-    frames = service.get_daily_bars(codes, run_date, max(200, BASE_CFG["min_runtime_data_days"]), force_refresh=not use_cache)
+    frames, data_status = service.get_daily_bars(codes, run_date, max(200, BASE_CFG["min_runtime_data_days"]), force_refresh=not use_cache)
     fatal_stop = False
     retry_queue = []
 
@@ -2266,19 +2266,24 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True, p
             continue
 
         print(f"[{i+1}/{len(codes)}] {code} {name} ...", end=" ", flush=True)
-        df, source = frames.get(code), "market_db"
+        df, source = frames.get(code), data_status.get(code, {"source": "missing", "error": "数据库未返回数据", "retryable": False})
         if df is None:
-            if allow_retry and "112" in str(source):
-                print(f"失败: {source}，加入重试队列")
+            if allow_retry and source["retryable"]:
+                print(f"失败: {source['error']}，加入重试队列")
                 retry_queue.append((code, name))
             else:
-                print(f"失败: {source}")
+                print(f"失败: {source['error']}")
                 stats["pull_fail"] += 1
-                if str(source).startswith("FATAL:"):
+                if str(source["error"]).startswith("FATAL:"):
                     fatal_stop = True
             continue
 
-        stats["cache_hits"] += 1
+        if source["source"] == "database":
+            stats["cache_hits"] += 1
+        elif source["source"] == "miaoxiang":
+            stats["api_calls"] += 1
+        else:
+            stats["tdx_calls"] += 1
         if len(df) < BASE_CFG["min_runtime_data_days"]:
             print(f"跳过: 数据不足({len(df)}天)")
             stats["data_insufficient"] += 1

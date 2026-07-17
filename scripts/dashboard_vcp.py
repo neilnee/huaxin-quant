@@ -88,11 +88,6 @@ def publish(date_yy: str) -> Path:
         + json.dumps(context, ensure_ascii=False) + ";\n",
         encoding="utf-8",
     )
-    for path in DASHBOARD_DATA_DIR.glob("vcp_context_*.js"):
-        path.unlink()
-    for path in DASHBOARD_DATA_DIR.glob("*/vcp_context_*.js"):
-        if path.stem.rsplit("_", 1)[-1] < DASHBOARD_START_DATE:
-            path.unlink()
     return output
 
 

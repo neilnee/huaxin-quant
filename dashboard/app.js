@@ -62,8 +62,8 @@ function signalPlanText(row) {
 function renderSignals(){
   const summary=signalsContext.summary||{},rows=signalsContext.signals||[],filtered=signalsFilter==="ALL"?rows:rows.filter(row=>row.signal_kind===signalsFilter);
   $("signals-meta").textContent=`数据日期 ${signalsContext.meta.run_date} · 来源 ${signalsContext.meta.source}`;
-  $("signals-summary").innerHTML=[["当日买点",summary.triggered||0],["计划观察",summary.planned||0],["记录总数",summary.total||0]].map(([label,value])=>`<div><span>${label}</span><b>${value}</b></div>`).join("");
-  $("signals-filters").innerHTML=[["ALL","全部"],["TRIGGERED","当日买点"],["PLAN","条件计划"]].map(([key,label])=>`<button class="${key===signalsFilter?"active":""}" data-kind="${key}">${label}</button>`).join("");
+  $("signals-summary").innerHTML=[["当日买点",summary.triggered||0],["记录总数",summary.total||0]].map(([label,value])=>`<div><span>${label}</span><b>${value}</b></div>`).join("");
+  $("signals-filters").innerHTML=[["ALL","全部"],["TRIGGERED","当日买点"]].map(([key,label])=>`<button class="${key===signalsFilter?"active":""}" data-kind="${key}">${label}</button>`).join("");
   $("signals-filters").querySelectorAll("button").forEach(button=>button.onclick=()=>{signalsFilter=button.dataset.kind;renderSignals();});
   $("signals-note").textContent=`显示 ${filtered.length}/${rows.length} 条买点记录`;
   if(!filtered.some(row=>signalRowKey(row)===signalsSelectedCode))signalsSelectedCode=filtered[0]&&signalRowKey(filtered[0]);

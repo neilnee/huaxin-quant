@@ -627,7 +627,7 @@ def call_market_llm_analysis(report: dict) -> dict:
     return {"status": "failed", "reason": last_error, "provider": "deepseek", "model": model, "analysis": ""}
 
 
-def build_market_context(report: dict, sectors: list[dict], state_conn: sqlite3.Connection, as_of: str) -> dict:
+def build_market_context(report: dict, sectors: list[dict], stocks: list[dict], state_conn: sqlite3.Connection, as_of: str) -> dict:
     kinds = ("industry_sw_l1", "industry_sw_l2", "gn", "fg")
     rankings = {kind: [row for row in sectors if row["block_type"] == kind][:20] for kind in kinds}
     selected = {(kind, row["block_name"]) for kind, rows in rankings.items() for row in rows}
@@ -654,13 +654,21 @@ def build_market_context(report: dict, sectors: list[dict], state_conn: sqlite3.
             top_scopes.append({"scope_type": kind, "scope_name": row["block_name"], "advance_ratio": row["up_breadth"],
                 "median_return_1": row["median_return_1"], "above_ma20_ratio": row["above_ma20_ratio"],
                 "above_ma60_ratio": row["above_ma60_ratio"], "new_high_ratio": row["new_high_ratio"], "member_count": row["member_count"]})
+    sector_leaders = {}
+    for sector in rankings["industry_sw_l2"]:
+        members = [stock for stock in stocks if stock.get("sw_l2_name") == sector["block_name"]]
+        leaders = []
+        for rank, stock in enumerate(sorted(members, key=lambda item: item.get("strength_score", 0), reverse=True)[:3], start=1):
+            role = "领涨" if rank == 1 else "趋势核心" if stock.get("above_ma20") and stock.get("above_ma60") else "观察"
+            leaders.append({key: stock.get(key) for key in ("code", "name", "strength_score", "rps20_industry", "return_5", "return_20", "above_ma20", "above_ma60", "volume_ratio_20")} | {"rank": rank, "role": role})
+        sector_leaders[sector["block_name"]] = leaders
     baseline_count = state_conn.execute("SELECT count(DISTINCT trade_date) FROM sector_daily_metrics WHERE trade_date<=? AND history_basis='current_snapshot_backfill'", (as_of,)).fetchone()[0]
     return {"meta": {**report["meta"], "generated_for": "market_dashboard", "history_window_days": 20,
         "sector_history_note": "当前成分快照回填（非严格点时）" if baseline_count else "每日快照（点时）",
         "baseline_history_days": baseline_count},
         "market_state": market_state_view(report), "market_state_explainer": market_state_explainer(report), "indexes": report["benchmarks"],
         "breadth": {"all_a": report["breadth"], "top_scopes": top_scopes},
-        "sector_rankings": rankings, "sector_history": sector_history, "sector_rank_matrix": rank_matrix}
+        "sector_rankings": rankings, "sector_history": sector_history, "sector_rank_matrix": rank_matrix, "sector_leaders": sector_leaders}
 
 
 def write_dashboard_index(market_latest: str | None, market_available: list[str]) -> None:
@@ -675,11 +683,11 @@ def write_dashboard_index(market_latest: str | None, market_available: list[str]
     )
 
 
-def write_dashboard_data(report: dict, sectors: list[dict], state_conn: sqlite3.Connection, as_of: str) -> None:
+def write_dashboard_data(report: dict, sectors: list[dict], stocks: list[dict], state_conn: sqlite3.Connection, as_of: str) -> None:
     DATA_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     DASHBOARD_DATA_DIR.mkdir(parents=True, exist_ok=True)
     stamp = today_stamp(as_of)
-    context = build_market_context(report, sectors, state_conn, as_of)
+    context = build_market_context(report, sectors, stocks, state_conn, as_of)
     (DATA_OUTPUT_DIR / f"market_context_{stamp}.json").write_text(json.dumps(context, ensure_ascii=False, indent=2), encoding="utf-8")
     available = sorted(path.stem.rsplit("_", 1)[-1] for path in DATA_OUTPUT_DIR.glob("market_context_*.json") if path.stem.rsplit("_", 1)[-1] >= DASHBOARD_START_DATE)
     (DATA_OUTPUT_DIR / "latest.json").write_text(json.dumps({"latest": stamp, "available": available}, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -723,7 +731,7 @@ def write_outputs(report: dict, sectors: list[dict], stocks: list[dict], concept
     write_csv(OUTPUT_DIR / f"stock_strength_{stamp}.csv", stocks)
     write_csv(OUTPUT_DIR / f"concept_strength_{stamp}.csv", concepts)
     write_markdown(report, sectors, stocks, as_of)
-    write_dashboard_data(report, sectors, state_conn, as_of)
+    write_dashboard_data(report, sectors, stocks, state_conn, as_of)
 
 
 def persist_sector_metrics(conn: sqlite3.Connection, as_of: str, sectors: list[dict], write_legacy: bool) -> None:

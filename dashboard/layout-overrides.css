@@ -34,3 +34,18 @@
 .signal-inline-risks { display: inline-flex; flex-wrap: wrap; gap: 5px; margin-left: 6px; vertical-align: middle; }
 .signal-inline-risks span { display: inline-block; padding: 2px 7px; border: 1px solid #7b414b; border-radius: 999px; background: #542a34; color: #ffd1d5; font-size: 11px; }
 .signal-summary { line-height: 1.65; }
+
+.sector-leaders { margin-top: 14px; }
+.sector-leaders .detail-heading { display: flex; justify-content: space-between; margin-bottom: 6px; }
+.sector-leader { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 7px; align-items: center; padding: 7px 0; border-top: 1px solid var(--line); }
+.sector-leader-rank { color: var(--muted); font-size: 12px; font-weight: 700; }
+.sector-leader-name b { margin-right: 5px; }
+.sector-leader-name small { color: var(--muted); }
+.sector-leader-meta { margin-top: 1px; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.sector-leader-score { text-align: right; }
+.sector-leader-score b { display: block; color: var(--accent); }
+.sector-leader-score small { color: var(--muted); font-size: 10px; }
+.leader-role { display: inline-block; padding: 1px 5px; border-radius: 999px; font-size: 10px; }
+.leader-role.leader { color: #8be0ff; background: #193747; }
+.leader-role.core { color: #a8d18d; background: #253a28; }
+.leader-role.watch { color: #d2c18d; background: #3d3022; }

@@ -21,7 +21,7 @@ QUANT_RUN_DIR = ROOT / "cache" / "quant_runs"
 MARKET_DATA_DB = ROOT / "cache" / "market_data" / "market_data.sqlite"
 MARKET_REGIME_DB = ROOT / "cache" / "market_regime" / "market_regime.sqlite"
 DASHBOARD_DATA_DIR = ROOT / "dashboard" / "data"
-DASHBOARD_START_DATE = "260716"
+DASHBOARD_START_DATE = "260709"
 VOLUME_PATTERN_LABELS = {
     "decreasing": "量能持续递减",
     "drying": "量能逐步萎缩",

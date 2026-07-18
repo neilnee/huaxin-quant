@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -17,6 +18,8 @@ from scripts.shared import PROJECT_ROOT
 ROOT = Path(PROJECT_ROOT)
 BLOOM_INPUT_DIR = ROOT / "bloom" / "state"
 QUANT_RUN_DIR = ROOT / "cache" / "quant_runs"
+MARKET_DATA_DB = ROOT / "cache" / "market_data" / "market_data.sqlite"
+MARKET_REGIME_DB = ROOT / "cache" / "market_regime" / "market_regime.sqlite"
 DASHBOARD_DATA_DIR = ROOT / "dashboard" / "data"
 DASHBOARD_START_DATE = "260716"
 
@@ -41,7 +44,38 @@ def load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def compact_candidate(row: dict, quant: dict) -> dict:
+def load_industry_context(codes: list[str], run_date: str) -> dict[str, dict]:
+    if not codes or not MARKET_DATA_DB.exists() or not MARKET_REGIME_DB.exists():
+        return {}
+    placeholders = ",".join("?" for _ in codes)
+    try:
+        market_conn = sqlite3.connect(f"file:{MARKET_DATA_DB}?mode=ro", uri=True)
+        market_conn.row_factory = sqlite3.Row
+        rows = market_conn.execute(
+            f"""SELECT si.code, id.industry_name
+                FROM stock_industries si LEFT JOIN industry_definitions id
+                  ON id.snapshot_date=si.snapshot_date AND id.industry_system='sw'
+                 AND id.industry_code=substr(si.sw_industry_code, 1, 5)
+                WHERE si.snapshot_date=? AND si.code IN ({placeholders})""",
+            [run_date, *codes],
+        ).fetchall()
+        market_conn.close()
+        state_conn = sqlite3.connect(f"file:{MARKET_REGIME_DB}?mode=ro", uri=True)
+        state_conn.row_factory = sqlite3.Row
+        sector_rows = state_conn.execute(
+            """SELECT block_name, sector_state, rank_20, relative_strength_20
+                 FROM sector_daily_metrics
+                 WHERE trade_date=? AND block_kind='industry_sw_l2'""",
+            (run_date,),
+        ).fetchall()
+        state_conn.close()
+    except sqlite3.Error:
+        return {}
+    sector_by_name = {row["block_name"]: dict(row) for row in sector_rows}
+    return {row["code"]: {"sw_l2_name": row["industry_name"] or "", "sector": sector_by_name.get(row["industry_name"], {})} for row in rows}
+
+
+def compact_candidate(row: dict, quant: dict, industry: dict) -> dict:
     fields = (
         "code", "name", "bloom_status", "bloom_signal", "event_type", "pool_decision",
         "signal_quality", "risk_level", "model2_stage", "model2_setup_signal", "model2_action_hint",
@@ -52,8 +86,35 @@ def compact_candidate(row: dict, quant: dict) -> dict:
         "llm_insight", "valuation_candidate", "valuation_priority",
     )
     result = {field: row.get(field, "") for field in fields}
-    for field in ("support_price", "invalid_price", "pivot_price", "breakout_level", "structure_type"):
+    quant_overrides = {
+        "model2_stage": "structure_stage",
+        "model2_setup_signal": "setup_signal",
+        "model2_action_hint": "action_hint",
+        "structure_score": "structure_score",
+        "structure_risk_score": "structure_risk_score",
+        "structure_risk_flags": "structure_risk_flags",
+        "setup_score": "setup_score",
+        "setup_quality": "setup_quality",
+        "setup_reasons": "setup_reasons",
+        "setup_misses": "setup_misses",
+        "close": "close",
+        "MA20": "MA20",
+        "MA60": "MA60",
+        "distance_ma20": "distance_ma20",
+        "pivot_distance": "pivot_distance",
+        "volume_dry_up": "volume_dry_up",
+        "volume_pattern": "volume_pattern",
+        "contraction_count": "contraction_count",
+        "contraction_pcts": "contraction_pcts",
+        "contraction_days": "contraction_days",
+    }
+    for target, source in quant_overrides.items():
+        if source in quant:
+            result[target] = quant[source]
+    for field in ("support_price", "invalid_price", "pivot_price", "breakout_level", "structure_type", "contractions", "score_components", "structure_conditions", "structure_misses"):
         result[field] = quant.get(field, "")
+    result["sw_l2_name"] = industry.get("sw_l2_name", "")
+    result["sector"] = industry.get("sector", {})
     return result
 
 
@@ -66,7 +127,8 @@ def build_context(date_yy: str) -> dict:
     quant_results = load_json(quant_path).get("results", []) if quant_path.exists() else []
     quant_by_code = {str(row.get("code", "")).zfill(6): row for row in quant_results}
     active = bloom.get("sections", {}).get("active", [])
-    candidates = [compact_candidate(row, quant_by_code.get(str(row.get("code", "")).zfill(6), {})) for row in active]
+    industry_by_code = load_industry_context([str(row.get("code", "")).zfill(6) for row in active], bloom.get("summary", {}).get("date", ""))
+    candidates = [compact_candidate(row, quant_by_code.get(str(row.get("code", "")).zfill(6), {}), industry_by_code.get(str(row.get("code", "")).zfill(6), {})) for row in active]
     candidates.sort(key=lambda row: (row["bloom_status"] != "TRIGGERED", row["bloom_status"] != "MATURE", -float(row["structure_score"] or 0)))
     return {
         "meta": {"run_date": bloom.get("summary", {}).get("date"), "source": bloom_path.name,

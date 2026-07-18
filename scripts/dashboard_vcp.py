@@ -22,6 +22,13 @@ MARKET_DATA_DB = ROOT / "cache" / "market_data" / "market_data.sqlite"
 MARKET_REGIME_DB = ROOT / "cache" / "market_regime" / "market_regime.sqlite"
 DASHBOARD_DATA_DIR = ROOT / "dashboard" / "data"
 DASHBOARD_START_DATE = "260716"
+VOLUME_PATTERN_LABELS = {
+    "decreasing": "量能持续递减",
+    "drying": "量能逐步萎缩",
+    "flat": "量能基本持平",
+    "mixed": "量能未呈持续缩减",
+    "failed": "量能未达到缩量要求",
+}
 
 
 def normalize_date(value: str) -> str:
@@ -42,6 +49,16 @@ def latest_date() -> str:
 
 def load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def display_vcp_text(value):
+    """Translate Model 2's stable enum terms only in the dashboard package."""
+    if isinstance(value, list):
+        return [display_vcp_text(item) for item in value]
+    text = str(value or "")
+    for raw, label in VOLUME_PATTERN_LABELS.items():
+        text = text.replace(f"量能{raw}", label)
+    return VOLUME_PATTERN_LABELS.get(text, text)
 
 
 def load_industry_context(codes: list[str], run_date: str) -> dict[str, dict]:
@@ -116,6 +133,9 @@ def compact_candidate(row: dict, quant: dict, industry: dict) -> dict:
     # The full contraction scan is retained in Model 2 for audit.  The dashboard
     # must show only the group selected as the current valid VCP structure.
     result["contractions"] = quant.get("contraction_group", [])
+    result["volume_pattern"] = display_vcp_text(result.get("volume_pattern"))
+    result["structure_conditions"] = display_vcp_text(result["structure_conditions"])
+    result["structure_misses"] = display_vcp_text(result["structure_misses"])
     result["sw_l2_name"] = industry.get("sw_l2_name", "")
     result["sector"] = industry.get("sector", {})
     return result

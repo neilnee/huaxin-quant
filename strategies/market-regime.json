@@ -33,8 +33,8 @@
     "sector_heat": {"relative_strength": 0.30, "volume_activity": 0.20, "up_breadth": 0.20, "strong_density": 0.15, "persistence": 0.15}
   },
   "reporting": {
-    "llm_max_tokens": 800,
-    "llm_max_retries": 2
+    "llm_max_tokens": 1600,
+    "llm_max_retries": 4
   },
   "state_thresholds": {
     "offensive": {"trend_min": 65, "breadth_min": 60, "volatility_max": 60, "rotation_max": 45},

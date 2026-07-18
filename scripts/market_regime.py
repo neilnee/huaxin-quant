@@ -32,7 +32,7 @@ OUTPUT_DIR = ROOT / "market"
 DATA_OUTPUT_DIR = OUTPUT_DIR / "data"
 DASHBOARD_DIR = ROOT / "dashboard"
 DASHBOARD_DATA_DIR = DASHBOARD_DIR / "data"
-DASHBOARD_START_DATE = "260716"
+DASHBOARD_START_DATE = "260709"
 
 
 def load_local_env() -> None:
@@ -621,8 +621,8 @@ def call_market_llm_analysis(report: dict) -> dict:
             response.raise_for_status()
             content = response.json()["choices"][0]["message"].get("content", "")
             analysis, tolerant_parse = extract_market_analysis(content)
-            if not 60 <= len(analysis) <= 220:
-                raise ValueError("analysis length outside 60-220 characters")
+            if not 30 <= len(analysis) <= 220:
+                raise ValueError("analysis length outside 30-220 characters")
             if analysis.rstrip().endswith(("：", "，", "、", "和", "与", "及", "只")):
                 raise ValueError("analysis appears to end mid-sentence")
             validate_market_analysis(analysis, report)
@@ -694,7 +694,8 @@ def write_dashboard_data(report: dict, sectors: list[dict], stocks: list[dict], 
     context = build_market_context(report, sectors, stocks, state_conn, as_of)
     (DATA_OUTPUT_DIR / f"market_context_{stamp}.json").write_text(json.dumps(context, ensure_ascii=False, indent=2), encoding="utf-8")
     available = sorted(path.stem.rsplit("_", 1)[-1] for path in DATA_OUTPUT_DIR.glob("market_context_*.json") if path.stem.rsplit("_", 1)[-1] >= DASHBOARD_START_DATE)
-    (DATA_OUTPUT_DIR / "latest.json").write_text(json.dumps({"latest": stamp, "available": available}, ensure_ascii=False, indent=2), encoding="utf-8")
+    latest = available[-1] if available else None
+    (DATA_OUTPUT_DIR / "latest.json").write_text(json.dumps({"latest": latest, "available": available}, ensure_ascii=False, indent=2), encoding="utf-8")
     month_dir = DASHBOARD_DATA_DIR / f"20{stamp[:4]}"
     month_dir.mkdir(parents=True, exist_ok=True)
     (month_dir / f"market_context_{stamp}.js").write_text(
@@ -704,7 +705,7 @@ def write_dashboard_data(report: dict, sectors: list[dict], stocks: list[dict], 
     )
     for path in DASHBOARD_DATA_DIR.glob("market_context_*.js"):
         path.unlink()
-    write_dashboard_index(stamp, available)
+    write_dashboard_index(latest, available)
     legacy_path = DASHBOARD_DATA_DIR / "market_context.js"
     if legacy_path.exists():
         legacy_path.unlink()

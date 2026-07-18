@@ -128,6 +128,40 @@ def run_dashboard_publish(date_yy):
     return result
 
 
+def verify_pipeline_outputs(date_yy):
+    """Confirm every downstream module published the requested date."""
+    root = Path(PROJECT_ROOT)
+    month_dir = root / "dashboard" / "data" / f"20{date_yy[:4]}"
+    required = [
+        root / "pool" / f"pool_{date_yy}.csv",
+        root / "cache" / "quant_runs" / f"quant_{date_yy}.json",
+        root / "bloom" / "state" / f"bloom_input_{date_yy}.json",
+        root / "signal_plan" / f"signal_plan_{date_yy}.json",
+        root / "market" / "data" / f"market_context_{date_yy}.json",
+        month_dir / f"market_context_{date_yy}.js",
+        month_dir / f"vcp_context_{date_yy}.js",
+        month_dir / f"signals_context_{date_yy}.js",
+    ]
+    missing = [str(path.relative_to(root)) for path in required if not path.exists()]
+    index_path = root / "dashboard" / "data" / "index.js"
+    if not index_path.exists():
+        missing.append("dashboard/data/index.js")
+    else:
+        match = re.search(r"=\s*(\{.*\});\s*$", index_path.read_text(encoding="utf-8"), re.S)
+        if not match:
+            missing.append("dashboard/data/index.js（格式无效）")
+        else:
+            index = json.loads(match.group(1))
+            for module in ("market", "vcp", "signals"):
+                if date_yy not in index.get(module, {}).get("available", []):
+                    missing.append(f"dashboard index {module}:{date_yy}")
+    if missing:
+        print("[daily] 页面/产物完整性核验失败：" + "；".join(missing))
+        return False
+    print(f"[daily] ✓ 完整性核验通过：{date_yy} 三类页面数据均已发布")
+    return True
+
+
 def open_dashboard():
     """Open the local dashboard in the system default browser after publishing."""
     dashboard = Path(PROJECT_ROOT) / "dashboard" / "index.html"
@@ -185,7 +219,7 @@ def main():
 
     progress_path = _progress_path(date_yy)
     tracker = ProgressTracker(progress_path)
-    tracker.init(["data_update", "pool", "quant", "bloom", "signal_plan", "dashboard", "open_dashboard", "zixuan"])
+    tracker.init(["data_update", "pool", "quant", "bloom", "signal_plan", "dashboard", "verify", "open_dashboard", "zixuan"])
     tracker.set_date(date_yy)
 
     print(f"[daily] 流水线启动 {date_yy}")
@@ -275,7 +309,15 @@ def main():
     tracker.step_done("dashboard")
     print("[daily] ✓ dashboard done")
 
-    # ── Step 7: Open dashboard ──
+    # ── Step 7: Verify all date-scoped outputs ──
+    tracker.step_start("verify")
+    if not verify_pipeline_outputs(date_yy):
+        errors.append("verify: missing date-scoped output")
+        tracker.step_done("verify", error="missing date-scoped output")
+        stop_after("完整性核验")
+    tracker.step_done("verify")
+
+    # ── Step 8: Open dashboard ──
     tracker.step_start("open_dashboard")
     print("[daily] → 打开数据分析面板")
     result = open_dashboard()
@@ -286,7 +328,7 @@ def main():
         tracker.step_done("open_dashboard")
         print("[daily] ✓ dashboard opened")
 
-    # ── Step 8: Eastmoney all-watchlist rebuild ──
+    # ── Step 9: Eastmoney all-watchlist rebuild ──
     if not _env_flag("ENABLE_ZIXUAN_SYNC"):
         tracker.step_done("zixuan")
         print("[daily] - zixuan disabled (set ENABLE_ZIXUAN_SYNC=true in .env to enable)")

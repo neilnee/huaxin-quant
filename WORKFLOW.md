@@ -21,7 +21,7 @@ python3 scripts/daily.py --force-refresh &        # 强制刷新数据缓存
 启动后立即返回，不阻塞当前终端。流水线在后台按顺序执行：
 
 ```text
-市场数据增量更新 → 模型一 Pool → 模型二 Quant → Bloom 信号 → Signal Plan → 数据分析面板发布 → 打开本地面板 → 东方财富自选同步（可选）
+市场数据增量更新 → 模型一 Pool → 模型二 Quant → Bloom 信号 → Signal Plan → 数据分析面板发布 → 产物完整性核验 → 打开本地面板 → 东方财富自选同步（可选）
 ```
 
 ## 查看进度
@@ -33,7 +33,7 @@ python3 scripts/monitor.py
 monitor 每 2 秒刷新一次，进度记录写入 `.tmp/daily_progress_<YYMMDD>.md`：
 
 - **运行中**：显示阶段状态 + 进度条（模型二含逐只股票进度）
-- **完成后**：保留最终阶段结果，monitor 退出
+- **完成后**：保留最终阶段结果，包含三类页面数据的日期一致性核验，monitor 退出
 
 ```bash
 python3 scripts/monitor.py --date 260709         # 指定日期
@@ -85,7 +85,8 @@ python3 scripts/init_runtime.py
 
 ## 异常处理
 
-- 数据更新、Pool、Quant、Bloom、Signal Plan 或页面发布失败 → 流水线中止，避免下游使用过期产物
+- 数据更新、Pool、Quant、Bloom、Signal Plan、页面发布或产物完整性核验失败 → 流水线中止，避免下游使用过期产物
+- `daily.py` 不带 `--date` 时，按 15:00 分界线选择预期最近交易日；带 `--date` 时，所有阶段和三类页面数据包均使用该日期，可用于按日回补。
 - Bloom LLM 调用失败（退出码 3）→ 保留规则产物，继续执行后续阶段
 - 浏览器无法自动启动 → 不影响已生成的页面数据，可手动打开 `dashboard/index.html`
 - 数据异常 → Bloom 标记 `DATA_ISSUE`，不删除候选

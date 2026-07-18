@@ -297,6 +297,17 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
         trend_position = (50 if row.close > row.ma20 else 0) + (50 if row.close > row.ma60 else 0)
         strength = 0.35 * row.rps20_market + 0.25 * row.rps60_market + 0.20 * row.rps20_industry + 0.10 * trend_position + 0.10 * min(100, row.volume_ratio * 50)
         stock_rows.append({"date": as_of, "code": row.code, "name": row.name, "close": round(float(row.close), 4), "return_5": round(float(row.ret5 * 100), 3), "return_20": round(float(row.ret20 * 100), 3), "return_60": round(float(row.ret60 * 100), 3), "rps5_market": round(float(row.rps5_market), 2), "rps20_market": round(float(row.rps20_market), 2), "rps60_market": round(float(row.rps60_market), 2), "sw_l2_code": row.sw_l2_code, "sw_l2_name": row.industry_name if pd.notna(row.industry_name) else "", "rps20_industry": round(float(row.rps20_industry), 2), "rps60_industry": round(float(row.rps60_industry), 2), "industry_relative_strength_20": industry_row.get("relative_strength_20"), "industry_rank": industry_row.get("rank_20"), "above_ma20": bool(row.close > row.ma20), "above_ma60": bool(row.close > row.ma60), "distance_high60_pct": round(float((row.close / row.high60 - 1) * 100), 3), "atr14_pct": round(float(row.atr14_pct * 100), 3), "volume_ratio_20": round(float(row.volume_ratio), 3), "strength_score": round(float(strength), 2)})
+    stock_by_code = {row["code"]: row for row in stock_rows}
+    sector_leaders = {}
+    for (kind, name), group in merged.groupby(["block_kind", "block_name"]):
+        if kind not in {"industry_sw_l1", "industry_sw_l2", "gn", "fg"}:
+            continue
+        members = [stock_by_code[code] for code in group.code.drop_duplicates() if code in stock_by_code]
+        leaders = []
+        for rank, stock in enumerate(sorted(members, key=lambda item: item["strength_score"], reverse=True)[:3], start=1):
+            role = "领涨" if rank == 1 else "趋势核心" if stock["above_ma20"] and stock["above_ma60"] else "观察"
+            leaders.append({key: stock[key] for key in ("code", "name", "strength_score", "rps20_market", "rps20_industry", "above_ma20", "above_ma60", "volume_ratio_20")} | {"rank": rank, "role": role})
+        sector_leaders[f"{kind}:{name}"] = leaders
     concept_heat = {(row["block_name"]): row for row in sector_rows if row["block_type"] == "gn"}
     concept_frame = merged[merged.block_kind == "gn"].merge(stock_frame[["code", "name", "ret20"]], on="code", how="left", suffixes=("", "_stock"))
     concept_rows = []
@@ -306,7 +317,7 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
         within = float((same_concept.ret20 <= row.ret20).mean() * 100)
         heat = concept_heat.get(name, {})
         concept_rows.append({"date": as_of, "code": code, "name": row.get("name", ""), "concept_name": name, "concept_relative_strength_20": heat.get("relative_strength_20"), "concept_rank": heat.get("rank_20"), "stock_return_20": round(float(row.ret20 * 100), 3), "rps20_within_concept": round(within, 2), "stock_vs_concept_return_20": round(float((row.ret20 - same_concept.ret20.mean()) * 100), 3)})
-    report = {"meta": {"run_date": as_of, "strategy_version": CONFIG["strategy_version"], "data_status": "VALID", "config": str(CONFIG_PATH)}, "state": {"current": state, "raw_state": state, "trend_score": round(trend_score, 2), "volatility_score": round(volatility_score, 2), "breadth_score": round(float(breadth_score), 2), "rotation_score": rotation}, "benchmarks": benchmark_metrics, "breadth": breadth, "rotation": {"top10_sets": {k: sorted(v) for k, v in top_sets.items()}}}
+    report = {"meta": {"run_date": as_of, "strategy_version": CONFIG["strategy_version"], "data_status": "VALID", "config": str(CONFIG_PATH)}, "state": {"current": state, "raw_state": state, "trend_score": round(trend_score, 2), "volatility_score": round(volatility_score, 2), "breadth_score": round(float(breadth_score), 2), "rotation_score": rotation}, "benchmarks": benchmark_metrics, "breadth": breadth, "rotation": {"top10_sets": {k: sorted(v) for k, v in top_sets.items()}}, "sector_leaders": sector_leaders}
     return report, sector_rows, stock_rows, concept_rows
 
 
@@ -654,14 +665,7 @@ def build_market_context(report: dict, sectors: list[dict], stocks: list[dict], 
             top_scopes.append({"scope_type": kind, "scope_name": row["block_name"], "advance_ratio": row["up_breadth"],
                 "median_return_1": row["median_return_1"], "above_ma20_ratio": row["above_ma20_ratio"],
                 "above_ma60_ratio": row["above_ma60_ratio"], "new_high_ratio": row["new_high_ratio"], "member_count": row["member_count"]})
-    sector_leaders = {}
-    for sector in rankings["industry_sw_l2"]:
-        members = [stock for stock in stocks if stock.get("sw_l2_name") == sector["block_name"]]
-        leaders = []
-        for rank, stock in enumerate(sorted(members, key=lambda item: item.get("strength_score", 0), reverse=True)[:3], start=1):
-            role = "领涨" if rank == 1 else "趋势核心" if stock.get("above_ma20") and stock.get("above_ma60") else "观察"
-            leaders.append({key: stock.get(key) for key in ("code", "name", "strength_score", "rps20_industry", "return_5", "return_20", "above_ma20", "above_ma60", "volume_ratio_20")} | {"rank": rank, "role": role})
-        sector_leaders[sector["block_name"]] = leaders
+    sector_leaders = report.get("sector_leaders", {})
     baseline_count = state_conn.execute("SELECT count(DISTINCT trade_date) FROM sector_daily_metrics WHERE trade_date<=? AND history_basis='current_snapshot_backfill'", (as_of,)).fetchone()[0]
     return {"meta": {**report["meta"], "generated_for": "market_dashboard", "history_window_days": 20,
         "sector_history_note": "当前成分快照回填（非严格点时）" if baseline_count else "每日快照（点时）",

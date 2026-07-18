@@ -31,19 +31,6 @@
 .signal-plan-grid span { display: block; color: var(--muted); font-size: 11px; }
 .signal-plan-grid b { display: block; margin-top: 2px; }
 
-#signals-detail .vcp-flags {
-  margin-top: 16px;
-  padding: 10px;
-  border: 1px solid #7b414b;
-  border-radius: 7px;
-  background: #321f27;
-}
-#signals-detail .vcp-flags::before {
-  content: "风险提示";
-  display: block;
-  margin-bottom: 7px;
-  color: #ffb3b8;
-  font-size: 12px;
-  font-weight: 700;
-}
-#signals-detail .vcp-flags span { background: #542a34; color: #ffd1d5; }
+.signal-inline-risks { display: inline-flex; flex-wrap: wrap; gap: 5px; margin-left: 6px; vertical-align: middle; }
+.signal-inline-risks span { display: inline-block; padding: 2px 7px; border: 1px solid #7b414b; border-radius: 999px; background: #542a34; color: #ffd1d5; font-size: 11px; }
+.signal-summary { line-height: 1.65; }

@@ -122,6 +122,32 @@ function renderSignalDetail(row){
   $("signals-detail").innerHTML=`<p class="section-label">买点详情</p><h3>${esc(row.name)} <span class="muted">${esc(row.code)}</span></h3><span class="status-pill ${actual?"status-triggered":"status-early"}">${status}</span><div class="vcp-metrics">${metric("买点类型",esc(signalTypeLabel(row.setup_signal)))}${metric(actual?"质量等级":"最高潜在等级",esc(row.setup_quality||"—"))}${metric(actual?"买点分":"结构分",vcpNumber(actual?row.setup_score:row.structure_score,0))}${metric("建议仓位",esc(row.suggested_position||"—"))}${metric("动作提示",esc(row.action_hint||"—"))}${metric("结构阶段",esc(row.structure_stage||row.model2_stage||"—"))}</div><h4>量价参考</h4><div class="signal-reference-grid">${metric("当前价格",vcpNumber(row.close,2))}${metric("MA20 / MA60",`${vcpNumber(row.MA20,2)} / ${vcpNumber(row.MA60,2)}`)}${metric("Pivot",vcpNumber(row.pivot_price,2))}${metric("支撑 / 失效",`${vcpNumber(row.support_price,2)} / ${vcpNumber(row.invalid_price,2)}`)}${metric("距 Pivot",`${vcpNumber(row.pivot_distance)}%`)}${metric("距 MA20",`${vcpNumber(row.distance_ma20)}%`)}${metric("当日 / 20日均量",`${vcpVolume(row.volume)} / ${vcpVolume(row.vol_ma20)}`)}${metric("量比 / 缩量系数",`${vcpNumber(row.vol_ratio,2)}x / ${vcpNumber(row.volume_dry_up,2)}x`)}</div><h4>${actual?"参考触发条件":"次日触发条件"}</h4>${conditionHtml}<h4>${actual?"买点评分组成":"计划质量"}</h4>${scoreHtml}<h4>买点说明</h4><p><b>满足条件：</b>${esc(reasons.join("；")||"等待计划条件满足")}</p><p class="muted"><b>待确认 / 风险：</b>${esc(misses.map(signalRiskLabel).join("；")||"无")}</p>${row.llm_note?`<p class="detail-meta">计划说明：${esc(row.llm_note)}</p>`:""}${flags.length?`<div class="vcp-flags">${flags.map(flag=>`<span title="${esc(flag)}">${esc(signalRiskLabel(flag))}</span>`).join("")}</div>`:""}`;
 }
 
+const renderSignalDetailBase = renderSignalDetail;
+renderSignalDetail = function (row) {
+  renderSignalDetailBase(row);
+  if (!row) return;
+  const detail = $("signals-detail");
+  const flags = (row.setup_risk_flags || []).concat(row.structure_risk_flags || []);
+  const status = detail.querySelector(".status-pill");
+  if (status && flags.length) {
+    status.insertAdjacentHTML("afterend", `<span class="signal-inline-risks">${flags.map((flag) => `<span>${esc(signalRiskLabel(flag))}</span>`).join("")}</span>`);
+  }
+  detail.querySelector(".vcp-flags")?.remove();
+  const heading = [...detail.querySelectorAll("h4")].find((item) => item.textContent === "买点说明");
+  if (!heading) return;
+  let next = heading.nextElementSibling;
+  while (next && next.tagName !== "H4") {
+    const following = next.nextElementSibling;
+    next.remove();
+    next = following;
+  }
+  heading.textContent = "买点概述";
+  const summary = row.signal_kind === "PLAN"
+    ? `${row.plan_reason || "次日买点计划"}，最高潜在${row.setup_quality || "—"}级；仅当上方量价条件同时满足时才转为实际买点。`
+    : `${signalTypeLabel(row.setup_signal)}已在当日触发，${row.reason || "请结合上方量价参考与失效位跟踪。"}`;
+  heading.insertAdjacentHTML("afterend", `<p class="signal-summary">${esc(summary)}</p>`);
+};
+
 function moduleDateData(module) {
   const key = module === "signals" ? "signals" : module === "vcp" ? "vcp" : "market";
   return window.QUANT_DASHBOARD_INDEX?.[key] || window.QUANT_DASHBOARD_INDEX?.market || { latest: null, available: [] };

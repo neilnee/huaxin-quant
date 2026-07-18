@@ -32,7 +32,7 @@ OUTPUT_DIR = ROOT / "market"
 DATA_OUTPUT_DIR = OUTPUT_DIR / "data"
 DASHBOARD_DIR = ROOT / "dashboard"
 DASHBOARD_DATA_DIR = DASHBOARD_DIR / "data"
-DASHBOARD_START_DATE = "260716"
+DASHBOARD_START_DATE = "260709"
 
 
 def load_local_env() -> None:
@@ -297,6 +297,17 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
         trend_position = (50 if row.close > row.ma20 else 0) + (50 if row.close > row.ma60 else 0)
         strength = 0.35 * row.rps20_market + 0.25 * row.rps60_market + 0.20 * row.rps20_industry + 0.10 * trend_position + 0.10 * min(100, row.volume_ratio * 50)
         stock_rows.append({"date": as_of, "code": row.code, "name": row.name, "close": round(float(row.close), 4), "return_5": round(float(row.ret5 * 100), 3), "return_20": round(float(row.ret20 * 100), 3), "return_60": round(float(row.ret60 * 100), 3), "rps5_market": round(float(row.rps5_market), 2), "rps20_market": round(float(row.rps20_market), 2), "rps60_market": round(float(row.rps60_market), 2), "sw_l2_code": row.sw_l2_code, "sw_l2_name": row.industry_name if pd.notna(row.industry_name) else "", "rps20_industry": round(float(row.rps20_industry), 2), "rps60_industry": round(float(row.rps60_industry), 2), "industry_relative_strength_20": industry_row.get("relative_strength_20"), "industry_rank": industry_row.get("rank_20"), "above_ma20": bool(row.close > row.ma20), "above_ma60": bool(row.close > row.ma60), "distance_high60_pct": round(float((row.close / row.high60 - 1) * 100), 3), "atr14_pct": round(float(row.atr14_pct * 100), 3), "volume_ratio_20": round(float(row.volume_ratio), 3), "strength_score": round(float(strength), 2)})
+    stock_by_code = {row["code"]: row for row in stock_rows}
+    sector_leaders = {}
+    for (kind, name), group in merged.groupby(["block_kind", "block_name"]):
+        if kind not in {"industry_sw_l1", "industry_sw_l2", "gn", "fg"}:
+            continue
+        members = [stock_by_code[code] for code in group.code.drop_duplicates() if code in stock_by_code]
+        leaders = []
+        for rank, stock in enumerate(sorted(members, key=lambda item: item["strength_score"], reverse=True)[:3], start=1):
+            role = "领涨" if rank == 1 else "趋势核心" if stock["above_ma20"] and stock["above_ma60"] else "观察"
+            leaders.append({key: stock[key] for key in ("code", "name", "strength_score", "rps20_market", "rps20_industry", "return_20", "above_ma20", "above_ma60", "volume_ratio_20")} | {"rank": rank, "role": role})
+        sector_leaders[f"{kind}:{name}"] = leaders
     concept_heat = {(row["block_name"]): row for row in sector_rows if row["block_type"] == "gn"}
     concept_frame = merged[merged.block_kind == "gn"].merge(stock_frame[["code", "name", "ret20"]], on="code", how="left", suffixes=("", "_stock"))
     concept_rows = []
@@ -306,7 +317,7 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
         within = float((same_concept.ret20 <= row.ret20).mean() * 100)
         heat = concept_heat.get(name, {})
         concept_rows.append({"date": as_of, "code": code, "name": row.get("name", ""), "concept_name": name, "concept_relative_strength_20": heat.get("relative_strength_20"), "concept_rank": heat.get("rank_20"), "stock_return_20": round(float(row.ret20 * 100), 3), "rps20_within_concept": round(within, 2), "stock_vs_concept_return_20": round(float((row.ret20 - same_concept.ret20.mean()) * 100), 3)})
-    report = {"meta": {"run_date": as_of, "strategy_version": CONFIG["strategy_version"], "data_status": "VALID", "config": str(CONFIG_PATH)}, "state": {"current": state, "raw_state": state, "trend_score": round(trend_score, 2), "volatility_score": round(volatility_score, 2), "breadth_score": round(float(breadth_score), 2), "rotation_score": rotation}, "benchmarks": benchmark_metrics, "breadth": breadth, "rotation": {"top10_sets": {k: sorted(v) for k, v in top_sets.items()}}}
+    report = {"meta": {"run_date": as_of, "strategy_version": CONFIG["strategy_version"], "data_status": "VALID", "config": str(CONFIG_PATH)}, "state": {"current": state, "raw_state": state, "trend_score": round(trend_score, 2), "volatility_score": round(volatility_score, 2), "breadth_score": round(float(breadth_score), 2), "rotation_score": rotation}, "benchmarks": benchmark_metrics, "breadth": breadth, "rotation": {"top10_sets": {k: sorted(v) for k, v in top_sets.items()}}, "sector_leaders": sector_leaders}
     return report, sector_rows, stock_rows, concept_rows
 
 
@@ -610,8 +621,8 @@ def call_market_llm_analysis(report: dict) -> dict:
             response.raise_for_status()
             content = response.json()["choices"][0]["message"].get("content", "")
             analysis, tolerant_parse = extract_market_analysis(content)
-            if not 60 <= len(analysis) <= 220:
-                raise ValueError("analysis length outside 60-220 characters")
+            if not 30 <= len(analysis) <= 220:
+                raise ValueError("analysis length outside 30-220 characters")
             if analysis.rstrip().endswith(("：", "，", "、", "和", "与", "及", "只")):
                 raise ValueError("analysis appears to end mid-sentence")
             validate_market_analysis(analysis, report)
@@ -627,7 +638,7 @@ def call_market_llm_analysis(report: dict) -> dict:
     return {"status": "failed", "reason": last_error, "provider": "deepseek", "model": model, "analysis": ""}
 
 
-def build_market_context(report: dict, sectors: list[dict], state_conn: sqlite3.Connection, as_of: str) -> dict:
+def build_market_context(report: dict, sectors: list[dict], stocks: list[dict], state_conn: sqlite3.Connection, as_of: str) -> dict:
     kinds = ("industry_sw_l1", "industry_sw_l2", "gn", "fg")
     rankings = {kind: [row for row in sectors if row["block_type"] == kind][:20] for kind in kinds}
     selected = {(kind, row["block_name"]) for kind, rows in rankings.items() for row in rows}
@@ -654,23 +665,37 @@ def build_market_context(report: dict, sectors: list[dict], state_conn: sqlite3.
             top_scopes.append({"scope_type": kind, "scope_name": row["block_name"], "advance_ratio": row["up_breadth"],
                 "median_return_1": row["median_return_1"], "above_ma20_ratio": row["above_ma20_ratio"],
                 "above_ma60_ratio": row["above_ma60_ratio"], "new_high_ratio": row["new_high_ratio"], "member_count": row["member_count"]})
+    sector_leaders = report.get("sector_leaders", {})
     baseline_count = state_conn.execute("SELECT count(DISTINCT trade_date) FROM sector_daily_metrics WHERE trade_date<=? AND history_basis='current_snapshot_backfill'", (as_of,)).fetchone()[0]
     return {"meta": {**report["meta"], "generated_for": "market_dashboard", "history_window_days": 20,
         "sector_history_note": "当前成分快照回填（非严格点时）" if baseline_count else "每日快照（点时）",
         "baseline_history_days": baseline_count},
         "market_state": market_state_view(report), "market_state_explainer": market_state_explainer(report), "indexes": report["benchmarks"],
         "breadth": {"all_a": report["breadth"], "top_scopes": top_scopes},
-        "sector_rankings": rankings, "sector_history": sector_history, "sector_rank_matrix": rank_matrix}
+        "sector_rankings": rankings, "sector_history": sector_history, "sector_rank_matrix": rank_matrix, "sector_leaders": sector_leaders}
 
 
-def write_dashboard_data(report: dict, sectors: list[dict], state_conn: sqlite3.Connection, as_of: str) -> None:
+def write_dashboard_index(market_latest: str | None, market_available: list[str]) -> None:
+    index = {"market": {"latest": market_latest, "available": market_available}}
+    for kind in ("signals", "vcp"):
+        dates = sorted(path.stem.rsplit("_", 1)[-1] for path in DASHBOARD_DATA_DIR.glob(f"*/{kind}_context_*.js"))
+        if dates:
+            index[kind] = {"latest": dates[-1], "available": dates}
+    (DASHBOARD_DATA_DIR / "index.js").write_text(
+        "window.QUANT_DASHBOARD_INDEX = " + json.dumps(index, ensure_ascii=False) + ";\n",
+        encoding="utf-8",
+    )
+
+
+def write_dashboard_data(report: dict, sectors: list[dict], stocks: list[dict], state_conn: sqlite3.Connection, as_of: str) -> None:
     DATA_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     DASHBOARD_DATA_DIR.mkdir(parents=True, exist_ok=True)
     stamp = today_stamp(as_of)
-    context = build_market_context(report, sectors, state_conn, as_of)
+    context = build_market_context(report, sectors, stocks, state_conn, as_of)
     (DATA_OUTPUT_DIR / f"market_context_{stamp}.json").write_text(json.dumps(context, ensure_ascii=False, indent=2), encoding="utf-8")
     available = sorted(path.stem.rsplit("_", 1)[-1] for path in DATA_OUTPUT_DIR.glob("market_context_*.json") if path.stem.rsplit("_", 1)[-1] >= DASHBOARD_START_DATE)
-    (DATA_OUTPUT_DIR / "latest.json").write_text(json.dumps({"latest": stamp, "available": available}, ensure_ascii=False, indent=2), encoding="utf-8")
+    latest = available[-1] if available else None
+    (DATA_OUTPUT_DIR / "latest.json").write_text(json.dumps({"latest": latest, "available": available}, ensure_ascii=False, indent=2), encoding="utf-8")
     month_dir = DASHBOARD_DATA_DIR / f"20{stamp[:4]}"
     month_dir.mkdir(parents=True, exist_ok=True)
     (month_dir / f"market_context_{stamp}.js").write_text(
@@ -680,11 +705,7 @@ def write_dashboard_data(report: dict, sectors: list[dict], state_conn: sqlite3.
     )
     for path in DASHBOARD_DATA_DIR.glob("market_context_*.js"):
         path.unlink()
-    (DASHBOARD_DATA_DIR / "index.js").write_text(
-        "window.QUANT_DASHBOARD_INDEX = "
-        + json.dumps({"market": {"latest": stamp, "available": available}}, ensure_ascii=False)
-        + ";\n", encoding="utf-8"
-    )
+    write_dashboard_index(latest, available)
     legacy_path = DASHBOARD_DATA_DIR / "market_context.js"
     if legacy_path.exists():
         legacy_path.unlink()
@@ -703,7 +724,7 @@ def publish_dashboard_archives() -> list[str]:
         if path.stem.rsplit("_", 1)[-1] < DASHBOARD_START_DATE:
             path.unlink()
     latest = available[-1] if available else None
-    (DASHBOARD_DATA_DIR / "index.js").write_text("window.QUANT_DASHBOARD_INDEX = " + json.dumps({"market": {"latest": latest, "available": available}}, ensure_ascii=False) + ";\n", encoding="utf-8")
+    write_dashboard_index(latest, available)
     return available
 
 
@@ -715,7 +736,7 @@ def write_outputs(report: dict, sectors: list[dict], stocks: list[dict], concept
     write_csv(OUTPUT_DIR / f"stock_strength_{stamp}.csv", stocks)
     write_csv(OUTPUT_DIR / f"concept_strength_{stamp}.csv", concepts)
     write_markdown(report, sectors, stocks, as_of)
-    write_dashboard_data(report, sectors, state_conn, as_of)
+    write_dashboard_data(report, sectors, stocks, state_conn, as_of)
 
 
 def persist_sector_metrics(conn: sqlite3.Connection, as_of: str, sectors: list[dict], write_legacy: bool) -> None:

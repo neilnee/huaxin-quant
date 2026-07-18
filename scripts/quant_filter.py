@@ -62,6 +62,7 @@ STRATEGY_VERSION = QUANT_STRATEGY["strategy_version"]
 
 VCP_CFG = QUANT_STRATEGY["vcp"]
 POST_BREAKOUT_CFG = VCP_CFG["post_breakout"]
+POST_GROUP_RESET_CFG = VCP_CFG["post_group_reset"]
 BASE_CFG = QUANT_STRATEGY["base_rules"]
 CONTRACTION_CFG = QUANT_STRATEGY["contraction_rules"]
 STAGE_CFG = QUANT_STRATEGY["stage_rules"]
@@ -605,6 +606,55 @@ def _check_bottom_lifting(contractions, threshold_pct=0.0):
     return last_low >= first_low * (1 + threshold_pct / 100)
 
 
+def detect_post_group_support_break(df, last_end_idx, last_low):
+    """Return a confirmed pre-breakout support break after a candidate VCP group.
+
+    This is intentionally stricter than an ordinary stop: it requires consecutive
+    closes below the buffered last contraction low and a separate deep-close
+    confirmation, so normal pullbacks cannot invalidate a historical group.
+    """
+    cfg = POST_GROUP_RESET_CFG
+    if not cfg.get("enabled", False) or not last_low:
+        return None
+
+    start_idx = last_end_idx + 1
+    end_idx = min(len(df), start_idx + int(cfg["max_days_after_group"]))
+    after = df.iloc[start_idx:end_idx]
+    if after.empty:
+        return None
+
+    close_break = last_low * float(cfg["close_break_ratio"])
+    deep_break = last_low * float(cfg["deep_break_close_ratio"])
+    min_consecutive = int(cfg["min_consecutive_close_days"])
+    consecutive = 0
+    first_break_date = None
+    confirmed_first_break_date = None
+    confirmed_date = None
+
+    for _, row in after.iterrows():
+        if row["close"] < close_break:
+            consecutive += 1
+            if consecutive == 1:
+                first_break_date = str(row["date"])
+            if consecutive >= min_consecutive and confirmed_date is None:
+                confirmed_date = str(row["date"])
+                confirmed_first_break_date = first_break_date
+        else:
+            consecutive = 0
+            first_break_date = None
+
+    if confirmed_date is None or float(after["close"].min()) >= deep_break:
+        return None
+    return {
+        "first_break_date": confirmed_first_break_date,
+        "confirmed_date": confirmed_date,
+        "confirmed_idx": int(after.index[after["date"] == confirmed_date][0]),
+        "lowest_close": float(after["close"].min()),
+        "close_break": close_break,
+        "deep_break": deep_break,
+    }
+
+
 def evaluate_vcp_group(df, group):
     latest = df.iloc[-1]
     close = latest["close"]
@@ -654,12 +704,19 @@ def evaluate_vcp_group(df, group):
             post_breakout_state = "POST_BREAKOUT_CONSOLIDATING"
 
     invalid_reasons = []
+    post_group_support_break = None
+    # A completed breakout has its own lifecycle rules. This guard is only for a
+    # pre-breakout historical group whose support was subsequently destroyed.
+    if not breakout:
+        post_group_support_break = detect_post_group_support_break(df, last_end_idx, last_low)
     if structure_age_days > VCP_MAX_STRUCTURE_AGE_DAYS:
         invalid_reasons.append("structure_too_old")
     if pivot_distance is not None and pivot_distance < VCP_MIN_PIVOT_DISTANCE:
         invalid_reasons.append("far_below_structure_pivot")
     if not breakout and post_structure_gain > VCP_MAX_POST_GAIN:
         invalid_reasons.append("post_structure_extended")
+    if post_group_support_break:
+        invalid_reasons.append("post_group_support_break")
     if post_breakout_state == "POST_BREAKOUT_FAILED":
         invalid_reasons.append("post_structure_drawdown")
     if post_breakout_state == "POST_BREAKOUT_EXPIRED":
@@ -678,6 +735,7 @@ def evaluate_vcp_group(df, group):
         "post_structure_gain": post_structure_gain,
         "post_structure_drawdown": post_structure_drawdown,
         "post_breakout_state": post_breakout_state,
+        "post_group_support_break": post_group_support_break,
         "breakout": breakout,
         "breakout_days": breakout_days,
     }
@@ -691,6 +749,7 @@ def select_current_vcp_group(df, contractions):
     latest = df.iloc[-1]
     candidates = []
     best_invalid = None
+    reset_events = []
     active_cluster = split_contraction_clusters(contractions)[-1]
     max_size = min(CONTRACTION_CFG["max_recent_contractions"], len(active_cluster))
     max_span = CONTRACTION_CFG.get("max_group_span_days")
@@ -702,6 +761,8 @@ def select_current_vcp_group(df, contractions):
             if contraction_group_has_reset_expansion(group):
                 continue
             info = evaluate_vcp_group(df, group)
+            if info.get("post_group_support_break"):
+                reset_events.append(info["post_group_support_break"])
             if info["structure_valid"]:
                 decrease = contraction_decrease_status(group)
                 volume_pattern = volume_pattern_for_contractions(group, latest)
@@ -731,6 +792,10 @@ def select_current_vcp_group(df, contractions):
                 continue
             if best_invalid is None or info["structure_age_days"] < best_invalid["structure_age_days"]:
                 best_invalid = info
+
+    if candidates and reset_events:
+        for _, info in candidates:
+            info["rebuild_after_reset"] = True
 
     if candidates:
         candidates.sort(key=lambda item: item[0], reverse=True)
@@ -809,6 +874,7 @@ def detect_vcp_structure(df):
     post_structure_gain = current["post_structure_gain"] if current else None
     post_structure_drawdown = current["post_structure_drawdown"] if current else None
     post_breakout_state = current["post_breakout_state"] if current else "PRE_BREAKOUT"
+    rebuild_after_reset = bool(current and current.get("rebuild_after_reset"))
     breakout = current["breakout"] if current else None
     breakout_days = current["breakout_days"] if current else None
 
@@ -945,6 +1011,7 @@ def detect_vcp_structure(df):
         "post_structure_gain": post_structure_gain,
         "post_structure_drawdown": post_structure_drawdown,
         "post_breakout_state": post_breakout_state,
+        "rebuild_after_reset": rebuild_after_reset,
         "breakout": breakout,
         "breakout_days": breakout_days,
         "vcp_quality": quality_map.get(state, "D"),
@@ -1754,6 +1821,12 @@ def setup_position(setup_signal, setup_quality):
 def classify_result(structure, pullback, breakout, retest, score, overheat):
     internal_stage = structure.get("state")
     post_breakout_state = structure.get("post_breakout_state", "PRE_BREAKOUT")
+    if (
+        structure.get("rebuild_after_reset")
+        and internal_stage == "REJECT"
+        and post_breakout_state == "POST_BREAKOUT_RETEST"
+    ):
+        return "NONE", "NONE", "REJECT", CLASSIFICATION_CFG["no_position"]
     if retest.get("hit"):
         position = setup_position("RETEST_BUY", retest.get("setup_quality", "D"))
         return "VCP", "RETEST_BUY", "BUY_STANDARD", position

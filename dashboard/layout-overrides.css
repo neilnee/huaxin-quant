@@ -5,3 +5,21 @@
 @media (max-width: 1000px) {
   .vcp-layout { grid-template-columns: 1fr; }
 }
+
+.signal-reference-grid,
+.signal-score-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.signal-reference-grid .vcp-metric,
+.signal-score-grid > div {
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #101722;
+}
+
+.signal-score-grid span { display: block; color: var(--muted); font-size: 11px; }
+.signal-score-grid b { display: block; margin-top: 2px; }

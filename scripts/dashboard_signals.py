@@ -7,7 +7,8 @@ sys.path.insert(0, str(Path(os.path.abspath(__file__)).parents[1]))
 from scripts.shared import PROJECT_ROOT
 
 ROOT=Path(PROJECT_ROOT); RUNS=ROOT/"cache"/"quant_runs"; OUT=ROOT/"dashboard"/"data"; START="260716"
-FIELDS=("code","name","structure_stage","setup_signal","action_hint","suggested_position","setup_score","setup_quality","setup_reasons","setup_misses","setup_risk_flags","structure_score","structure_risk_score","structure_risk_flags","close","MA20","MA60","pivot_price","support_price","invalid_price","pivot_distance","distance_ma20","volume_dry_up","vol_ratio","chg_5","chg_20","setup_plan_inputs","reason")
+FIELDS=("code","name","structure_stage","setup_signal","action_hint","suggested_position","setup_pattern_score","setup_score","setup_quality","setup_reasons","setup_misses","setup_risk_flags","structure_score","structure_risk_score","structure_risk_flags","close","MA20","MA60","pivot_price","structure_pivot","support_price","invalid_price","breakout_level","last_contraction_low","pivot_distance","distance_ma20","volume","vol_ma5","vol_ma20","volume_dry_up","vol_ratio","volume_pattern","chg_5","chg_20","setup_plan_inputs","reason")
+PLAN_TYPES=(("pullback","PULLBACK_BUY"),("breakout","BREAKOUT_BUY"),("retest","RETEST_BUY"))
 def stamp(v):
  d=re.sub(r"\D","",v); return d[2:] if len(d)==8 else d
 def published_dates(kind):
@@ -31,10 +32,15 @@ def build(date):
  for item in raw.get("results",[]):
   plans=item.get("setup_plan_inputs") or {}
   triggered=item.get("setup_signal") not in (None,"","NONE")
-  planned=bool(plans) and item.get("structure_stage") in {"VCP_FORMING","VCP_MATURE","VCP_TIGHT"}
-  if triggered or planned:
-   row={key:item.get(key) for key in FIELDS}; row["signal_kind"]="TRIGGERED" if triggered else "PLAN"; rows.append(row)
- rows.sort(key=lambda r:(r["signal_kind"]!="TRIGGERED", -(r.get("setup_score") or 0), -(r.get("structure_score") or 0)))
+  base={key:item.get(key) for key in FIELDS}
+  if triggered:
+   row=dict(base); row["signal_kind"]="TRIGGERED"; row["plan_inputs"]=plans.get(item.get("setup_signal","").replace("_BUY","").lower(),{}); rows.append(row)
+  if item.get("structure_stage") in {"VCP_FORMING","VCP_MATURE","VCP_TIGHT"}:
+   for plan_key, signal_type in PLAN_TYPES:
+    plan=plans.get(plan_key) or {}
+    if not plan or signal_type==item.get("setup_signal"): continue
+    row=dict(base); row.update({"setup_signal":signal_type,"signal_kind":"PLAN","plan_inputs":plan,"action_hint":"待触发","suggested_position":"触发后按买点质量判定","setup_pattern_score":None,"setup_score":None,"setup_quality":"—","setup_reasons":[],"setup_misses":[]}); rows.append(row)
+ rows.sort(key=lambda r:(r["signal_kind"]!="TRIGGERED", -(r.get("setup_score") or 0), -(r.get("structure_score") or 0), r["code"], r["setup_signal"]))
  return {"meta":{"run_date":raw.get("meta",{}).get("run_date",f"20{date[:2]}-{date[2:4]}-{date[4:]}") ,"source":path.name},"summary":{"triggered":sum(r["signal_kind"]=="TRIGGERED" for r in rows),"planned":sum(r["signal_kind"]=="PLAN" for r in rows),"total":len(rows)},"signals":rows}
 def publish(date):
  data=build(date); folder=OUT/f"20{date[:4]}"; folder.mkdir(parents=True,exist_ok=True); target=folder/f"signals_context_{date}.js"

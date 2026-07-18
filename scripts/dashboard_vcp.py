@@ -51,6 +51,24 @@ def load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def write_dashboard_index() -> None:
+    index_path = DASHBOARD_DATA_DIR / "index.js"
+    index = {}
+    if index_path.exists():
+        match = re.search(r"=\s*(\{.*\});\s*$", index_path.read_text(encoding="utf-8"), re.S)
+        if match:
+            index = json.loads(match.group(1))
+    for kind in ("signals", "vcp"):
+        dates = sorted(path.stem.rsplit("_", 1)[-1] for path in DASHBOARD_DATA_DIR.glob(f"*/{kind}_context_*.js"))
+        if dates:
+            index[kind] = {"latest": dates[-1], "available": dates}
+    index.setdefault("market", {"latest": None, "available": []})
+    index_path.write_text(
+        "window.QUANT_DASHBOARD_INDEX = " + json.dumps(index, ensure_ascii=False) + ";\n",
+        encoding="utf-8",
+    )
+
+
 def display_vcp_text(value):
     """Translate Model 2's stable enum terms only in the dashboard package."""
     if isinstance(value, list):
@@ -173,6 +191,7 @@ def publish(date_yy: str) -> Path:
         + json.dumps(context, ensure_ascii=False) + ";\n",
         encoding="utf-8",
     )
+    write_dashboard_index()
     return output
 
 

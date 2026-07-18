@@ -306,7 +306,7 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
         leaders = []
         for rank, stock in enumerate(sorted(members, key=lambda item: item["strength_score"], reverse=True)[:3], start=1):
             role = "领涨" if rank == 1 else "趋势核心" if stock["above_ma20"] and stock["above_ma60"] else "观察"
-            leaders.append({key: stock[key] for key in ("code", "name", "strength_score", "rps20_market", "rps20_industry", "above_ma20", "above_ma60", "volume_ratio_20")} | {"rank": rank, "role": role})
+            leaders.append({key: stock[key] for key in ("code", "name", "strength_score", "rps20_market", "rps20_industry", "return_20", "above_ma20", "above_ma60", "volume_ratio_20")} | {"rank": rank, "role": role})
         sector_leaders[f"{kind}:{name}"] = leaders
     concept_heat = {(row["block_name"]): row for row in sector_rows if row["block_type"] == "gn"}
     concept_frame = merged[merged.block_kind == "gn"].merge(stock_frame[["code", "name", "ret20"]], on="code", how="left", suffixes=("", "_stock"))

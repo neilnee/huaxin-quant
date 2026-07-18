@@ -6,7 +6,17 @@ A research-oriented multi-model discovery and tracking system for China A-shares
 
 > For research and review only. Not investment advice.
 
-![Huaxin Quant analytics dashboard](docs/images/dashboard-overview.png)
+### Market environment · 2026-07-14
+
+![Huaxin Quant market environment](docs/images/dashboard-market-260714.png)
+
+### Sector ranking
+
+![Huaxin Quant sector ranking](docs/images/dashboard-sectors-260714.png)
+
+### VCP structures
+
+![Huaxin Quant VCP structures](docs/images/dashboard-vcp-260714.png)
 
 ## Run the full workflow
 

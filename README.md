@@ -6,7 +6,17 @@
 
 > 仅供研究与复盘，不构成投资建议。
 
-![Huaxin Quant 数据分析面板](docs/images/dashboard-overview.png)
+### 市场环境 · 2026-07-14
+
+![Huaxin Quant 市场环境](docs/images/dashboard-market-260714.png)
+
+### 板块排名
+
+![Huaxin Quant 板块排名](docs/images/dashboard-sectors-260714.png)
+
+### VCP 结构
+
+![Huaxin Quant VCP 结构](docs/images/dashboard-vcp-260714.png)
 
 ## 一键运行
 

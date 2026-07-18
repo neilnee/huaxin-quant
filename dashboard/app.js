@@ -47,3 +47,29 @@ function renderSectors() { renderSectorTabs(); const rows=context.sector_ranking
 function loadContext(date) { const contexts=window.QUANT_DASHBOARD_MARKET_CONTEXTS||{}; if(contexts[date])return Promise.resolve(contexts[date]); return new Promise((resolve,reject)=>{const script=document.createElement("script");script.src=`data/${monthPath(date)}/market_context_${date}.js`;script.onload=()=>{const value=(window.QUANT_DASHBOARD_MARKET_CONTEXTS||{})[date];script.remove();resolve(value);};script.onerror=()=>reject(new Error(`无法加载 ${date} 的市场数据`));document.head.appendChild(script);}); }
 async function load(date){try{context=await loadContext(date);if(!context)throw new Error(`缺少 ${date} 的市场数据`);$("load-error").classList.add("hidden");renderState();renderIndexes();renderSectors();}catch(error){const n=$("load-error");n.textContent=error.message;n.classList.remove("hidden");}}
 function main(){const data=window.QUANT_DASHBOARD_INDEX?.market;if(!data?.latest){const n=$("load-error");n.textContent="尚未生成市场展示数据，请先运行市场模块。";n.classList.remove("hidden");return;}const s=$("date-select");s.innerHTML=data.available.slice().sort().reverse().map((v)=>`<option value="${v}">${v}</option>`).join("");s.value=data.latest;s.onchange=()=>applyDate(s.value);$("date-picker-toggle").onclick=()=>{const panel=$("date-picker-panel"),open=panel.classList.toggle("hidden");$("date-picker-toggle").setAttribute("aria-expanded",String(!open));renderCalendar();};$("state-help-toggle").onclick=()=>{const rules=$("state-rules"), open=rules.classList.toggle("hidden"); $("state-help-toggle").setAttribute("aria-expanded", String(!open));};renderCalendar();applyDate(s.value);renderModuleNav();renderModule();}main();
+
+function moduleDateData(module) {
+  const key = module === "signals" ? "signals" : module === "vcp" ? "vcp" : "market";
+  return window.QUANT_DASHBOARD_INDEX?.[key] || window.QUANT_DASHBOARD_INDEX?.market || { latest: null, available: [] };
+}
+function setModuleDates(module) {
+  const data = moduleDateData(module), select = $("date-select"), current = select.value;
+  select.innerHTML = (data.available || []).slice().sort().reverse().map((date) => `<option value="${date}">${date}</option>`).join("");
+  select.value = data.available?.includes(current) ? current : data.latest;
+  calendarMonth = null;
+}
+applyDate = function (date) {
+  const select = $("date-select");
+  select.value = date;
+  $("date-picker-toggle").textContent = `20${date.slice(0,2)}-${date.slice(2,4)}-${date.slice(4,6)}`;
+  if (activeModule === "market") load(date);
+  if (activeModule === "vcp") loadVcp(date);
+  if (activeModule === "signals") loadSignals(date);
+  renderCalendar();
+};
+const renderModuleBase = renderModule;
+renderModule = function () {
+  setModuleDates(activeModule);
+  renderModuleBase();
+  applyDate($("date-select").value);
+};

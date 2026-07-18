@@ -663,6 +663,18 @@ def build_market_context(report: dict, sectors: list[dict], state_conn: sqlite3.
         "sector_rankings": rankings, "sector_history": sector_history, "sector_rank_matrix": rank_matrix}
 
 
+def write_dashboard_index(market_latest: str | None, market_available: list[str]) -> None:
+    index = {"market": {"latest": market_latest, "available": market_available}}
+    for kind in ("signals", "vcp"):
+        dates = sorted(path.stem.rsplit("_", 1)[-1] for path in DASHBOARD_DATA_DIR.glob(f"*/{kind}_context_*.js"))
+        if dates:
+            index[kind] = {"latest": dates[-1], "available": dates}
+    (DASHBOARD_DATA_DIR / "index.js").write_text(
+        "window.QUANT_DASHBOARD_INDEX = " + json.dumps(index, ensure_ascii=False) + ";\n",
+        encoding="utf-8",
+    )
+
+
 def write_dashboard_data(report: dict, sectors: list[dict], state_conn: sqlite3.Connection, as_of: str) -> None:
     DATA_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     DASHBOARD_DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -680,11 +692,7 @@ def write_dashboard_data(report: dict, sectors: list[dict], state_conn: sqlite3.
     )
     for path in DASHBOARD_DATA_DIR.glob("market_context_*.js"):
         path.unlink()
-    (DASHBOARD_DATA_DIR / "index.js").write_text(
-        "window.QUANT_DASHBOARD_INDEX = "
-        + json.dumps({"market": {"latest": stamp, "available": available}}, ensure_ascii=False)
-        + ";\n", encoding="utf-8"
-    )
+    write_dashboard_index(stamp, available)
     legacy_path = DASHBOARD_DATA_DIR / "market_context.js"
     if legacy_path.exists():
         legacy_path.unlink()
@@ -703,7 +711,7 @@ def publish_dashboard_archives() -> list[str]:
         if path.stem.rsplit("_", 1)[-1] < DASHBOARD_START_DATE:
             path.unlink()
     latest = available[-1] if available else None
-    (DASHBOARD_DATA_DIR / "index.js").write_text("window.QUANT_DASHBOARD_INDEX = " + json.dumps({"market": {"latest": latest, "available": available}}, ensure_ascii=False) + ";\n", encoding="utf-8")
+    write_dashboard_index(latest, available)
     return available
 
 

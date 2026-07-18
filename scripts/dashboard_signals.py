@@ -10,6 +10,20 @@ ROOT=Path(PROJECT_ROOT); RUNS=ROOT/"cache"/"quant_runs"; OUT=ROOT/"dashboard"/"d
 FIELDS=("code","name","structure_stage","setup_signal","action_hint","suggested_position","setup_score","setup_quality","setup_reasons","setup_misses","setup_risk_flags","structure_score","structure_risk_score","structure_risk_flags","close","MA20","MA60","pivot_price","support_price","invalid_price","pivot_distance","distance_ma20","volume_dry_up","vol_ratio","chg_5","chg_20","setup_plan_inputs","reason")
 def stamp(v):
  d=re.sub(r"\D","",v); return d[2:] if len(d)==8 else d
+def published_dates(kind):
+ return sorted(path.stem.rsplit("_",1)[-1] for path in OUT.glob(f"*/{kind}_context_*.js"))
+def load_dashboard_index():
+ path=OUT/"index.js"
+ if not path.exists(): return {}
+ match=re.search(r"=\s*(\{.*\});\s*$",path.read_text(encoding="utf-8"),re.S)
+ return json.loads(match.group(1)) if match else {}
+def write_dashboard_index():
+ index=load_dashboard_index()
+ for kind in ("signals","vcp"):
+  dates=published_dates(kind)
+  if dates: index[kind]={"latest":dates[-1],"available":dates}
+ index.setdefault("market",{"latest":None,"available":[]})
+ (OUT/"index.js").write_text("window.QUANT_DASHBOARD_INDEX = "+json.dumps(index,ensure_ascii=False)+";\n",encoding="utf-8")
 def build(date):
  path=RUNS/f"quant_{date}.json"
  if not path.exists(): raise FileNotFoundError(path.name)
@@ -24,7 +38,7 @@ def build(date):
  return {"meta":{"run_date":raw.get("meta",{}).get("run_date",f"20{date[:2]}-{date[2:4]}-{date[4:]}") ,"source":path.name},"summary":{"triggered":sum(r["signal_kind"]=="TRIGGERED" for r in rows),"planned":sum(r["signal_kind"]=="PLAN" for r in rows),"total":len(rows)},"signals":rows}
 def publish(date):
  data=build(date); folder=OUT/f"20{date[:4]}"; folder.mkdir(parents=True,exist_ok=True); target=folder/f"signals_context_{date}.js"
- target.write_text("window.QUANT_DASHBOARD_SIGNALS_CONTEXTS = window.QUANT_DASHBOARD_SIGNALS_CONTEXTS || {};\n"+f"window.QUANT_DASHBOARD_SIGNALS_CONTEXTS[{json.dumps(date)}] = "+json.dumps(data,ensure_ascii=False)+";\n",encoding="utf-8"); return target
+ target.write_text("window.QUANT_DASHBOARD_SIGNALS_CONTEXTS = window.QUANT_DASHBOARD_SIGNALS_CONTEXTS || {};\n"+f"window.QUANT_DASHBOARD_SIGNALS_CONTEXTS[{json.dumps(date)}] = "+json.dumps(data,ensure_ascii=False)+";\n",encoding="utf-8"); write_dashboard_index(); return target
 def main():
  p=argparse.ArgumentParser();p.add_argument("--date");p.add_argument("--all",action="store_true");a=p.parse_args()
  dates=sorted(x.stem.rsplit("_",1)[-1] for x in RUNS.glob("quant_*.json") if x.stem.rsplit("_",1)[-1]>=START) if a.all else [stamp(a.date) if a.date else sorted(RUNS.glob("quant_*.json"))[-1].stem.rsplit("_",1)[-1]]

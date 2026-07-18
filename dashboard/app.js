@@ -51,6 +51,19 @@ function main(){const data=window.QUANT_DASHBOARD_INDEX?.market;if(!data?.latest
 function signalTypeLabel(value) {
   return {PULLBACK_BUY:"回踩买点",BREAKOUT_BUY:"突破买点",RETEST_BUY:"回踩确认"}[value] || value || "—";
 }
+async function loadSignals(date) {
+  try {
+    signalsContext = await loadSignalsContext(date);
+    signalsFilter = "ALL";
+    signalsSelectedCode = null;
+    renderSignals();
+  } catch (error) {
+    $("signals-meta").textContent = "当前日期尚未发布信号发现数据";
+    $("signals-summary").innerHTML = "";
+    $("signals-table").innerHTML = "";
+    $("signals-detail").innerHTML = `<p class="muted">${esc(error.message)}</p>`;
+  }
+}
 const signalRowKey = (row) => `${row.code}|${row.signal_kind}|${row.setup_signal}`;
 function signalPlanText(row) {
   const plan=row.plan_inputs||{}, price=(value)=>vcpNumber(value,2), volume=(value)=>vcpVolume(value);
@@ -64,7 +77,7 @@ function renderSignals(){
   const summary=signalsContext.summary||{},rows=signalsContext.signals||[],filtered=signalsFilter==="ALL"?rows:rows.filter(row=>row.signal_kind===signalsFilter);
   $("signals-meta").textContent=`数据日期 ${signalsContext.meta.run_date} · 来源 ${signalsContext.meta.source}`;
   $("signals-summary").innerHTML=[["当日买点",summary.triggered||0],["记录总数",summary.total||0]].map(([label,value])=>`<div><span>${label}</span><b>${value}</b></div>`).join("");
-  $("signals-filters").innerHTML=[["ALL","全部"],["TRIGGERED","当日买点"]].map(([key,label])=>`<button class="${key===signalsFilter?"active":""}" data-kind="${key}">${label}</button>`).join("");
+  $("signals-filters").innerHTML=[["ALL","全部"],["TRIGGERED","当日买点"],["PLAN","次日计划"]].map(([key,label])=>`<button class="${key===signalsFilter?"active":""}" data-kind="${key}">${label}</button>`).join("");
   $("signals-filters").querySelectorAll("button").forEach(button=>button.onclick=()=>{signalsFilter=button.dataset.kind;renderSignals();});
   $("signals-note").textContent=`显示 ${filtered.length}/${rows.length} 条买点记录`;
   if(!filtered.some(row=>signalRowKey(row)===signalsSelectedCode))signalsSelectedCode=filtered[0]&&signalRowKey(filtered[0]);

@@ -1,0 +1,7 @@
+.vcp-layout {
+  grid-template-columns: minmax(560px, 0.95fr) minmax(440px, 1.05fr);
+}
+
+@media (max-width: 1000px) {
+  .vcp-layout { grid-template-columns: 1fr; }
+}

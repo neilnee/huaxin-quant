@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(os.path.abspath(__file__)).parents[1]))
 from scripts.shared import PROJECT_ROOT
 
-ROOT=Path(PROJECT_ROOT); RUNS=ROOT/"cache"/"quant_runs"; PLAN_RUNS=ROOT/"signal_plan"; OUT=ROOT/"dashboard"/"data"; START="260716"
+ROOT=Path(PROJECT_ROOT); RUNS=ROOT/"cache"/"quant_runs"; PLAN_RUNS=ROOT/"signal_plan"; OUT=ROOT/"dashboard"/"data"; START="260709"
 FIELDS=("code","name","structure_stage","setup_signal","action_hint","suggested_position","setup_pattern_score","setup_score","setup_quality","setup_reasons","setup_misses","setup_risk_flags","structure_score","structure_risk_score","structure_risk_flags","close","MA20","MA60","pivot_price","structure_pivot","support_price","invalid_price","breakout_level","last_contraction_low","pivot_distance","distance_ma20","volume","vol_ma5","vol_ma20","volume_dry_up","vol_ratio","volume_pattern","chg_5","chg_20","setup_plan_inputs","reason")
 def stamp(v):
  d=re.sub(r"\D","",v); return d[2:] if len(d)==8 else d

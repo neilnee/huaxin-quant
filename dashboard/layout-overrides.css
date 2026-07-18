@@ -23,3 +23,10 @@
 
 .signal-score-grid span { display: block; color: var(--muted); font-size: 11px; }
 .signal-score-grid b { display: block; margin-top: 2px; }
+
+.vcp-header .vcp-summary { margin-left: auto; }
+#signals-content .vcp-summary { grid-template-columns: repeat(3, minmax(82px, 1fr)); }
+.signal-plan-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.signal-plan-grid > div { padding: 9px; border: 1px solid var(--line); border-radius: 6px; background: #101722; }
+.signal-plan-grid span { display: block; color: var(--muted); font-size: 11px; }
+.signal-plan-grid b { display: block; margin-top: 2px; }

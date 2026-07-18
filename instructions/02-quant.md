@@ -37,7 +37,7 @@ python3 scripts/quant_filter.py --code 300604 --with-llm
 python3 scripts/quant_filter.py --code 300604 --json
 ```
 
-`--date` 用于回测或复盘指定交易日，支持 `YYMMDD` 与 `YYYY-MM-DD` 两种格式；未指定时按共享数据层的预期最近交易日运行。脚本会据此读取 `pool/pool_<YYMMDD>.csv`、日线缓存，并写出同日期的 `quant/` 与 `cache/quant_runs/` 文件。
+`--date` 用于回测或复盘指定交易日，支持 `YYMMDD` 与 `YYYY-MM-DD` 两种格式；未指定时按共享数据层的预期最近交易日运行。脚本会据此读取 `pool/pool_<YYMMDD>.csv`、统一日线库，并写出同日期的 `quant/` 与 `cache/quant_runs/` 文件。
 
 ### 职责边界
 
@@ -202,37 +202,26 @@ PULLBACK_BUY 买入 20%-30%
 date, open, high, low, close, volume, turnover
 ```
 
-日线数据统一通过 `scripts.shared.fetch_daily()` 获取，链路为：
+日线数据统一通过 `scripts.data.market_data_service.MarketDataService` 获取，链路为：
 
 ```text
-运行日缓存 → 最近可用缓存（不得晚于运行日，且最新 K 线不早于目标交易日）
-→ 通达信 mootdx → 妙想 API 备用源
+SQLite 日线库 → 缺口检测与补数 → 通达信 TDX/mootdx → 妙想 API 备用源 → 写回 SQLite
 ```
 
-日线行情数据源实现位于 `scripts/data/market_data.py`，`scripts.shared.fetch_daily()` 负责统一缓存、主备源降级和返回标准 OHLCV 结构。
+统一数据服务先按 `run_date` 从 `cache/market_data/market_data.sqlite` 读取所需窗口；仅当目标日缺失或历史不足时补取。主源失败、返回空数据或未覆盖目标日时，才使用妙想 API 备用源；两者均标准化为 OHLCV 后写回数据库并记录来源。
 
-模型二必须把本次 `run_date` 作为 `fetch_daily(..., as_of_date=run_date)` 传入数据层。未指定 `--date` 时，`run_date` 由共享数据层按 15:00 分隔线确定：15:00 前取前一交易日，15:00 后取当日，周末回退到周五。指定 `--date` 时，缓存新鲜度、最近缓存回退和回源后数据截断都以该指定交易日为准。
+模型二必须把本次 `run_date` 传入统一数据服务。未指定 `--date` 时，`run_date` 由共享数据层按 15:00 分隔线确定：15:00 前取前一交易日，15:00 后取当日，周末回退到周五。指定 `--date` 时，数据库覆盖校验、缺口补数和回源后数据截断都以该指定交易日为准。
 
-通达信 mootdx 是主数据源；当通达信限流、返回空数据、结构异常、异常抛出或未覆盖目标交易日时，脚本才尝试妙想 API。若本地未配置 `MX_APIKEY`，则通达信失败会直接返回取数失败。通达信通过 mootdx 获取日线 `frequency=9`，客户端使用内置 HQ 候选服务器、短超时和失败切换，避免批量运行长时间阻塞。通达信数据同样标准化为上述 OHLCV 结构并写入 `cache/daily/`。通达信不提供换手率，`turnover` 填 `0.0`；模型二判定不得依赖 `turnover`。
+通达信 mootdx 是主数据源；当通达信限流、返回空数据、结构异常、异常抛出或未覆盖目标交易日时，脚本才尝试妙想 API。若本地未配置 `MX_APIKEY`，则通达信失败会直接返回取数失败。通达信数据统一写入 SQLite；模型二判定不得依赖 `turnover`。
 
-缓存目录：
-
-```text
-cache/daily/<code>_<YYMMDD>.pkl
-```
-
-缓存只保存原始日线，不保存指标列。指标每次实时计算，避免规则变更后旧缓存污染。
-
-日线缓存按文件修改时间保留 30 天，模型二启动时自动清理超过 30 天未修改的 `cache/daily/*.pkl`。该清理只影响原始日线缓存，不影响 `quant/`、`cache/quant_runs/` 或 Bloom 报告。
-
-缓存命中必须同时满足：
+数据库只保存原始日线，不保存指标列；指标每次实时计算，避免规则变更后旧指标污染。数据库命中必须同时满足：
 
 ```text
 文件名日期 = 当前运行日期；或运行日缓存未命中时，为该股票不晚于运行日的最近可用缓存
 缓存内最后一条 K 线日期 >= 目标交易日
 ```
 
-若当天盘中或盘后早期生成的缓存仍停留在前一交易日（例如文件为 `*_260703.pkl`，但最后 K 线是 `2026-07-02`），脚本必须视为过期并重新拉取。已拉到目标交易日的缓存继续复用，避免重复调用接口。若回源返回了目标交易日之后的数据，数据层必须先截断到 `<= as_of_date` 再返回并保存，防止复盘指定日期时混入未来 K 线。
+若数据库中目标标的未覆盖运行日，脚本必须补数；若回源返回了目标交易日之后的数据，数据层必须先截断到 `<= as_of_date` 再写入，防止复盘指定日期时混入未来 K 线。
 
 ---
 
@@ -309,6 +298,7 @@ chg_60
 | `structure_stage` | 形态发展阶段，只描述结构，不代表买点 |
 | `setup_signal` | 当日是否触发交易形态 |
 | `action_hint` | 模型二基于量价侧给出的动作提示，不考虑估值和持仓 |
+| `dashboard/data/<YYYYMM>/signals_context_<YYMMDD>.js` | 只读信号发现页面数据包，展示当日触发与次日计划，不改变模型二判定 |
 
 ### 0.1 structure_type：形态类型
 

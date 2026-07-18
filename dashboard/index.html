@@ -2,14 +2,19 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Huaxin Quant 数据分析面板</title><link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="state.css"><link rel="stylesheet" href="state-rules.css"><link rel="stylesheet" href="index-trend.css"><link rel="stylesheet" href="sector-detail.css">
+  <title>Huaxin Quant 数据分析面板</title><link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="state.css"><link rel="stylesheet" href="state-rules.css"><link rel="stylesheet" href="index-trend.css"><link rel="stylesheet" href="sector-detail.css"><link rel="stylesheet" href="vcp.css">
 </head>
 <body>
   <main class="shell">
-    <header class="page-header"><div><p class="eyebrow">HUAXIN QUANT · ANALYTICS DASHBOARD</p><h1>数据分析面板</h1></div><div class="header-meta"><label id="date-control">报告日期 <select id="date-select" aria-label="报告日期"></select></label><p id="data-status" class="data-status">—</p></div></header>
+    <header class="page-header"><div><p class="eyebrow">HUAXIN QUANT · ANALYTICS DASHBOARD</p><h1>数据分析面板</h1></div><div class="header-meta"><div id="date-control" class="date-picker"><span>报告日期</span><button id="date-picker-toggle" type="button" aria-expanded="false"></button><select id="date-select" class="hidden" aria-label="报告日期"></select><div id="date-picker-panel" class="date-picker-panel hidden"></div></div><p id="data-status" class="data-status">—</p></div></header>
     <nav id="module-nav" class="module-nav" aria-label="分析模块"></nav>
     <p id="load-error" class="notice hidden"></p>
     <section id="module-placeholder" class="panel placeholder hidden"></section>
+    <div id="signals-content" class="hidden"><section class="panel vcp-header"><div><p class="section-label">模型二 · 量价买点</p><h2>信号发现</h2><p id="signals-meta" class="data-status">—</p></div><div id="signals-summary" class="vcp-summary"></div></section><section class="panel"><div class="section-heading"><div><p class="section-label">当日触发与次日计划</p><h2>信号列表</h2></div><p id="signals-note">—</p></div><div id="signals-filters" class="tabs"></div><div class="vcp-layout"><div class="table-scroll"><table id="signals-table"></table></div><aside id="signals-detail" class="vcp-detail"></aside></div></section></div>
+    <div id="vcp-content" class="hidden">
+      <section class="panel vcp-header"><div><p class="section-label">Bloom 信号层 · 只读展示</p><h2>VCP 结构</h2><p id="vcp-meta" class="data-status">—</p></div><div id="vcp-summary" class="vcp-summary"></div></section>
+      <section class="panel"><div class="section-heading"><div><p class="section-label">活跃结构</p><h2>观察列表</h2></div><p id="vcp-filter-note">—</p></div><div id="vcp-filters" class="tabs" aria-label="Bloom 状态筛选"></div><div class="vcp-layout"><div class="table-scroll"><table id="vcp-table"></table></div><aside id="vcp-detail" class="vcp-detail"></aside></div></section>
+    </div>
     <div id="market-content">
       <section class="panel state-panel"><div class="state-summary"><p class="section-label">当前市场状态</p><div class="state-title-row"><h2 id="market-state">—</h2><button id="state-help-toggle" class="state-help-toggle" type="button" aria-expanded="false" aria-controls="state-rules">详情</button></div><p id="state-duration" class="state-duration">—</p><div id="risk-tags" class="tags"></div></div><div class="state-reading"><p class="section-label">市场解读</p><p id="state-analysis" class="state-analysis">—</p><p id="state-transition" class="state-transition hidden">—</p></div></section>
       <section id="state-rules" class="panel state-rules hidden"></section>

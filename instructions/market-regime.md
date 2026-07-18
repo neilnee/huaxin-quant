@@ -2,7 +2,7 @@
 
 - **核心目标**：基于共享市场数据层，独立计算市场趋势、波动、广度、板块轮动与板块热度。
 - **策略边界**：不读取 Pool/Quant/Bloom 输出，不改写模型二 VCP 结构、评分或买点。
-- **数据源**：通达信行情服务器的宽基/个股日线、`tdxhy.cfg + zhb.zip/incon.dat` 行业映射，以及 `block_zs.dat`、`block_fg.dat`、`block_gn.dat` 板块文件。
+- **数据源**：统一 SQLite 日线库；缺口优先通过通达信 TDX/mootdx 补取，失败或未覆盖目标日时以妙想 API 备用源补取。板块成员来自 `tdxhy.cfg + zhb.zip/incon.dat`、`block_zs.dat`、`block_fg.dat`、`block_gn.dat`。
 - **策略配置**：`strategies/market-regime.json`。
 - **主脚本**：`scripts/market_regime.py`；基础数据由 `scripts/data/market_data_service.py` 管理。
 
@@ -41,7 +41,7 @@ market/data/market_context_<YYMMDD>.json
 market/data/latest.json
 dashboard/index.html
 dashboard/data/index.js
-dashboard/data/market_context_<YYMMDD>.js
+dashboard/data/<YYYYMM>/market_context_<YYMMDD>.js
 market/sector_heat_<YYMMDD>.csv
 market/stock_strength_<YYMMDD>.csv
 market/concept_strength_<YYMMDD>.csv
@@ -53,7 +53,7 @@ market/concept_strength_<YYMMDD>.csv
 
 ## 页面数据与状态
 
-页面位于本地运行目录 `dashboard/`，是全系统统一数据分析入口。市场模块通过 `dashboard/data/index.js` 发布最新日期，并只生成该日期的 `dashboard/data/market_context_<YYMMDD>.js` 独立数据包；双击 `dashboard/index.html` 即可查看，不需要 HTTP 服务或公网发布。市场历史 JSON 保存在 `market/data/` 作归档，但不自动进入页面，避免历史数据累积到单一大文件或浏览器选择列表。页面不得重新计算指标、访问通达信或写入数据库。当前 Markdown 保留为简要归档。
+页面位于本地运行目录 `dashboard/`，是全系统统一数据分析入口。市场模块通过 `dashboard/data/index.js` 发布可用日期，并按月将每日独立数据包写入 `dashboard/data/<YYYYMM>/market_context_<YYMMDD>.js`；页面按日历选择日期后才动态加载对应包，避免历史数据累积到单一大文件。`publish-dashboard` 可从已有 `market/data/` 归档重建面板包。页面不得重新计算指标、访问通达信或写入数据库。当前 Markdown 保留为简要归档。
 
 “板块相对强度排名”支持 `20日` 与 `5日` 两种视图切换；两者均按日期展示当日 Top20，横轴为名次、纵轴为日期、单元格为板块名称。
 

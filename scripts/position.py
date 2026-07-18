@@ -18,12 +18,14 @@ from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from scripts.shared import DailyCache, PROJECT_ROOT
+from scripts.shared import PROJECT_ROOT
+from scripts.data.market_data_service import MarketDataService
 from scripts.strategy_config import load_strategy_config
 
 
 POSITION_STRATEGY_FILE = "04-position.json"
 CONFIG, STRATEGY_PATH = load_strategy_config(POSITION_STRATEGY_FILE)
+MARKET_DATA_CONFIG, _ = load_strategy_config("market-regime.json")
 STRATEGY_VERSION = CONFIG["strategy_version"]
 
 ROOT = Path(PROJECT_ROOT)
@@ -603,13 +605,9 @@ def infer_share_adjustments(holdings, raw_trade_rows):
 
 
 def year_start_price(code, name, year_start, as_of, fallback_price=0, trades=None):
-    datestr = parse_date(as_of).strftime("%y%m%d")
-    cache = DailyCache()
-    df = cache.load(code, datestr)
-    source = f"cache({datestr})"
-    if df is None:
-        df, cache_date = cache.load_latest(code)
-        source = f"cache({cache_date})" if df is not None else "cache_miss"
+    frames, status = MarketDataService(MARKET_DATA_CONFIG).get_daily_bars([(code, name)], as_of, 200)
+    df = frames.get(code)
+    source = status.get(code, {}).get("source", "market_db")
     if df is not None:
         start = parse_date(year_start)
         pre_year = df[df["date"].astype(str) < start.isoformat()]

@@ -25,8 +25,8 @@ Huaxin Quant 多模型流水线的股票花期发现与跟踪系统。每个筛�
 ### 每日一键流水线
 
 ```bash
-python3 scripts/daily.py &        # 后台启动全流程
-python3 scripts/monitor.py        # 前台查看进度 → tracker/花期策览_<date>.md
+python3 scripts/daily.py &        # 后台串行执行：数据更新 → Pool → Quant → Bloom → Signal Plan → 页面发布 → 打开面板 → 可选自选同步
+python3 scripts/monitor.py        # 前台查看进度 → .tmp/daily_progress_<date>.md
 ```
 
 详细说明见 `WORKFLOW.md`。

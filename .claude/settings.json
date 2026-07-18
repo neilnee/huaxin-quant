@@ -3,12 +3,10 @@
     "defaultMode": "acceptEdits",
     "allow": [
       "Read(.tmp/**)",
-      "Write(.tmp/**)",
       "Edit(.tmp/**)"
     ],
     "deny": [
       "Read(.env)",
-      "Write(.env)",
       "Edit(.env)"
     ],
     "ask": [

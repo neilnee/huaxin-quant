@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
 Progress monitor for the daily pipeline. Polls the progress JSON written by
-daily.py and renders a live progress page to 花期策览_<date>.md.
-
-When the pipeline finishes, replaces the progress page with the final report.
+daily.py and renders a live progress page under .tmp/.
 
 Usage:
   python3 scripts/monitor.py                    # watch current run
@@ -22,12 +20,9 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.shared import PROJECT_ROOT, default_pipeline_date
-from scripts.strategy_config import load_strategy_config
 from scripts.progress_utils import ProgressTracker
 
 
-TRACKER_CONFIG, _ = load_strategy_config("04-tracker.json")
-TRACKER_DIR = Path(PROJECT_ROOT) / TRACKER_CONFIG["outputs"]["report_dir"]
 PROGRESS_DIR = Path(PROJECT_ROOT) / ".tmp"
 
 
@@ -75,8 +70,8 @@ def _progress_file(date_yy):
     return PROGRESS_DIR / f"daily_progress_{date_yy}.json"
 
 
-def _report_path(date_yy):
-    return TRACKER_DIR / f"花期策览_{date_yy}.md"
+def _progress_markdown_path(date_yy):
+    return PROGRESS_DIR / f"daily_progress_{date_yy}.md"
 
 
 def _read_progress(date_yy):
@@ -116,19 +111,21 @@ def _step_time(step):
 
 def _step_label(step):
     labels = {
+        "data_update": "市场数据更新",
         "pool": "模型一 Pool",
         "quant": "模型二 Quant",
-        "bloom": "　├ Bloom 信号",
-        "plan": "　├ Signal Plan",
-        "assemble": "　└ 合并报告",
-        "tracker": "模型四 Tracker",
+        "bloom": "Bloom 信号",
+        "signal_plan": "Signal Plan",
+        "dashboard": "数据分析面板",
+        "open_dashboard": "打开数据分析面板",
+        "zixuan": "东方财富自选同步",
     }
     return labels.get(step, step)
 
 
 def _has_detail(step_key):
     """Steps that can show per-item progress details."""
-    return step_key in ("quant", "bloom", "plan")
+    return step_key in ("quant", "bloom", "signal_plan")
 
 
 def _build_progress_markdown(progress):
@@ -136,7 +133,7 @@ def _build_progress_markdown(progress):
     steps = progress.get("steps", {})
     started_at = progress.get("started_at", "")
     lines = [
-        f"# 花期策览 {date_yy}",
+        f"# 每日流程 {date_yy}",
         "",
         f"> ⏳ 生成中 — {started_at[:19] if started_at else ''}",
         "",
@@ -144,7 +141,7 @@ def _build_progress_markdown(progress):
         "|------|------|------|",
     ]
 
-    for key in ("pool", "quant", "bloom", "plan", "assemble"):
+    for key in ("data_update", "pool", "quant", "bloom", "signal_plan", "dashboard", "open_dashboard", "zixuan"):
         step = steps.get(key, {})
         status = step.get("status", "waiting")
         icon = _status_icon(status)
@@ -191,24 +188,10 @@ def _build_progress_markdown(progress):
         "",
         "---",
         "",
-        "*报告生成中，完成后自动替换为完整内容。运行 `python3 scripts/monitor.py` 查看实时进度。*",
+        "*流水线运行中。运行 `python3 scripts/monitor.py` 查看实时进度。*",
         "",
     ])
     return "\n".join(lines) + "\n"
-
-
-def _final_report_content(date_yy, progress):
-    """Return the final report content once the pipeline is done."""
-    assemble = progress.get("steps", {}).get("assemble", {})
-    tmp_path = assemble.get("final_report_tmp")
-    if tmp_path and Path(tmp_path).exists():
-        return Path(tmp_path).read_text(encoding="utf-8")
-
-    final_path = Path(assemble.get("final_report_path") or _report_path(date_yy))
-    if final_path.exists():
-        return final_path.read_text(encoding="utf-8")
-
-    return _build_progress_markdown(progress)
 
 
 def main():
@@ -230,8 +213,6 @@ def main():
         sys.exit(1)
 
     print(f"[monitor] 监控流水线 {date_yy}（间隔 {args.interval}s，Ctrl+C 退出）")
-    TRACKER_DIR.mkdir(parents=True, exist_ok=True)
-
     try:
         while True:
             progress = _read_progress(date_yy)
@@ -244,11 +225,8 @@ def main():
             status = progress.get("status", "unknown")
 
             if status == "done":
-                # Pipeline finished: publish the final draft over the progress page.
-                content = _final_report_content(date_yy, progress)
-                report_path = TRACKER_DIR / f"花期策览_{date_yy}.md"
-                with open(report_path, "w", encoding="utf-8") as f:
-                    f.write(content)
+                progress_path = _progress_markdown_path(date_yy)
+                progress_path.write_text(_build_progress_markdown(progress), encoding="utf-8")
 
                 error_count = sum(
                     1 for s in progress.get("steps", {}).values()
@@ -257,16 +235,13 @@ def main():
                 total = _step_time({"status": "done", "started_at": progress.get("started_at"),
                                     "elapsed_s": progress.get("total_elapsed_s")})
                 print(f"[monitor] ✅ 流水线完成 — 总耗时 {total}，{error_count} 个错误")
-                print(f"[monitor] 报告: {report_path}")
+                print(f"[monitor] 进度记录: {progress_path}")
                 if error_count:
                     sys.exit(1)
                 break
 
-            # Update progress page
             md = _build_progress_markdown(progress)
-            report_path = TRACKER_DIR / f"花期策览_{date_yy}.md"
-            with open(report_path, "w", encoding="utf-8") as f:
-                f.write(md)
+            _progress_markdown_path(date_yy).write_text(md, encoding="utf-8")
 
             time.sleep(args.interval)
 

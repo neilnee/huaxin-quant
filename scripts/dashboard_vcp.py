@@ -111,8 +111,11 @@ def compact_candidate(row: dict, quant: dict, industry: dict) -> dict:
     for target, source in quant_overrides.items():
         if source in quant:
             result[target] = quant[source]
-    for field in ("support_price", "invalid_price", "pivot_price", "breakout_level", "structure_type", "contractions", "score_components", "structure_conditions", "structure_misses"):
+    for field in ("support_price", "invalid_price", "pivot_price", "breakout_level", "structure_type", "score_components", "structure_conditions", "structure_misses"):
         result[field] = quant.get(field, "")
+    # The full contraction scan is retained in Model 2 for audit.  The dashboard
+    # must show only the group selected as the current valid VCP structure.
+    result["contractions"] = quant.get("contraction_group", [])
     result["sw_l2_name"] = industry.get("sw_l2_name", "")
     result["sector"] = industry.get("sector", {})
     return result

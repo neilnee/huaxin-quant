@@ -30,3 +30,20 @@
 .signal-plan-grid > div { padding: 9px; border: 1px solid var(--line); border-radius: 6px; background: #101722; }
 .signal-plan-grid span { display: block; color: var(--muted); font-size: 11px; }
 .signal-plan-grid b { display: block; margin-top: 2px; }
+
+#signals-detail .vcp-flags {
+  margin-top: 16px;
+  padding: 10px;
+  border: 1px solid #7b414b;
+  border-radius: 7px;
+  background: #321f27;
+}
+#signals-detail .vcp-flags::before {
+  content: "风险提示";
+  display: block;
+  margin-bottom: 7px;
+  color: #ffb3b8;
+  font-size: 12px;
+  font-weight: 700;
+}
+#signals-detail .vcp-flags span { background: #542a34; color: #ffd1d5; }

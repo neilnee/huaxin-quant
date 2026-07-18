@@ -5,6 +5,8 @@
 #signals-table td:nth-child(2) { display: none; }
 #signals-table th:nth-child(5),
 #signals-table td:nth-child(5) { display: none; }
+#signals-table th:nth-child(7),
+#signals-table td:nth-child(7) { display: none; }
 .state-summary { max-width: 35%; }
 .state-reading { line-height: 1.8; }
 .state-duration { margin-top: 4px; color: #c8d2df; }

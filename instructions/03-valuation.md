@@ -1,10 +1,11 @@
 # 模型三：深度估值模型（自执行指令）
 
 - **版本管理**: 由 Git 分支与提交历史管理，文件名不再携带版本号
-- **最近更新**: 2026-05-22
-- **核心哲学**: 脚本做计算，LLM 做判断。
-- **输入**: `quant/quant_<YYMMDD>.csv` | **输出**: `reports/valuation/<code>_<name>.md` + `reports/indexes/valuation_index.csv` + `reports/indexes/valuation_ranking.csv`
-- **配套脚本**: `scripts/valuate.py`（阶段零）+ `scripts/calc_valuation.py`（估值计算引擎）| 参考手册: `03-valuation-ref.md`
+- **最近更新**: 2026-07-20
+- **核心哲学**: 脚本编排、校验、存档和渲染；LLM 只完成小范围、结构化的研究判断。
+- **触发方式**: 用户主动按单只标的触发，不消费 Bloom，也不自动给出交易动作。
+- **输出**: `reports/valuation/<code>_<name>.md` + `reports/indexes/valuation_index.csv` + `reports/indexes/valuation_ranking.csv` + 当次可审计运行包 + Dashboard 数据包。
+- **配套脚本**: `scripts/valuation_pipeline.py`（v3 五阶段编排器）+ `scripts/dashboard_valuation.py`（Dashboard 适配器）+ `scripts/valuate.py`（阶段零）+ `scripts/calc_valuation.py`（计算引擎）| 参考手册: `03-valuation-ref.md`
 
 ---
 
@@ -18,6 +19,173 @@
 **分工原则**：
 - **脚本**：财务数据解析、指标计算、决策树、漏斗信号、PE 三步走、悲观参数应用、矩阵汇总、分歧度计算、2027E 迁移、反向检查触发、CSV 输出
 - **LLM**：业务线识别与拆分、可比公司选择、增长质量分类、定性调整判断、共识数据研报提取、预期差发现、叙事写作、催化剂日历
+
+---
+
+## V3 研究与报告协议（当前有效）
+
+模型三不是“给出一个 PE 和目标价”的计算器，而是用利润支柱解释市场正在交易什么、尚未交易什么，以及后续由什么事实验证。计算引擎只负责将经过研究的利润和概率换算为三情景估值；不能代替业务、预期和分歧判断。
+
+### 报告的分析主线
+
+```
+业务与行业位置
+  → 利润支柱（主营 / 差异化业务 / 叙事期权）
+  → 机构一致预期（已定价的利润基线）
+  → 市场分歧（同一事实的不同定价）
+  → 预期差（尚未充分定价的新增事实）
+  → PE / PB / EV-EBITDA 等估值条件
+  → 双年三情景估值 + 验证节点
+```
+
+**三层含义必须固定**：
+
+| 层级 | 回答的问题 | 估值来源 |
+|------|-----------|----------|
+| Layer 1：一致预期 | 主营业务按当前已知信息能赚多少？ | 至少 3 家未过期机构的 2026E+2027E 预测 |
+| Layer 2：分歧定价 | 同一事实为何有乐观/悲观不同解读？ | 机构分歧、行业位置、可比估值和研究判断 |
+| Layer 3：叙事期权 / 预期差 | 哪些新增事实尚未充分反映到利润？ | 订单、产能、产品、管理层行动等；以利润×倍数×概率量化 |
+
+Layer 3 不是任意主题的溢价：没有明确业务实质、潜在利润、概率理由、证据和验证节点的叙事不得进入估值，只能留在观察清单。
+
+### 利润支柱与估值路线
+
+1. 先按业务实质拆支柱，而非按财报科目机械拆分。主营、增长业务、重资产/轻资产/周期业务、以及兑现路径明显不同的业务应单独成为支柱。
+2. 同一支柱内只有在增速差 <20%、毛利率差 <15pct、驱动和估值方法相同的业务才能合并；结论及原因必须写入报告。
+3. 每个支柱必须有 2025 基准、2026E/2027E 利润桥、核心驱动、机构预测映射、估值路线和至少一个验证节点。
+4. 支柱的 Layer 1 是共识主营利润；Layer 2 是对共识区间或估值倍数的有依据调整；Layer 3 是未充分定价的利润期权。不得把同一利润在三层重复计入。
+5. PE 由可比公司、增长质量、行业景气、市场地位和叙事兑现度共同决定。报告须写明悲观/基准/乐观三种条件分别改变的是利润、PE、概率或其组合，不能只给一个黑箱倍数。
+
+### 强制报告结构
+
+1. **结论与市场交易主题**：当前价、2026E/2027E 三情景区间、基准空间；一句话说明市场当前主要交易的利润支柱和叙事。
+2. **业务与利润支柱地图**：行业位置、业务拆分/合并理由、每个支柱在总利润和总估值中的角色。
+3. **Layer 1 — 一致预期主营**：至少 3 家机构的双年预测表、利润桥、可比公司表、估值方法和市值→股价换算。
+4. **Layer 2 — 市场分歧**：乐观与悲观叙事、分歧根因、我方取值、对利润/PE/估值的影响。
+5. **Layer 3 — 叙事期权与预期差**：公告/订单/产能/产品/管理层等搜索记录；每项的潜在利润、倍数、概率、定价状态和是否计入估值。无有效项目也必须明确记录已搜索且未计入。
+6. **双年三情景估值汇总**：支柱×Layer 矩阵、2026E/2027E 对照、敏感性和反向检查。
+7. **验证节点与催化剂日历**：每个主营假设、分歧和叙事项目至少一个可观察事件，说明验证什么、失效条件和预期影响。
+8. **风险与更新记录**：风险对应具体支柱；明确下次更新需回答的问题。
+
+报告的正文必须按以上顺序渲染；事实、假设和证据目录仅作为各章节的依据，不得替代章节本身。
+
+### 研究卡数据契约
+
+`research_card.json` 除 `facts`、`consensus`、`comparables`、`calc_params` 外，必须包含：
+
+- `investment_thesis`：市场交易主题、公司所处阶段、核心判断及证据。
+- `business_pillars[]`：支柱业务实质、拆分理由、路线、利润桥（2025A→2026E→2027E）、对应共识、估值驱动和验证节点。
+- `market_divergences[]`：乐观/悲观叙事、分歧根因、定价状态、我方判断、影响 Layer 2 的参数及证据。
+- `narrative_options[]`：Layer 3 项目或明确的“无显著预期差”结论；每项包含潜在利润、倍数、概率、是否计入估值、证据和验证节点。
+- `verification_nodes[]`：日期/窗口、待验证事件、关联支柱、验证成功/失败的含义及证据。
+
+`calc_params.pillars[]` 只是上述研究结论的数值映射。凡是进入 `calc_params` 的支柱、Layer 2/3 项目，必须能回溯到对应研究卡项目和 `source_id`。
+
+映射必须只使用标准枚举，禁止按公司名、行业名或项目关键词硬编码：`classification` 只能为 `core_operating`、`asset_pipeline`、`narrative_option`、`non_recurring`；`valuation_route` 为 A~F/A1；`profit_timing` 为 `realized`、`contracted`、`pipeline`、`long_term`；`accounting_treatment` 为 `recurring`、`non_recurring`、`consolidated`。脚本据此决定进入核心 `pillar`、Type B 管道、Layer 3 期权或排除项；枚举缺失时必须失败，不得默认归类。
+
+研究卡完成状态统一为 `ready`；兼容上游 LLM 返回的 `complete`，编排器在校验前将其标准化为 `ready`，其他状态一律视为证据不足。
+
+### 五阶段脚本化执行（不得简化为一次 LLM 汇总）
+
+编排器必须按旧指令卡的阶段顺序逐节点执行。每个节点只处理自己的研究问题、读取对应专题的完整原始证据、输出独立 JSON，并由下一节点引用；不得把全部问题压缩成一条 prompt 或把每个搜索缓存截成短摘要。
+
+| 阶段 | 脚本职责 | LLM 节点输出 | 必须形成的运行包文件 |
+|------|----------|-------------|----------------------|
+| 零 | 拉取财务、决策树、漏斗与 briefing | 无 | `briefing.json` |
+| 一 | 读取年报/主营/行业证据；逐批完整阅读后识别业务、资产平台、并购和资本结构 | 业务拆分、逐支柱利润桥、路线、**专题检索计划** | `stage_1_readings.json`、`stage_1_business.json`、`search_plan.json` |
+| 二 | 拉取并逐批完整读取新研报、可比资料；逐机构抽取双年预测 | 共识表、可比表、分歧根因、Layer 1/2 映射 | `stage_2_readings.json`、`stage_2_consensus.json` |
+| 三 | 按专题计划检索并逐批完整读取公告、订单、REITs、并购、产能、海外、管理层和产业链 | 每个项目的业务实质、利润、倍数、概率、Layer 2/3 映射或排除理由 | `stage_3_readings.json`、`stage_3_expectations.json` |
+| 四 | 逐批读取验证材料并汇总各阶段结论 | 催化剂日历、验证节点、失效条件、风险 | `stage_4_readings.json`、`stage_4_catalysts.json` |
+| 五 | 校验各阶段引用和参数映射，调用引擎，渲染报告 | 不新增事实；只合并为 `research_card` 和 `calc_params` | `research_card.json`、`calc_params.json`、`calc_results.json` |
+
+**动态专题检索是强制的**：阶段一发现的重大资产重组/收购、REITs/资产证券化、非经常性项目、在建产能、海外节点、重点客户或新产品，必须各自生成专题查询。不得以固定的低数量上限删减独立项目；仅可合并事实、估值路径和验证节点完全相同的重复查询。阶段三须逐专题输出“计入 Layer 2/3”或“未计入及原因”，不能只写一条泛化公告摘要。
+
+**证据粒度**：`evidence.json` 的一个 `source_id` 对应一条研报、公告或新闻结果，而不是整个搜索缓存；必须保留标题、日期、来源、缓存文件、结果序号及完整原文。运行只能装载本次固定检索和本次专题计划明确产出的缓存文件，不能按宽泛文件名关键词扫描历史缓存；同一公告/研报结果须以来源标识、标题和日期去重。阶段三逐条阅读原始专题证据；阶段四复用阶段三的阅读结论和证据引用，只为缺失的验证事件补充增量材料，不得重复逐条阅读阶段三原文。
+
+**阶段三证据归并（强制）**：在阶段三原文阅读前，脚本先按结果级唯一键去重，并只保留本次专题计划明确产出的缓存文件。不得新增“先由 LLM 阅读全文再做筛选”的预筛节点；阶段三 LLM 直接对该去重证据集进行项目研究。
+
+**LLM 边界**：LLM 可完整执行旧指令卡要求的业务判断、利润拆解、共识提取、分歧和预期差研究；脚本不得用默认值、泛化支柱或“仅观察”替代未完成研究。LLM 节点失败时仅该阶段失败，运行包保留已完成阶段和可复用证据。
+
+---
+
+## V2 执行协议（运行与审计约束）
+
+### 主动触发与运行包
+
+```bash
+python3 scripts/valuation_pipeline.py --code 688285
+python3 scripts/valuation_pipeline.py --code 688285 --evidence-dir cache/research
+python3 scripts/valuation_pipeline.py --code 688285 --refresh-evidence
+python3 scripts/valuation_pipeline.py --code 688285 --fetch-only
+python3 scripts/valuation_pipeline.py --code 688285 --no-fetch-evidence
+python3 scripts/valuation_pipeline.py --code 688285 --dry-run
+python3 scripts/valuation_pipeline.py --code 688285 --resume-run cache/valuation_runs/688285_<timestamp> --no-publish
+python3 scripts/valuation_pipeline.py --code 688285 --resume-run cache/valuation_runs/688285_<timestamp> --rerun-stage3 --no-fetch-evidence --no-publish
+python3 scripts/valuation_pipeline.py --code 688285 --resume-run cache/valuation_runs/688285_<timestamp> --rerun-stage5 --no-publish
+python3 scripts/valuation_pipeline.py --code 688285 --resume-run cache/valuation_runs/688285_<timestamp> --repair-research-card cache/valuation_runs/688285_<timestamp>/research_card_raw.json --no-fetch-evidence --no-publish
+python3 scripts/valuation_pipeline.py --code 688285 --resume-run cache/valuation_runs/688285_<timestamp> --audit-research-card cache/valuation_runs/688285_<timestamp>/research_card.json --no-fetch-evidence --no-publish
+```
+
+`--resume-run` 只允许续跑同一运行包：已有的阶段 JSON 与证据快照直接复用，仅执行缺失阶段；不得重新检索或重调已完成 LLM 节点。
+`--rerun-stage3` 用于证据范围或通用映射契约升级：复用阶段一、二和本次专题计划的成功缓存，从阶段三重做至阶段五。与 `--no-fetch-evidence` 联用时，即使缓存超过默认有效期，也只读已成功的原始快照，不发生联网检索。
+`--rerun-stage5` 仅在研究卡 schema 校验失败时使用，只重做阶段五映射，前四阶段不得重跑。
+`--repair-research-card` 只允许修复已归档研究卡的 schema、枚举、单位和显式映射，不得新增或改写研究事实与证据；修复后仍须通过同一套证据门禁、路线参数校验和计算引擎。
+`--audit-research-card` 使用已完成阶段的阅读结论做项目覆盖和估值语义审计：检查独立并购/资产/产能/海外/证券化项目是否遗漏，检查增长率百分比单位、PE 锚的底层明细和研究结论与计算参数一致性；它不重新搜索或阅读原文。
+
+原文阅读按批次独立保存到运行包 `batch_readings/`，缓存键同时校验该批 `source_ids`。进程中断后，续跑必须复用 source_ids 完全一致的已完成批次，只调用尚未完成或证据集合已变化的批次。每次 LLM 尝试的 HTTP 状态、请求/响应长度、原始响应和异常写入 `llm_traces/`；不得以静默重试掩盖长响应或供应商错误。
+
+续跑时如检索缓存的响应封装变化导致旧 source_id 不再出现在最新原始快照，已完成 `stage_*_readings.json` 中逐条归档的阅读结论必须作为 `cached_llm_reading` 证据保留原 source_id，供后续阶段复用并展示其运行包来源；它不进入新的原文阅读批次，也不得冒充新的外部检索结果。
+
+每次运行创建 `cache/valuation_runs/<code>_<timestamp>/`，至少保存：
+
+```
+manifest.json       # 阶段状态、输入/输出文件和错误原因
+briefing.json       # 阶段零输入快照
+evidence.json       # 可用证据及其 source_id
+research_card.json  # LLM 的结构化研究结论
+calc_params.json    # 经脚本验证后送入引擎的参数
+calc_results.json   # 引擎原始结果
+```
+
+报告、排名和索引只能读取该运行包中的已验证文件；不得从对话上下文、旧报告或未归档网页补数。
+
+### Dashboard 发布
+
+完成的 v2 运行由 `dashboard_valuation.py` 发布为 `dashboard/data/<YYYYMM>/valuation_context_<YYMMDD>.js`。适配器只读取运行包内的 `manifest.json`、`research_card.json`、`calc_params.json` 和 `calc_results.json`，不解析 Markdown，也不读取未完成运行或旧缓存。Dashboard 主面板中的“投研分析”只作为索引，显示已完成标的、估值区间、空间和共识状态；点击标的进入独立 `valuation.html` 公司研究页，展示三层矩阵、支柱、假设、风险催化剂和证据目录。任何 `insufficient_*` 状态必须原样展示。
+
+所有 Dashboard 发布器都必须保留其他模块的 `dashboard/data/index.js` 条目；市场、VCP、信号的日常发布不得覆盖 `valuation` 索引。
+
+```bash
+python3 scripts/dashboard_valuation.py --date 260720
+python3 scripts/dashboard_valuation.py --all
+```
+
+### 证据门禁（强制）
+
+1. 每条外部事实都必须引用 `evidence.json` 中的 `source_id`；引用包含来源类型、发布日期（若有）、缓存文件和原文摘录。
+2. 搜索返回限流、失败、空数据、超过 6 个月的研报，均不是“无覆盖”的证据，必须记录为 `insufficient_evidence`。
+3. 共识阶段只有在至少 3 家有效、未过期机构预测齐备时才能标记 `done`；否则为 `insufficient_consensus`，不得勾选完成。
+4. 每个预测假设、可比参数和 Layer 3 项目必须有证据引用。缺少引用、引用不存在或数值不合规时，脚本拒绝调用计算引擎。
+5. LLM/API 未配置、调用失败、输出非 JSON 或校验失败时，运行显式失败；不得使用模型自行补写的兜底研究结论。
+
+### 脚本化检索清单
+
+编排器先调用妙想搜索（仅使用本地 `MX_APIKEY`）并缓存原始响应到 `cache/research/`。第一轮固定清单覆盖财报/主营业务、研报盈利预测（2026E+2027E）、公告与订单、管理层动作、可比公司估值和当前股价/市值；阶段一随后必须基于业务、资产平台、并购、REITs、产能和海外判断生成第二轮专题清单。财务基础指标仍由阶段零 briefing 提供，不重复由搜索猜测。
+
+- 默认成功缓存有效期为 24 小时；`--refresh-evidence` 强制重拉，`--no-fetch-evidence` 只复用已有缓存。
+- 单项搜索限流、空结果、网络失败会写入运行包 `manifest.json`，并在指数退避后重试；该项不能成为有效证据。
+- 搜索结果原始 JSON 与查询元数据均保留。LLM 只能读取通过证据筛选的结果，不能把失败、空结果解释成“没有覆盖”。
+
+### LLM 节点边界
+
+LLM 由编排器按阶段逐节点调用，输入为 briefing、已完成阶段结论和当前专题的完整结果级证据，输出仅为 JSON。阶段一负责业务拆分与专题检索计划；阶段二负责共识/可比/分歧；阶段三负责项目级预期差；阶段四负责验证节点；阶段五只负责将已完成研究映射到 `research_card` 与 `calc_params`。不得输出 Markdown、不得访问未提供的数据、不得声称搜索过未在证据包中的来源。
+
+脚本负责：JSON 解析、schema/枚举/数值校验、证据 ID 校验、运行状态、计算、报告模板渲染和原始产物归档。报告中的估值数字必须来自 `calc_results.json`，报告中的事实必须来自 `research_card.json` 并展示证据 ID。
+
+通用计算映射不得依赖公司名、行业名或项目关键词。阶段五必须显式给出 `classification`、`profit_timing`、`accounting_treatment`、`calculation_mapping.target`、`pillar_id`、路线与路线参数；脚本仅按这些标准字段映射。路线参数契约为：A 使用双年 EBITDA、可比 EV/EBITDA 与净负债；A1/B/C 使用双年净利及上下沿；D/F 使用净资产、ROE 与 PB 可比；E 使用双年营收、毛利率与 PS 可比。Layer 2、Type B 管道和 Layer 3 只能显式挂接到已存在的 `pillar_id`。
+同一支柱可挂接多条 Layer 2，脚本按悲观/基准/乐观分别累加而非后项覆盖；Type B 管道统一进入所属支柱的 Layer 2，不受主营支柱采用 A/A1/B/C/D/E/F 哪条路线限制。被 `exclude` 的支柱不得承接任何非排除的 Layer 2、Type B 或 Layer 3 项目。
+
+> 下文阶段一至五保留为研究内容规范；其执行顺序和完成判定以本节 V2 协议为准。
 
 ---
 

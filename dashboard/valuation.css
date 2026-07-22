@@ -1,0 +1,15 @@
+.valuation-thesis,.valuation-pillar-cards{display:grid;gap:10px}
+.valuation-thesis>div,.valuation-pillar-cards article{padding:12px;border:1px solid var(--line);border-radius:7px;background:#101722}
+.valuation-thesis span,.valuation-thesis small,.valuation-pillar-cards small{display:block;color:var(--muted);font-size:11px}
+.valuation-thesis b{display:block;margin:4px 0;font-size:16px}
+.valuation-pillar-cards h3{margin:0 0 6px;font-size:15px}
+.valuation-pillar-cards p{margin:6px 0;color:#c8d2df;line-height:1.5}
+.valuation-progress-list{display:grid;gap:12px;margin:16px 0 0;padding:0;list-style:none;counter-reset:stage}
+.progress-stage{padding:14px;border:1px solid var(--line);border-radius:8px;background:#101722;counter-increment:stage}
+.progress-stage-title{display:flex;justify-content:space-between;gap:12px;align-items:center}
+.progress-stage-title b:before{content:counter(stage) ". ";color:var(--muted)}
+.progress-stage-title span{font-size:12px;color:var(--muted)}
+.progress-running{border-color:#c9983b}.progress-done{border-color:#2b795a}.progress-failed{border-color:#a74d55}
+.progress-stage ol{margin:10px 0 0;padding:0;list-style:none;display:grid;gap:6px}
+.progress-stage ol li{display:grid;grid-template-columns:1fr auto auto;gap:10px;padding:8px 10px;border-radius:6px;background:#0b111a;color:#c8d2df;font-size:13px}
+.progress-stage ol li small{color:var(--muted)}

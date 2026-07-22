@@ -186,6 +186,19 @@ def parse_params(raw: dict) -> dict:
             "revenue_2026e": p.get("revenue_2026e"),
             "revenue_2027e": p.get("revenue_2027e"),
             "gross_margin": p.get("gross_margin"),    # 毛利率(%)
+            # 路线 A/D/E/F 的可比参数允许按支柱提供，避免多个业务线共用一组全局参数。
+            "ebitda_2026e": p.get("ebitda_2026e"),
+            "ebitda_2027e": p.get("ebitda_2027e"),
+            "comparable_ev_ebitda": p.get("comparable_ev_ebitda"),
+            "net_debt": p.get("net_debt"),
+            "comparable_pb_median": p.get("comparable_pb_median"),
+            "comparable_pb_lower": p.get("comparable_pb_lower"),
+            "comparable_pb_upper": p.get("comparable_pb_upper"),
+            "comparable_roe": p.get("comparable_roe"),
+            "comparable_ps_median": p.get("comparable_ps_median"),
+            "comparable_ps_lower": p.get("comparable_ps_lower"),
+            "comparable_ps_upper": p.get("comparable_ps_upper"),
+            "comparable_gross_margin": p.get("comparable_gross_margin"),
         }
         pillars.append(pillar)
 
@@ -437,15 +450,15 @@ def calc_route_d_valuation(pillar, params, total_shares, year="2026e"):
     net_assets = pillar.get("net_assets")
     roe_pillar = pillar.get("roe_pillar") or params.get("roe")
 
-    pb_median = params.get("comparable_pb_median")
-    pb_lower = params.get("comparable_pb_lower") or pb_median
-    pb_upper = params.get("comparable_pb_upper") or pb_median
+    pb_median = pillar.get("comparable_pb_median") or params.get("comparable_pb_median")
+    pb_lower = pillar.get("comparable_pb_lower") or params.get("comparable_pb_lower") or pb_median
+    pb_upper = pillar.get("comparable_pb_upper") or params.get("comparable_pb_upper") or pb_median
 
     if net_assets is None:
         return {"error": "路线D缺少 net_assets（净资产 亿元）"}
 
     # ROE 调整
-    comp_roe = params.get("comparable_roe", roe_pillar or 15)
+    comp_roe = pillar.get("comparable_roe") or params.get("comparable_roe") or roe_pillar or 15
     if roe_pillar and comp_roe and comp_roe > 0:
         roe_ratio = roe_pillar / comp_roe
     else:
@@ -498,15 +511,15 @@ def calc_route_e_valuation(pillar, params, total_shares, year="2026e"):
         revenue = pillar.get("revenue")
     gross_margin = pillar.get("gross_margin")
 
-    ps_median = params.get("comparable_ps_median")
-    ps_lower = params.get("comparable_ps_lower") or ps_median
-    ps_upper = params.get("comparable_ps_upper") or ps_median
+    ps_median = pillar.get("comparable_ps_median") or params.get("comparable_ps_median")
+    ps_lower = pillar.get("comparable_ps_lower") or params.get("comparable_ps_lower") or ps_median
+    ps_upper = pillar.get("comparable_ps_upper") or params.get("comparable_ps_upper") or ps_median
 
     if revenue is None:
         return {"error": f"路线E缺少 {year_key} 或 revenue（营收 亿元）"}
 
     # 毛利率调整
-    comp_gm = params.get("comparable_gross_margin", gross_margin or 30)
+    comp_gm = pillar.get("comparable_gross_margin") or params.get("comparable_gross_margin") or gross_margin or 30
     if gross_margin and comp_gm and comp_gm > 0:
         gm_ratio = gross_margin / comp_gm
     else:
@@ -557,9 +570,9 @@ def calc_route_a_valuation(pillar, params, total_shares, year="2026e"):
     股权价值 = EV - 净有息负债
     """
     ebitda_key = f"ebitda_{year}"
-    ebitda = params.get(ebitda_key)
-    ev_ebitda = params.get("comparable_ev_ebitda")
-    net_debt = params.get("net_debt")
+    ebitda = pillar.get(ebitda_key) or params.get(ebitda_key)
+    ev_ebitda = pillar.get("comparable_ev_ebitda") or params.get("comparable_ev_ebitda")
+    net_debt = pillar.get("net_debt") if pillar.get("net_debt") is not None else params.get("net_debt")
 
     if ebitda is None or ev_ebitda is None:
         return {"error": f"路线A缺少 {ebitda_key} 或 comparable_ev_ebitda"}
@@ -782,7 +795,14 @@ def aggregate_matrix(pillars, pillar_results):
 
         # 从 pillar_result 获取引擎计算的 L1/L2
         pr_l1 = pr.get("layer1", {})
-        pr_l2 = pr.get("layer2", {})
+        engine_l2 = dict(pr.get("layer2", {}))
+        if pillar.get("type_b_pipeline") and not pr.get("type_b_breakdown"):
+            pipeline_l2 = calc_type_b_pipeline(pillar["type_b_pipeline"])
+            for key in ("pessimistic", "base", "optimistic"):
+                engine_l2[key] = (engine_l2.get(key, 0) or 0) + (pipeline_l2.get(f"{key}_value", 0) or 0)
+        mapped_l2 = pillar.get("layer2") or {}
+        pr_l2 = {key: (engine_l2.get(key, 0) or 0) + (mapped_l2.get(key, 0) or 0)
+                 for key in ("pessimistic", "base", "optimistic")}
 
         # 从 pillar 参数获取 LLM 提供的 L3（预期差增量，未在引擎中计算）
         l3_items = pillar.get("layer3_items") or []
@@ -1160,15 +1180,21 @@ def run_valuation(params):
     pe_2026e = None
     if params.get("pe_override"):
         override_pe = params["pe_override"]
+        pess_pe = round(override_pe * PESSIMISTIC_PE_DISCOUNT.get(growth_quality, 0.85), 2)
         opt_pe = max(
             params.get("comparable_pe_upper") or 0,
             override_pe * 1.2
         )
         pe_2026e = {
             "final_pe": override_pe,
-            "pessimistic_pe": round(override_pe * PESSIMISTIC_PE_DISCOUNT.get(growth_quality, 0.85), 2),
+            "pessimistic_pe": pess_pe,
             "optimistic_pe": round(opt_pe, 2),
-            "details": f"PE覆盖: {override_pe}x（LLM直接指定）",
+            "details": (
+                "PE 情景覆盖（研究卡已说明取值依据）:\n"
+                f"  悲观：{override_pe}x × {PESSIMISTIC_PE_DISCOUNT.get(growth_quality, 0.85):.2f} = {pess_pe}x\n"
+                f"  基准：{override_pe}x\n"
+                f"  乐观：max(可比上沿 {params.get('comparable_pe_upper') or 0}x, {override_pe}x × 1.20) = {opt_pe:.1f}x"
+            ),
         }
     elif params.get("comparable_pe_median"):
         pe_2026e = calc_pe_three_step(

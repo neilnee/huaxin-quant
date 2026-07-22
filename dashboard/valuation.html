@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Huaxin Quant · 公司投研分析</title>
+  <link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="vcp.css"><link rel="stylesheet" href="valuation.css"><link rel="stylesheet" href="layout-overrides.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="page-header"><div><p class="eyebrow">HUAXIN QUANT · VALUATION RESEARCH</p><h1 id="report-title">公司投研分析</h1></div><div class="header-meta"><a class="valuation-link" href="index.html">← 返回投研索引</a><p id="report-meta" class="data-status">—</p></div></header>
+    <p id="report-error" class="notice hidden"></p>
+    <div id="report-content" class="hidden">
+      <section class="panel vcp-header"><div><p class="section-label">模型三 · 已验证估值</p><h2 id="company-name">—</h2><p id="company-status" class="data-status"></p></div><div id="valuation-range" class="vcp-summary"></div></section>
+      <section class="panel"><div class="section-heading"><div><p class="section-label">市场交易主题</p><h2>结论与核心判断</h2></div></div><div id="thesis-content" class="valuation-thesis"></div></section>
+      <section class="panel"><div class="section-heading"><div><p class="section-label">利润支柱</p><h2>业务与利润桥</h2></div></div><div id="business-pillars" class="valuation-pillar-cards"></div></section>
+      <section class="panel"><div class="section-heading"><div><p class="section-label">估值构成</p><h2>三层矩阵</h2></div><p>单位：亿元（2026E 基准情景）</p></div><div id="layer-grid" class="valuation-layer-grid"></div></section>
+      <section class="panel"><div class="section-heading"><div><p class="section-label">业务支柱</p><h2>支柱估值</h2></div></div><div class="table-scroll"><table id="pillar-table"></table></div></section>
+      <section class="panel"><div class="section-heading"><div><p class="section-label">市场分歧</p><h2>Layer 2 与 Layer 3</h2></div></div><div id="divergence-content" class="valuation-pillar-cards"></div></section>
+      <section class="panel"><div class="section-heading"><div><p class="section-label">后续观察</p><h2>验证节点</h2></div></div><div class="table-scroll"><table id="verification-table"></table></div></section>
+      <section class="panel"><div class="section-heading"><div><p class="section-label">研究依据</p><h2>事实与核心假设</h2></div></div><div class="valuation-report-grid"><section><h3>已验证事实</h3><ul id="facts-list" class="valuation-list"></ul></section><section><h3>核心假设</h3><ul id="assumptions-list" class="valuation-list"></ul></section></div></section>
+      <section class="panel"><div class="valuation-report-grid"><section><p class="section-label">风险</p><h2>主要风险</h2><ul id="risks-list" class="valuation-list"></ul></section><section><p class="section-label">催化剂</p><h2>后续观察</h2><ul id="catalysts-list" class="valuation-list"></ul></section></div></section>
+      <section class="panel"><div class="section-heading"><div><p class="section-label">审计追溯</p><h2>证据目录</h2></div><p id="run-id" class="data-status"></p></div><div class="table-scroll"><table id="evidence-table"></table></div></section>
+    </div>
+  </main>
+  <script src="data/index.js"></script><script src="valuation.js"></script>
+</body>
+</html>

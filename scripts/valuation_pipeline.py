@@ -1089,7 +1089,10 @@ def main():
     os.environ.setdefault("VALUATION_LLM_TRACE_DIR", str(run_dir / "llm_traces"))
     manifest = read_json(run_dir / "manifest.json") if args.resume_run and (run_dir / "manifest.json").exists() else {"version": "valuation-v3", "code": code, "started_at": started, "status": "running", "stages": {}}
     try:
-        briefing_path, briefing = latest_briefing(code)
+        if args.resume_run and (run_dir / "briefing.json").exists():
+            briefing_path, briefing = run_dir / "briefing.json", read_json(run_dir / "briefing.json")
+        else:
+            briefing_path, briefing = latest_briefing(code)
         name = str(args.name or briefing.get("_meta", {}).get("name") or briefing.get("meta", {}).get("name") or "")
         if not name or name == code:
             name = name_from_index(code)

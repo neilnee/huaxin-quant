@@ -5,7 +5,7 @@
 - **核心哲学**: 脚本编排、校验、存档和渲染；LLM 只完成小范围、结构化的研究判断。
 - **触发方式**: 用户主动按单只标的触发，不消费 Bloom，也不自动给出交易动作。
 - **输出**: `reports/valuation/<code>_<name>.md` + `reports/indexes/valuation_index.csv` + `reports/indexes/valuation_ranking.csv` + 当次可审计运行包 + Dashboard 数据包。
-- **配套脚本**: `scripts/valuation_pipeline.py`（v3 五阶段编排器）+ `scripts/dashboard_valuation.py`（Dashboard 适配器）+ `scripts/valuate.py`（阶段零）+ `scripts/calc_valuation.py`（计算引擎）| 参考手册: `03-valuation-ref.md`
+- **配套脚本**: `scripts/run_valuation.py`（端到端总控）+ `scripts/valuation_pipeline.py`（v3 五阶段编排器）+ `scripts/dashboard_valuation.py`（Dashboard 适配器）+ `scripts/valuate.py`（阶段零）+ `scripts/calc_valuation.py`（计算引擎）| 参考手册: `03-valuation-ref.md`
 
 ---
 
@@ -109,6 +109,37 @@ Layer 3 不是任意主题的溢价：没有明确业务实质、潜在利润、
 ---
 
 ## V2 执行协议（运行与审计约束）
+
+### 端到端总控（默认入口）
+
+日常执行模型三时，默认使用总控脚本，不再由对话或人工逐条串联阶段零、五阶段编排和恢复命令：
+
+```bash
+python3 scripts/run_valuation.py --code 688285
+python3 scripts/run_valuation.py --code 688285 --refresh
+python3 scripts/run_valuation.py --code 688285 --refresh-financial
+python3 scripts/run_valuation.py --code 688285 --skip-financial-fetch
+python3 scripts/run_valuation.py --code 688285 --resume
+python3 scripts/run_valuation.py --code 688285 --resume --no-fetch-evidence --no-publish
+python3 scripts/run_valuation.py --code 688285 --status
+python3 scripts/run_valuation.py --code 688285 --dry-run
+```
+
+`run_valuation.py` 只负责执行控制，不参与研究判断或估值计算。其职责固定为：
+
+1. 新运行校验股票代码、mx-data 脚本、财务原始缓存和缓存时效；缓存缺失或过期时直接调用 mx-data 补齐标准财务查询；所有执行校验运行锁。
+2. 财务 raw JSON 通过接口状态、证券代码和可解析字段门禁后，通过本地 symlink 路径调用 `scripts/valuate.py --code <code>`，并校验新生成的 briefing；续跑默认保留原阶段零输入，不重新生成 briefing。
+3. 调用 `scripts/valuation_pipeline.py` 执行检索、阶段一至五、参数门禁、计算和发布。
+4. `--resume` 自动选择该股票最新的失败/可恢复运行包；对已经完成前四阶段但尚未形成研究卡的任务只重跑阶段五，对研究卡契约校验失败且事实证据完整的任务使用结构修复，其余任务按普通断点续跑处理。
+5. 同一股票同一时间只允许一个总控任务；异常退出后可回收已失效的 PID 锁。
+6. 子流程退出后必须读取 `manifest.json` 复核终态；发布模式下 Dashboard 失败也视为总控失败，不能只凭子进程返回码宣告成功。
+7. 将总控命令、恢复决策、阶段零结果、运行包和最终状态写入运行包 `controller_summary.json`。
+
+mx-data 通过 `.env` 的 `HUAXIN_MX_DATA_SCRIPT` 定位，默认回退到 `~/.claude/skills/mx-data/mx_data.py`，凭据只读取 `MX_APIKEY`。新运行执行阶段零时，财务缓存缺失或超过默认 90 天会自动查询：最新年报核心财务与资产负债字段、近三年利润/利润率历史、总股本及估值基础字段。每个查询失败可重试，只有新生成的 `*_raw.json` 能被 `valuate.py` 解析时才算完成。
+
+`--refresh` 同时强制刷新财务、briefing 和模型三检索证据；`--refresh-financial` 只强制刷新财务后继续完整流程；`--skip-financial-fetch` 禁止调用 mx-data，仅允许使用满足时效门禁的本地缓存，与 `--allow-stale-financial` 联用时可显式放行已确认仍有效的旧财报。续跑和 `--skip-stage0` 只使用已归档/当日 briefing，不因工作区财务缓存后来过期而阻断，也不重新调用 mx-data。
+
+`valuation_pipeline.py` 仍保留为内部入口，供定位、修复和开发验证使用：
 
 ### 主动触发与运行包
 

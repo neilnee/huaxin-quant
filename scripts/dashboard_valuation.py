@@ -125,6 +125,8 @@ def compact_run(item: dict) -> dict:
     shares = meta.get("total_shares")
     valuation = {
         "current_price": meta.get("current_price"),
+        "price_date": meta.get("price_date"),
+        "price_source": meta.get("price_source"),
         "pessimistic": per_share(total_2026.get("pessimistic"), shares),
         "base": per_share(total_2026.get("base"), shares),
         "optimistic": per_share(total_2026.get("optimistic"), shares),

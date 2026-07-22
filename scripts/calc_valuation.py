@@ -204,7 +204,8 @@ def parse_params(raw: dict) -> dict:
 
     params = {
         "meta": {"code": code, "name": name, "total_shares": total_shares,
-                  "current_price": current_price},
+                  "current_price": current_price, "price_date": meta.get("price_date"),
+                  "price_source": meta.get("price_source")},
         "growth_quality": growth_quality,
         "market_position": market_position,
         "comparable_pe_median": comparable_pe_median,

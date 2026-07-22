@@ -12,7 +12,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -22,7 +21,9 @@ from urllib import error, request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.calc_valuation import parse_params, run_valuation, update_ranking_csv
-from scripts.shared import PROJECT_ROOT, VALUATION_INDEX_PATH, VALUATION_REPORTS_DIR
+from scripts.data.market_data_service import MarketDataService
+from scripts.shared import PROJECT_ROOT, VALUATION_INDEX_PATH, VALUATION_REPORTS_DIR, expected_trade_date
+from scripts.strategy_config import load_strategy_config
 
 ROOT = Path(PROJECT_ROOT)
 BRIEFING_DIR = ROOT / "cache" / "briefing"
@@ -31,6 +32,7 @@ RESEARCH_DIR = ROOT / "cache" / "research"
 CALC_PARAMS_DIR = ROOT / "cache" / "calc_params"
 CALC_RESULTS_DIR = ROOT / "cache" / "calc_results"
 MX_SEARCH_URL = "https://mkapi2.dfcfs.com/finskillshub/api/claw/news-search"
+MARKET_DATA_CONFIG, _ = load_strategy_config("market-regime.json")
 
 SEARCH_TOPICS = (
     ("business", "{name} {code} 2025年报 主营业务 营收构成"),
@@ -113,6 +115,29 @@ def name_from_index(code):
             if stored == code:
                 return str(row.get("股票名称", "")).strip()
     return ""
+
+
+def current_market_quote(code, name, as_of=None, service=None):
+    """Load the latest valid close from the canonical market-data service."""
+    target_date = as_of or expected_trade_date()
+    market_service = service or MarketDataService(MARKET_DATA_CONFIG)
+    frames, status = market_service.get_daily_bars([(code, name)], target_date, 1)
+    frame = frames.get(code)
+    if frame is None or frame.empty:
+        reason = status.get(code, {}).get("error") or "无行情数据"
+        raise PipelineError(f"{code} 当前价获取失败: {reason}")
+    row = frame.iloc[-1]
+    quote_date = str(row.get("date", ""))[:10]
+    price = _number(row.get("close"), "market_quote.close")
+    if quote_date != target_date:
+        raise PipelineError(f"{code} 行情过期: 期望 {target_date}，实际 {quote_date or '未知'}")
+    if price <= 0:
+        raise PipelineError(f"{code} 最新收盘价必须大于零")
+    return {
+        "current_price": round(price, 4),
+        "price_date": quote_date,
+        "price_source": str(row.get("source") or status.get(code, {}).get("source") or "market_data_service"),
+    }
 
 
 def text_excerpt(value, limit=None):
@@ -524,7 +549,7 @@ def run_staged_research(run_dir, briefing, evidence, code, name, evidence_dir, f
     search_runs = fetch_dynamic_evidence(plan, code, evidence_dir, refresh, max_age_hours, dry_run, allow_dynamic_fetch)
     if dry_run:
         return None, search_runs
-    briefing_path, _ = latest_briefing(code)
+    briefing_path = run_dir / "briefing.json"
     if any(item["status"] == "missing_offline" for item in search_runs):
         raise PipelineError("阶段三专题缓存缺失；移除 --no-fetch-evidence 后重新运行以获取完整证据")
     dynamic_paths = [ROOT / item["path"] for item in search_runs if item.get("status") in ("done", "cached", "cached_offline")]
@@ -707,9 +732,15 @@ def build_generic_calc_params(card, briefing, code, name, evidence):
     valid_ids = {item["source_id"] for item in evidence}
     snapshot = briefing.get("valuation_snapshot", {})
     raw_shares = _number(snapshot.get("total_shares"), "briefing.total_shares")
-    market_cap = _number(snapshot.get("market_cap"), "briefing.market_cap")
     total_shares = raw_shares / 1e8
-    current_price = market_cap / raw_shares
+    quote = briefing.get("market_quote")
+    if not isinstance(quote, dict):
+        raise PipelineError("briefing.market_quote 缺失；禁止从报告期市值反推当前价")
+    current_price = _number(quote.get("current_price"), "briefing.market_quote.current_price")
+    price_date = str(quote.get("price_date") or "")
+    price_source = str(quote.get("price_source") or "")
+    if current_price <= 0 or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", price_date) or not price_source:
+        raise PipelineError("briefing.market_quote 价格、日期或来源无效")
     inputs = card.get("valuation_inputs")
     if not isinstance(inputs, dict):
         raise PipelineError("研究卡缺少 valuation_inputs")
@@ -743,7 +774,8 @@ def build_generic_calc_params(card, briefing, code, name, evidence):
         raise PipelineError("valuation_inputs.qualitative_adjustments 必须为 {item,adjustment} 数组")
     params = {field: inputs[field] for field in input_fields}
     params.update({"meta": {"code": code, "name": name, "total_shares": round(total_shares, 6),
-                            "current_price": round(current_price, 4)},
+                            "current_price": round(current_price, 4), "price_date": price_date,
+                            "price_source": price_source},
                    "qualitative_adjustments": inputs.get("qualitative_adjustments", []), "pillars": []})
     pillars_by_id, calc_sources = {}, []
     for field in input_fields:
@@ -1075,7 +1107,11 @@ def main():
                 manifest.setdefault("stages", {})[stage_key] = {"status": "pending", "reason": "--rerun-stage5"}
         write_json(run_dir / "manifest.json", manifest)
         subprocess.run([sys.executable, "scripts/dashboard_valuation.py", "--progress"], cwd=ROOT, capture_output=True)
-        shutil.copy2(briefing_path, run_dir / "briefing.json")
+        quote = current_market_quote(code, name)
+        briefing["market_quote"] = quote
+        run_briefing_path = run_dir / "briefing.json"
+        write_json(run_briefing_path, briefing)
+        manifest["stages"]["market_quote"] = {"status": "done", **quote}
         evidence_dir = Path(args.evidence_dir)
         fixed_paths = [search_cache_path(evidence_dir, code, topic) for topic, _ in SEARCH_TOPICS]
         search_runs = [] if (args.no_fetch_evidence or args.resume_run) else fetch_evidence(
@@ -1088,7 +1124,7 @@ def main():
         if args.resume_run and (run_dir / "evidence.json").exists():
             snapshot = read_json(run_dir / "evidence.json"); evidence, rejected = snapshot["evidence"], snapshot.get("rejected", [])
         else:
-            evidence, rejected = build_evidence(briefing_path, briefing, code, name, evidence_dir, fixed_paths)
+            evidence, rejected = build_evidence(run_briefing_path, briefing, code, name, evidence_dir, fixed_paths)
         write_json(run_dir / "evidence.json", {"evidence": evidence, "rejected": rejected})
         manifest["stages"]["evidence"] = {"status": "done", "count": len(evidence), "rejected": rejected}
         if args.dry_run or args.fetch_only:

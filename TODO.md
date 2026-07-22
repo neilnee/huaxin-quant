@@ -129,6 +129,7 @@ Bloom 信号层已完成（发现侧），下阶段补齐持仓管理和估值�
 
 - [x] 建立 `PRE_BREAKOUT` / `POST_BREAKOUT_HOT` / `POST_BREAKOUT_RETEST` / `POST_BREAKOUT_CONSOLIDATING` / `POST_BREAKOUT_FAILED` / `POST_BREAKOUT_EXPIRED` 状态机；旧 VCP 突破后永久关闭 PULLBACK 和重复 BREAKOUT。
 - [x] 突破后收盘跌破 Pivot × 0.97、回撤过深或时间超期时，关闭旧 VCP 生命周期并等待新 cluster 重建。
+- [x] 突破后硬失效采用全路径不可逆判定：任一日跌破失效位或出现深回撤后，旧组及其子组不得因反弹回到 RETEST/VCP_FORMING（688002 睿创微纳回放）。
 - [x] 以 002281 光迅科技（旧 VCP 突破后回落）与 002979 雷赛智能（两板突破后受控回踩）作为回归案例，验证“历史结构质量”与“当前交易状态”分离。
 
 ### P2 — 收缩量能口径与弱结构买点边界

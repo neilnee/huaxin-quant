@@ -686,10 +686,27 @@ def evaluate_vcp_group(df, group):
 
     post_breakout_state = "PRE_BREAKOUT"
     breakout_days = None
+    post_breakout_failure = None
     if breakout:
         breakout_days = len(df) - breakout["idx"] - 1
         pivot_fail = structure_pivot * POST_BREAKOUT_CFG["pivot_fail_close_ratio"]
-        if close < pivot_fail or post_structure_drawdown < VCP_MAX_POST_DRAWDOWN:
+        breakout_after = df.iloc[breakout["idx"]:]
+        running_high = breakout_after["high"].cummax()
+        historical_drawdown = (breakout_after["close"] - running_high) / running_high * 100
+        below_pivot_fail = breakout_after["close"] < pivot_fail
+        deep_drawdown = historical_drawdown < VCP_MAX_POST_DRAWDOWN
+        failure_mask = below_pivot_fail | deep_drawdown
+        if POST_BREAKOUT_CFG.get("irreversible_failure", True) and failure_mask.any():
+            failure_idx = failure_mask[failure_mask].index[0]
+            failure_row = df.loc[failure_idx]
+            post_breakout_failure = {
+                "idx": int(failure_idx),
+                "date": str(failure_row["date"]),
+                "close": float(failure_row["close"]),
+                "pivot_fail": pivot_fail,
+                "drawdown": float(historical_drawdown.loc[failure_idx]),
+                "reason": "pivot_fail" if bool(below_pivot_fail.loc[failure_idx]) else "max_drawdown",
+            }
             post_breakout_state = "POST_BREAKOUT_FAILED"
         elif breakout_days > POST_BREAKOUT_CFG["expiry_days"]:
             post_breakout_state = "POST_BREAKOUT_EXPIRED"
@@ -705,10 +722,7 @@ def evaluate_vcp_group(df, group):
 
     invalid_reasons = []
     post_group_support_break = None
-    # A completed breakout has its own lifecycle rules. This guard is only for a
-    # pre-breakout historical group whose support was subsequently destroyed.
-    if not breakout:
-        post_group_support_break = detect_post_group_support_break(df, last_end_idx, last_low)
+    post_group_support_break = detect_post_group_support_break(df, last_end_idx, last_low)
     if structure_age_days > VCP_MAX_STRUCTURE_AGE_DAYS:
         invalid_reasons.append("structure_too_old")
     if pivot_distance is not None and pivot_distance < VCP_MIN_PIVOT_DISTANCE:
@@ -735,6 +749,7 @@ def evaluate_vcp_group(df, group):
         "post_structure_gain": post_structure_gain,
         "post_structure_drawdown": post_structure_drawdown,
         "post_breakout_state": post_breakout_state,
+        "post_breakout_failure": post_breakout_failure,
         "post_group_support_break": post_group_support_break,
         "breakout": breakout,
         "breakout_days": breakout_days,
@@ -750,6 +765,7 @@ def select_current_vcp_group(df, contractions):
     candidates = []
     best_invalid = None
     reset_events = []
+    failure_boundary_idx = None
     active_cluster = split_contraction_clusters(contractions)[-1]
     max_size = min(CONTRACTION_CFG["max_recent_contractions"], len(active_cluster))
     max_span = CONTRACTION_CFG.get("max_group_span_days")
@@ -761,6 +777,14 @@ def select_current_vcp_group(df, contractions):
             if contraction_group_has_reset_expansion(group):
                 continue
             info = evaluate_vcp_group(df, group)
+            failure = info.get("post_breakout_failure")
+            if failure:
+                failure_idx = failure["idx"]
+                failure_boundary_idx = (
+                    failure_idx
+                    if failure_boundary_idx is None
+                    else max(failure_boundary_idx, failure_idx)
+                )
             if info.get("post_group_support_break"):
                 reset_events.append(info["post_group_support_break"])
             if info["structure_valid"]:
@@ -792,6 +816,16 @@ def select_current_vcp_group(df, contractions):
                 continue
             if best_invalid is None or info["structure_age_days"] < best_invalid["structure_age_days"]:
                 best_invalid = info
+
+    # A failed breakout consumes every group that began before its failure date.
+    # A fresh VCP may only use contractions formed after that date, preventing an
+    # old group or one of its subsets from reviving on a subsequent rebound.
+    if failure_boundary_idx is not None:
+        candidates = [
+            item
+            for item in candidates
+            if item[1]["group"][0]["start_idx"] > failure_boundary_idx
+        ]
 
     if candidates and reset_events:
         for _, info in candidates:
@@ -831,6 +865,7 @@ def detect_vcp_structure(df):
         "post_structure_gain": None,
         "post_structure_drawdown": None,
         "post_breakout_state": "PRE_BREAKOUT",
+        "post_breakout_failure": None,
         "breakout": None,
         "breakout_days": None,
         "vcp_quality": "D",
@@ -874,6 +909,7 @@ def detect_vcp_structure(df):
     post_structure_gain = current["post_structure_gain"] if current else None
     post_structure_drawdown = current["post_structure_drawdown"] if current else None
     post_breakout_state = current["post_breakout_state"] if current else "PRE_BREAKOUT"
+    post_breakout_failure = current.get("post_breakout_failure") if current else None
     rebuild_after_reset = bool(current and current.get("rebuild_after_reset"))
     breakout = current["breakout"] if current else None
     breakout_days = current["breakout_days"] if current else None
@@ -889,6 +925,7 @@ def detect_vcp_structure(df):
         post_structure_gain = invalid_group["post_structure_gain"]
         post_structure_drawdown = invalid_group["post_structure_drawdown"]
         post_breakout_state = invalid_group["post_breakout_state"]
+        post_breakout_failure = invalid_group.get("post_breakout_failure")
         breakout = invalid_group["breakout"]
         breakout_days = invalid_group["breakout_days"]
 
@@ -1011,6 +1048,7 @@ def detect_vcp_structure(df):
         "post_structure_gain": post_structure_gain,
         "post_structure_drawdown": post_structure_drawdown,
         "post_breakout_state": post_breakout_state,
+        "post_breakout_failure": post_breakout_failure,
         "rebuild_after_reset": rebuild_after_reset,
         "breakout": breakout,
         "breakout_days": breakout_days,
@@ -1929,6 +1967,7 @@ def screen(df, code=None):
             "post_structure_gain": None,
             "post_structure_drawdown": None,
             "post_breakout_state": "PRE_BREAKOUT",
+            "post_breakout_failure": None,
             "structure_breakout_date": "",
             "structure_breakout_level": None,
             "breakout_days": None,
@@ -2008,6 +2047,7 @@ def screen(df, code=None):
         "post_structure_gain": round_or_none(structure.get("post_structure_gain")),
         "post_structure_drawdown": round_or_none(structure.get("post_structure_drawdown")),
         "post_breakout_state": structure.get("post_breakout_state", "PRE_BREAKOUT"),
+        "post_breakout_failure": structure.get("post_breakout_failure"),
         "structure_breakout_date": (structure.get("breakout") or {}).get("date", ""),
         "structure_breakout_level": round_or_none((structure.get("breakout") or {}).get("level")),
         "breakout_days": structure.get("breakout_days"),

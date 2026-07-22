@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import re
@@ -11,12 +12,47 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(os.path.abspath(__file__)).parents[1]))
-from scripts.shared import PROJECT_ROOT
+from scripts.shared import PROJECT_ROOT, VALUATION_INDEX_PATH
 
 
 ROOT = Path(PROJECT_ROOT)
 RUNS_DIR = ROOT / "cache" / "valuation_runs"
 DATA_DIR = ROOT / "dashboard" / "data"
+
+
+def normalize_code(value) -> str:
+    digits = re.sub(r"\D", "", str(value or ""))
+    return digits[-6:].zfill(6) if digits else ""
+
+
+def usable_name(value, code: str) -> str:
+    name = str(value or "").strip()
+    if not name or normalize_code(name) == code or name.lower() in {"unknown", "none", "null", "未知"}:
+        return ""
+    return name
+
+
+def valuation_name_index() -> dict[str, str]:
+    path = Path(VALUATION_INDEX_PATH)
+    if not path.exists():
+        return {}
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        rows = csv.DictReader(handle)
+        return {
+            normalize_code(row.get("股票代码")): str(row.get("股票名称") or "").strip()
+            for row in rows if normalize_code(row.get("股票代码"))
+        }
+
+
+NAME_INDEX = valuation_name_index()
+
+
+def resolve_identity(path: Path, manifest: dict, params: dict | None = None, card: dict | None = None) -> tuple[str, str]:
+    meta = (params or {}).get("meta", {})
+    code = normalize_code(meta.get("code") or manifest.get("code") or path.name.split("_", 1)[0])
+    candidates = [meta.get("name"), manifest.get("name"), (card or {}).get("company_name"), NAME_INDEX.get(code)]
+    name = next((usable_name(value, code) for value in candidates if usable_name(value, code)), "")
+    return code, name or code
 
 
 def load_json(path: Path) -> dict:
@@ -54,7 +90,10 @@ def verified_runs():
             manifest = load_json(manifest_path)
         except (OSError, json.JSONDecodeError):
             continue
-        if manifest.get("status") != "done" or manifest.get("stages", {}).get("consensus", {}).get("status") != "done":
+        # A terminal run with a validated research card and calculation is
+        # publishable even when consensus is explicitly insufficient.  The
+        # status is part of the research conclusion and must remain visible.
+        if manifest.get("status") != "done":
             continue
         try:
             card = load_json(path / "research_card.json")
@@ -80,6 +119,7 @@ def compact_run(item: dict) -> dict:
     path = item["path"]
     card, params, result = (load_json(path / name) for name in ("research_card.json", "calc_params.json", "calc_results.json"))
     meta = params.get("meta", {})
+    code, name = resolve_identity(path, item["manifest"], params, card)
     total_2026 = result.get("matrix_2026e", {}).get("total", {})
     total_2027 = result.get("matrix_2027e", {}).get("total", {})
     shares = meta.get("total_shares")
@@ -95,8 +135,8 @@ def compact_run(item: dict) -> dict:
     except (TypeError, ValueError, ZeroDivisionError):
         valuation["base_upside_pct"] = None
     return {
-        "code": str(meta.get("code", "")).zfill(6), "name": meta.get("name", ""),
-        "run_id": path.name, "run_at": item["manifest"].get("started_at"),
+        "code": code, "name": name,
+        "run_id": path.name, "run_at": item["manifest"].get("started_at"), "analysis_date": item["date"],
         "valuation": valuation,
         "status": {"run": item["manifest"].get("status"), "consensus": item["manifest"].get("stages", {}).get("consensus", {}),
                    "reverse_check": result.get("reverse_check", {})},
@@ -109,9 +149,19 @@ def compact_run(item: dict) -> dict:
         "market_divergences": card.get("market_divergences", []),
         "narrative_options": card.get("narrative_options", []),
         "verification_nodes": card.get("verification_nodes", []),
+        "consensus": card.get("consensus", []), "comparables": card.get("comparables", []),
+        "valuation_inputs": card.get("valuation_inputs", {}),
         "facts": card.get("facts", []), "assumptions": card.get("assumptions", []),
         "risks": card.get("risks", []), "catalysts": card.get("catalysts", []),
         "evidence": load_json(path / "evidence.json").get("evidence", []),
+        "research_stats": {
+            "evidence_count": len(load_json(path / "evidence.json").get("evidence", [])),
+            "consensus_count": len(card.get("consensus", [])),
+            "pillar_count": len(card.get("business_pillars", [])),
+            "divergence_count": len(card.get("market_divergences", [])),
+            "option_count": len(card.get("narrative_options", [])),
+            "verification_count": len(card.get("verification_nodes", [])),
+        },
     }
 
 
@@ -126,7 +176,7 @@ def load_index():
 def write_index():
     index = load_index()
     dates = sorted(item.stem.rsplit("_", 1)[-1] for item in DATA_DIR.glob("*/valuation_context_*.js"))
-    index["valuation"] = {"latest": dates[-1] if dates else None, "available": dates}
+    index["valuation"] = {"latest": dates[-1] if dates else None, "available": dates, "catalog": "data/valuation_latest.js"}
     for kind in ("market", "vcp", "signals"):
         index.setdefault(kind, {"latest": None, "available": []})
     (DATA_DIR / "index.js").write_text("window.QUANT_DASHBOARD_INDEX = " + json.dumps(index, ensure_ascii=False) + ";\n", encoding="utf-8")
@@ -151,6 +201,31 @@ def publish(date: str) -> Path:
     return target
 
 
+def publish_latest() -> Path:
+    """Publish one newest verified report per company across all analysis dates."""
+    newest_by_code = {}
+    for item in verified_runs():
+        code, _ = resolve_identity(item["path"], item["manifest"])
+        if code not in newest_by_code or item["path"].name > newest_by_code[code]["path"].name:
+            newest_by_code[code] = item
+    valuations = sorted(
+        (compact_run(item) for item in newest_by_code.values()),
+        key=lambda row: (row.get("run_at") or "", row["code"]), reverse=True,
+    )
+    context = {
+        "meta": {"generated_at": datetime.now().isoformat(timespec="seconds"), "source": "newest verified valuation run per company"},
+        "summary": {
+            "total": len(valuations),
+            "with_consensus": sum(row["status"]["consensus"].get("status") == "done" for row in valuations),
+            "evidence_count": sum(row["research_stats"]["evidence_count"] for row in valuations),
+        },
+        "valuations": valuations,
+    }
+    target = DATA_DIR / "valuation_latest.js"
+    target.write_text("window.QUANT_DASHBOARD_VALUATION_LATEST = " + json.dumps(context, ensure_ascii=False) + ";\n", encoding="utf-8")
+    return target
+
+
 def publish_progress() -> Path:
     """Publish in-flight valuation run checkpoints without touching verified contexts."""
     rows = []
@@ -163,9 +238,17 @@ def publish_progress() -> Path:
         ("stage5", "阶段五 · 研究卡与通用映射", [("研究结论合并", "research_card.json", "stage_5_mapping"), ("参数契约校验", "calc_params.json", "parameter_validation")]),
         ("calculation", "估值计算", [("三情景估值引擎", "calc_results.json", "calculation")]),
     ]
-    for path in sorted(RUNS_DIR.glob("*_*"), reverse=True):
+    newest_paths = {}
+    for candidate in sorted(RUNS_DIR.glob("*_*"), reverse=True):
+        if not (candidate / "manifest.json").exists():
+            continue
+        candidate_manifest = load_json(candidate / "manifest.json")
+        candidate_code, _ = resolve_identity(candidate, candidate_manifest)
+        if candidate_code and candidate_code not in newest_paths:
+            newest_paths[candidate_code] = candidate
+    for path in newest_paths.values():
         manifest = load_json(path / "manifest.json") if (path / "manifest.json").exists() else {}
-        code = str(manifest.get("code") or path.name.split("_", 1)[0]).zfill(6)
+        code, name = resolve_identity(path, manifest)
         manifest_stages = manifest.get("stages", {})
         stages = []
         for stage_id, label, step_specs in stage_schema:
@@ -191,7 +274,7 @@ def publish_progress() -> Path:
             stages.append({"id": stage_id, "name": label, "status": stage_status, "steps": steps})
         if not any(stage["status"] in {"done", "running", "failed"} for stage in stages):
             continue
-        rows.append({"run_id": path.name, "code": code, "name": manifest.get("name", ""), "status": manifest.get("status", "running"),
+        rows.append({"run_id": path.name, "code": code, "name": name, "status": manifest.get("status", "running"),
                      "error": manifest.get("error"), "started_at": manifest.get("started_at"), "updated_at": datetime.now().isoformat(timespec="seconds"), "stages": stages})
     target = DATA_DIR / "valuation_progress.js"
     target.write_text("window.QUANT_DASHBOARD_VALUATION_PROGRESS = " + json.dumps({"generated_at": datetime.now().isoformat(timespec="seconds"), "runs": rows}, ensure_ascii=False) + ";\n", encoding="utf-8")
@@ -216,6 +299,8 @@ def main() -> int:
     if not dates:
         raise SystemExit("未找到完成的模型三 v2 运行包")
     outputs = [str(publish(date)) for date in dates]
+    outputs.append(str(publish_latest()))
+    outputs.append(str(publish_progress()))
     print(json.dumps({"dates": dates, "outputs": outputs}, ensure_ascii=False))
     return 0
 

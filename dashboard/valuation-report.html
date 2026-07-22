@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Huaxin Quant · 深度估值报告</title>
+  <link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="valuation-report.css">
+</head>
+<body>
+  <main class="report-shell">
+    <header class="report-nav"><a href="index.html">← 投研分析列表</a><span>HUAXIN QUANT · VALUATION</span><p id="report-meta">—</p></header>
+    <p id="report-error" class="notice hidden"></p>
+    <div id="report-content" class="hidden">
+      <section class="report-hero">
+        <div class="hero-copy"><p class="overline">MODEL 3 · DEEP VALUATION</p><div class="title-line"><h1 id="company-name">—</h1><span id="company-code"></span></div><p id="market-trade" class="market-trade">—</p><p id="company-stage" class="company-stage">—</p></div>
+        <div id="research-stats" class="research-stats"></div>
+      </section>
+
+      <section><div class="section-head"><div><p class="overline">VALUATION RANGE</p><h2>估值结论</h2></div><p id="reverse-check"></p></div><div id="valuation-cards" class="valuation-cards"></div><div id="valuation-track" class="valuation-track"></div><blockquote id="core-judgement"></blockquote></section>
+
+      <section><div class="section-head"><div><p class="overline">CONSENSUS FIRST</p><h2>机构一致预期</h2></div><p>利润测算的第一锚点</p></div><div id="consensus-summary" class="metric-strip"></div><div class="table-wrap"><table id="consensus-table"></table></div></section>
+
+      <section class="two-column"><div><div class="section-head"><div><p class="overline">PE CONSTRUCTION</p><h2>PE 如何形成</h2></div></div><div id="pe-panel" class="pe-panel"></div></div><div><div class="section-head"><div><p class="overline">COMPARABLES</p><h2>估值锚与可比</h2></div></div><div class="table-wrap"><table id="comparable-table"></table></div></div></section>
+
+      <section><div class="section-head"><div><p class="overline">THREE-LAYER MATRIX</p><h2>市场究竟在交易什么</h2></div><div class="legend"><span>Layer 1 共识</span><span>Layer 2 分歧</span><span>Layer 3 期权</span></div></div><div class="table-wrap"><table id="matrix-table" class="matrix-table"></table></div><div id="layer-cards" class="layer-cards"></div></section>
+
+      <section><div class="section-head"><div><p class="overline">PROFIT PILLARS</p><h2>利润支柱与业务拆解</h2></div><p>利润、估值路径与项目映射</p></div><div id="pillar-cards" class="pillar-cards"></div></section>
+
+      <section><div class="section-head"><div><p class="overline">EXPECTATION GAP</p><h2>关键分歧</h2></div><p>尚未被充分定价的判断</p></div><div id="divergence-cards" class="divergence-cards"></div></section>
+
+      <section><div class="section-head"><div><p class="overline">NARRATIVE OPTIONS</p><h2>叙事期权与潜在业务</h2></div><p>计入估值与仅观察严格分开</p></div><div id="option-cards" class="option-cards"></div></section>
+
+      <section><div class="section-head"><div><p class="overline">VERIFICATION MAP</p><h2>后续验证节点</h2></div><p>成功、失败都会改变定价</p></div><div id="verification-list" class="verification-list"></div></section>
+
+      <section class="two-column research-basis"><div><div class="section-head"><div><p class="overline">FACTS</p><h2>已验证事实</h2></div></div><ol id="facts-list" class="evidence-list"></ol></div><div><div class="section-head"><div><p class="overline">ASSUMPTIONS</p><h2>核心假设</h2></div></div><ol id="assumptions-list" class="evidence-list"></ol></div></section>
+
+      <section class="two-column"><div><div class="section-head"><div><p class="overline risk-label">RISKS</p><h2>主要风险</h2></div></div><ul id="risks-list" class="plain-list"></ul></div><div><div class="section-head"><div><p class="overline catalyst-label">CATALYSTS</p><h2>近期催化剂</h2></div></div><ul id="catalysts-list" class="plain-list"></ul></div></section>
+
+      <section><details><summary><span><b>证据目录</b><small id="evidence-summary">—</small></span><i>展开审计信息</i></summary><div class="table-wrap"><table id="evidence-table"></table></div></details></section>
+      <footer><span>本页由已验证运行包自动生成，不构成投资建议。</span><span id="run-id">—</span></footer>
+    </div>
+  </main>
+  <script src="data/valuation_latest.js"></script><script src="valuation-report.js"></script>
+</body>
+</html>

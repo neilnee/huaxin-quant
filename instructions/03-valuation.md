@@ -151,7 +151,11 @@ calc_results.json   # 引擎原始结果
 
 ### Dashboard 发布
 
-完成的 v2 运行由 `dashboard_valuation.py` 发布为 `dashboard/data/<YYYYMM>/valuation_context_<YYMMDD>.js`。适配器只读取运行包内的 `manifest.json`、`research_card.json`、`calc_params.json` 和 `calc_results.json`，不解析 Markdown，也不读取未完成运行或旧缓存。Dashboard 主面板中的“投研分析”只作为索引，显示已完成标的、估值区间、空间和共识状态；点击标的进入独立 `valuation.html` 公司研究页，展示三层矩阵、支柱、假设、风险催化剂和证据目录。任何 `insufficient_*` 状态必须原样展示。
+完成的 v2 运行由 `dashboard_valuation.py` 发布为按日归档的 `dashboard/data/<YYYYMM>/valuation_context_<YYMMDD>.js`，并额外生成跨日期的 `dashboard/data/valuation_latest.js`。最新目录对每只股票只保留时间最近的已验证运行，页面调试只重建这些只读数据包，不重新搜索、阅读材料或调用 LLM。
+
+适配器只读取运行包内的 `manifest.json`、`research_card.json`、`calc_params.json`、`calc_results.json` 和 `evidence.json`，不解析 Markdown，也不读取未完成运行补充研究结论。运行整体为 `done` 且研究卡、参数和计算结果通过门禁即可发布；`insufficient_consensus` 是必须展示的研究状态，不能以此为由从目录静默删除。公司名称依次取计算参数、运行清单、研究卡和估值研究索引中的有效名称；纯数字代码、空值和占位符不得作为股票名称展示。进度包对每只股票只发布最新一次运行状态，禁止将旧失败任务、旧中断任务或无开始时间的残留运行重复显示为“分析中”。
+
+Dashboard 主面板中的“投研分析”是最新完成报告索引，显示公司名与代码、报告日期、估值区间、空间和共识状态；点击标的进入独立 `valuation-report.html` 公司研究页。公司页必须完整展示一致预期、PE 构建、三层三情景矩阵、利润支柱、市场分歧、叙事期权、验证节点、事实假设、风险催化剂与证据目录。任何 `insufficient_*` 状态必须原样展示。
 
 所有 Dashboard 发布器都必须保留其他模块的 `dashboard/data/index.js` 条目；市场、VCP、信号的日常发布不得覆盖 `valuation` 索引。
 

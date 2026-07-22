@@ -203,18 +203,18 @@ function loadValuationContext(date) {
   });
 }
 async function loadValuation(date) {
-  try { valuationContext = await loadValuationContext(date); renderValuation(); }
+  try { valuationContext = window.QUANT_DASHBOARD_VALUATION_LATEST || await loadValuationContext(date); renderValuation(); }
   catch (error) { $("valuation-meta").textContent = "当前日期尚未发布已验证估值"; $("valuation-summary").innerHTML = ""; $("valuation-table").innerHTML = `<caption class="muted">${esc(error.message)}</caption>`; }
 }
 function valuationNumber(value, digits = 2) { const n = Number(value); return Number.isFinite(n) ? n.toFixed(digits) : "—"; }
 function renderValuation() {
   const summary = valuationContext.summary || {}, rows = valuationContext.valuations || [];
   const active = (window.QUANT_DASHBOARD_VALUATION_PROGRESS?.runs || []).filter((item) => item.status === "running");
-  $("valuation-meta").textContent = `运行日期 ${valuationContext.meta?.run_date || "—"} · 仅展示已验证 v2 运行`;
-  $("valuation-summary").innerHTML = [["完成估值", summary.total || 0], ["共识合格", summary.with_consensus || 0]].map(([label, value]) => `<div><span>${label}</span><b>${value}</b></div>`).join("");
+  $("valuation-meta").textContent = `每只标的展示最新一次已验证分析 · 数据包 ${String(valuationContext.meta?.generated_at || "—").replace("T", " ")}`;
+  $("valuation-summary").innerHTML = [["完成估值", summary.total || 0], ["共识合格", summary.with_consensus || 0], ["研究证据", summary.evidence_count || 0]].map(([label, value]) => `<div><span>${label}</span><b>${value}</b></div>`).join("");
   $("valuation-note").textContent = `已完成 ${rows.length} 只 · 分析中 ${active.length} 只；点击查看报告或进度`;
-  const activeRows = active.map((row) => { const href = `valuation-progress.html?run=${encodeURIComponent(row.run_id)}`; const done = row.stages.filter((s) => s.status === "done").length; const current = row.stages.find((s) => s.status === "running")?.name || row.stages.find((s) => s.status === "pending")?.name || "收尾"; return `<tr class="vcp-table-row" data-href="${esc(href)}"><td><b>${esc(row.name || row.code)}</b><br><span class="vcp-list-note">${esc(row.code)}</span></td><td colspan="5" class="muted">分析中 · ${esc(current)} · 已完成 ${done}/${row.stages.length} 个阶段</td><td>进行中</td><td><a class="valuation-link" href="${esc(href)}">查看进度 →</a></td></tr>`; }).join("");
-  $("valuation-table").innerHTML = `<thead><tr><th>标的</th><th>当前价</th><th>悲观</th><th>基准</th><th>乐观</th><th>基准空间</th><th>共识</th><th></th></tr></thead><tbody>${activeRows}${rows.map((row) => { const v = row.valuation || {}, consensus = row.status?.consensus?.status || "—", href = `valuation.html?date=${encodeURIComponent($('date-select').value)}&code=${encodeURIComponent(row.code)}`; return `<tr class="vcp-table-row" data-href="${esc(href)}"><td><b>${esc(row.name)}</b><br><span class="vcp-list-note">${esc(row.code)}</span></td><td>${valuationNumber(v.current_price)}</td><td>${valuationNumber(v.pessimistic)}</td><td>${valuationNumber(v.base)}</td><td>${valuationNumber(v.optimistic)}</td><td class="${cls(v.base_upside_pct)}">${v.base_upside_pct == null ? "—" : `${valuationNumber(v.base_upside_pct, 1)}%`}</td><td>${esc(consensus)}</td><td><a class="valuation-link" href="${esc(href)}">查看报告 →</a></td></tr>`; }).join("") || "<tr><td colspan='8' class='muted'>该日期没有估值运行</td></tr>"}</tbody>`;
+  const activeRows = active.map((row) => { const href = `valuation-progress.html?run=${encodeURIComponent(row.run_id)}`; const done = row.stages.filter((s) => s.status === "done").length; const current = row.stages.find((s) => s.status === "running")?.name || row.stages.find((s) => s.status === "pending")?.name || "收尾"; return `<tr class="vcp-table-row" data-href="${esc(href)}"><td><b>${esc(row.name || row.code)}</b><br><span class="vcp-list-note">${esc(row.code)}</span></td><td colspan="6" class="muted">分析中 · ${esc(current)} · 已完成 ${done}/${row.stages.length} 个阶段</td><td>进行中</td><td><a class="valuation-link" href="${esc(href)}">查看进度 →</a></td></tr>`; }).join("");
+  $("valuation-table").innerHTML = `<thead><tr><th>标的</th><th>报告日期</th><th>当前价</th><th>悲观</th><th>基准</th><th>乐观</th><th>基准空间</th><th>共识</th><th></th></tr></thead><tbody>${activeRows}${rows.map((row) => { const v = row.valuation || {}, consensus = row.status?.consensus?.status || "—", href = `valuation-report.html?code=${encodeURIComponent(row.code)}`; const d=row.analysis_date||""; const reportDate=d.length===6?`20${d.slice(0,2)}-${d.slice(2,4)}-${d.slice(4,6)}`:"—"; return `<tr class="vcp-table-row" data-href="${esc(href)}"><td><b>${esc(row.name)}</b><br><span class="vcp-list-note">${esc(row.code)}</span></td><td>${reportDate}</td><td>${valuationNumber(v.current_price)}</td><td>${valuationNumber(v.pessimistic)}</td><td>${valuationNumber(v.base)}</td><td>${valuationNumber(v.optimistic)}</td><td class="${cls(v.base_upside_pct)}">${v.base_upside_pct == null ? "—" : `${valuationNumber(v.base_upside_pct, 1)}%`}</td><td>${esc(consensus)}</td><td><a class="valuation-link" href="${esc(href)}">查看报告 →</a></td></tr>`; }).join("") || "<tr><td colspan='9' class='muted'>暂无已验证估值运行</td></tr>"}</tbody>`;
   $("valuation-table").querySelectorAll("[data-href]").forEach((row) => row.onclick = (event) => { if (event.target.tagName !== "A") window.location.href = row.dataset.href; });
 }
 const applyDateBase = applyDate;
@@ -233,5 +233,6 @@ renderModule = function () {
   setModuleDates("valuation");
   ["market-content", "vcp-content", "signals-content", "module-placeholder"].forEach((id) => $(id).classList.add("hidden"));
   $("valuation-content").classList.remove("hidden"); $("date-control").classList.remove("hidden");
-  applyDate($("date-select").value);
+  $("date-control").classList.add("hidden");
+  loadValuation(window.QUANT_DASHBOARD_INDEX?.valuation?.latest);
 };

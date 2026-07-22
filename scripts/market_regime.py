@@ -677,7 +677,10 @@ def build_market_context(report: dict, sectors: list[dict], stocks: list[dict], 
 
 def write_dashboard_index(market_latest: str | None, market_available: list[str]) -> None:
     index = {"market": {"latest": market_latest, "available": market_available}}
-    for kind in ("signals", "vcp"):
+    # Every publisher owns only its module.  Rebuild the other known module
+    # indexes from their published packages so a market refresh cannot erase
+    # an independently published valuation index.
+    for kind in ("signals", "vcp", "valuation"):
         dates = sorted(path.stem.rsplit("_", 1)[-1] for path in DASHBOARD_DATA_DIR.glob(f"*/{kind}_context_*.js"))
         if dates:
             index[kind] = {"latest": dates[-1], "available": dates}

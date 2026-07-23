@@ -231,6 +231,8 @@ def parse_params(raw: dict) -> dict:
         "terminal_growth": terminal_growth,
         "roe": roe,
         "book_value_per_share": book_value_per_share,
+        "institution_consensus_2026e": raw.get("institution_consensus_2026e", []),
+        "institution_consensus_2027e": raw.get("institution_consensus_2027e", []),
     }
 
     return params
@@ -1232,7 +1234,7 @@ def run_valuation(params):
     matrix_2026e = aggregate_matrix(pillars, pillar_results_2026e)
 
     # ── 步骤 4: 分歧度 ──
-    all_consensus_2026e = [p.get("consensus_np_2026e") for p in pillars if p.get("consensus_np_2026e")]
+    all_consensus_2026e = params.get("institution_consensus_2026e", [])
     divergence_2026e = calc_divergence(all_consensus_2026e)
 
     # ── 步骤 5: 2027E 迁移 ──
@@ -1254,7 +1256,7 @@ def run_valuation(params):
 
     matrix_2027e = aggregate_matrix(migration["pillars_2027e"], pillar_results_2027e)
 
-    all_consensus_2027e = [p.get("consensus_np_2027e") for p in pillars if p.get("consensus_np_2027e")]
+    all_consensus_2027e = params.get("institution_consensus_2027e", [])
     divergence_2027e = calc_divergence(all_consensus_2027e)
 
     # ── 步骤 6: 反向检查 ──

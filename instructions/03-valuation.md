@@ -1,7 +1,7 @@
 # 模型三：深度估值模型（自执行指令）
 
 - **版本管理**: 由 Git 分支与提交历史管理，文件名不再携带版本号
-- **最近更新**: 2026-07-20
+- **最近更新**: 2026-07-23
 - **核心哲学**: 脚本编排、校验、存档和渲染；LLM 只完成小范围、结构化的研究判断。
 - **触发方式**: 用户主动按单只标的触发，不消费 Bloom，也不自动给出交易动作。
 - **输出**: `reports/valuation/<code>_<name>.md` + `reports/indexes/valuation_index.csv` + `reports/indexes/valuation_ranking.csv` + 当次可审计运行包 + Dashboard 数据包。
@@ -96,7 +96,19 @@ Layer 3 不是任意主题的溢价：没有明确业务实质、潜在利润、
 | 二 | 拉取并逐批完整读取新研报、可比资料；逐机构抽取双年预测 | 共识表、可比表、分歧根因、Layer 1/2 映射 | `stage_2_readings.json`、`stage_2_consensus.json` |
 | 三 | 按专题计划检索并逐批完整读取公告、订单、REITs、并购、产能、海外、管理层和产业链 | 每个项目的业务实质、利润、倍数、概率、Layer 2/3 映射或排除理由 | `stage_3_readings.json`、`stage_3_expectations.json` |
 | 四 | 逐批读取验证材料并汇总各阶段结论 | 催化剂日历、验证节点、失效条件、风险 | `stage_4_readings.json`、`stage_4_catalysts.json` |
-| 五 | 校验各阶段引用和参数映射，调用引擎，渲染报告 | 不新增事实；只合并为 `research_card` 和 `calc_params` | `research_card.json`、`calc_params.json`、`calc_results.json` |
+| 五 A | 合并前四阶段研究结论并校验叙事契约 | 不新增事实；只输出研究结论、共识、可比、事实与风险，不输出计算映射 | `stage_5_research.json` |
+| 五 B | 读取已验证的五 A 研究结论，生成紧凑参数映射 | 只输出 `valuation_inputs` 和各研究项目的 `calculation_mapping` | `stage_5_mapping.json` |
+| 五 C | 确定性合并、校验、计算和渲染 | 不调用 LLM；组装研究卡并生成引擎参数 | `research_card.json`、`calc_params.json`、`calc_results.json` |
+
+阶段五 A、五 B 必须相互独立并可断点复用。五 A 内部按“主营与共识、分歧与期权、验证与事实”分成三个有界请求；五 B 内部按“PE 输入、支柱利润映射、分歧与期权映射”分成三个有界请求。各子文件分别保存后由脚本合并，避免单张长研究卡触发模型输出上限，也避免公司级净利润、Layer 2 和期权字段相互串扰。五 B 不得再次携带完整原文证据，只读取五 A 研究结论、阶段二/三结构化结论及证据目录。脚本按 `research_id` 确定性合并，禁止让单次 LLM 同时生成长篇研究卡和全部计算参数。`--rerun-stage5` 复用已通过校验的子文件，只重跑缺失或不合格部分。
+
+**数值与渲染契约**：营收、利润、净资产、市值及估值增量统一使用“亿元”，股本使用“亿股”，股价使用“元”，概率使用 0~1 小数，增速和毛利率使用百分比数值（如 29.5 表示 29.5%）。`facts`、`assumptions`、`risks`、`catalysts` 必须是 `{statement,source_ids}` 对象数组；渲染层只认 `calculation_mapping`，不得兼容或生成 `calc_mapping`。任何利润桥绝对值超过合理亿元范围、字符串代替对象、缺少渲染字段或非法单位都必须在调用引擎前失败。
+
+**可比与 PE 语义门禁**：公司可比必须注明 `anchor_type=company`、PE/增速/毛利率的预测期与业务相关性，且关键数值不得为空；行业均值不能冒充单家公司。机构目标估值可用 `anchor_type=institution_target` 单独列示。阶段五 B 必须记录阶段二建议 PE、最终采用 PE、选择方法和偏离理由；最终 PE 相对阶段二建议值偏离超过 20% 且无显式证据理由时拒绝发布。经研究确认需要覆盖三步走结果时，必须显式输出 `pe_override`，不得靠不相关低 PE 可比隐式压低估值。
+
+**机构分歧口径**：分歧度只根据逐机构的 2026E/2027E 净利润预测计算，不得根据不同业务支柱利润计算。行情刷新后，运行包中的 `briefing.market_quote`、`manifest.market_quote`、`calc_params.meta` 和最终报告必须保持同一价格日期与价格值。
+
+利润桥必须声明 `profit_metric=net_profit|gross_profit|operating_profit`，报告按真实口径展示，禁止把毛利标成净利润或泛称利润。PE 倍数分歧一旦进入 `valuation_inputs` 的悲观/基准/乐观 PE，就必须在 Layer 2 映射中排除，不得以市值增量再次计价；阶段五 B 的分歧映射须显式给出 `driver_type=profit|multiple|margin|other` 供脚本去重。
 
 **动态专题检索是强制的**：阶段一发现的重大资产重组/收购、REITs/资产证券化、非经常性项目、在建产能、海外节点、重点客户或新产品，必须各自生成专题查询。不得以固定的低数量上限删减独立项目；仅可合并事实、估值路径和验证节点完全相同的重复查询。阶段三须逐专题输出“计入 Layer 2/3”或“未计入及原因”，不能只写一条泛化公告摘要。
 
@@ -159,7 +171,7 @@ python3 scripts/valuation_pipeline.py --code 688285 --resume-run cache/valuation
 
 `--resume-run` 只允许续跑同一运行包：已有的阶段 JSON 与证据快照直接复用，仅执行缺失阶段；不得重新检索或重调已完成 LLM 节点。
 `--rerun-stage3` 用于证据范围或通用映射契约升级：复用阶段一、二和本次专题计划的成功缓存，从阶段三重做至阶段五。与 `--no-fetch-evidence` 联用时，即使缓存超过默认有效期，也只读已成功的原始快照，不发生联网检索。
-`--rerun-stage5` 仅在研究卡 schema 校验失败时使用，只重做阶段五映射，前四阶段不得重跑。
+`--rerun-stage5` 用于阶段五研究或映射契约失败，只重做不合格的五 A/五 B 子阶段，前四阶段不得重跑；删除对应子阶段文件才会强制从该子阶段重新生成。
 `--repair-research-card` 只允许修复已归档研究卡的 schema、枚举、单位和显式映射，不得新增或改写研究事实与证据；修复后仍须通过同一套证据门禁、路线参数校验和计算引擎。
 `--audit-research-card` 使用已完成阶段的阅读结论做项目覆盖和估值语义审计：检查独立并购/资产/产能/海外/证券化项目是否遗漏，检查增长率百分比单位、PE 锚的底层明细和研究结论与计算参数一致性；它不重新搜索或阅读原文。
 

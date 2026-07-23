@@ -299,10 +299,8 @@ def choose_recovery(run_dir: Path, requested: str = "auto") -> RecoveryDecision:
     )
     raw_card = run_dir / "research_card_raw.json"
     card = run_dir / "research_card.json"
-    params = run_dir / "calc_params.json"
-    evidence_shortage = any(
-        token in error for token in ("一致预期不足", "可比公司不足", "研究证据不足", "专题缓存缺失")
-    )
+    stage5_research = run_dir / "stage_5_research.json"
+    stage5_mapping = run_dir / "stage_5_mapping.json"
     contract_error = any(
         token in error
         for token in (
@@ -320,8 +318,10 @@ def choose_recovery(run_dir: Path, requested: str = "auto") -> RecoveryDecision:
         if not raw_card.exists():
             raise ControllerError("--recovery repair 需要 research_card_raw.json")
         return RecoveryDecision("repair", "用户显式要求修复研究卡计算契约", raw_card)
-    if completed_research and raw_card.exists() and card.exists() and not params.exists() and contract_error and not evidence_shortage:
-        return RecoveryDecision("repair", "前四阶段完整，研究卡在参数契约门禁失败", raw_card)
+    if completed_research and (not stage5_research.exists() or not stage5_mapping.exists()):
+        return RecoveryDecision("stage5", "阶段五A/五B子阶段尚未完整形成")
+    if completed_research and contract_error:
+        return RecoveryDecision("stage5", "阶段五研究或参数映射未通过新契约门禁")
     if completed_research and not card.exists():
         return RecoveryDecision("stage5", "前四阶段完整但研究卡尚未形成")
     return RecoveryDecision("resume", "复用已完成节点并继续缺失阶段")
@@ -465,7 +465,8 @@ def verify_terminal_run(run_dir: Path, no_publish: bool) -> dict:
     manifest = read_json(run_dir / "manifest.json")
     if manifest.get("status") != "done":
         raise ControllerError(f"主流水线未完成: {manifest.get('error') or manifest.get('status')}")
-    required = ("briefing.json", "evidence.json", "research_card.json", "calc_params.json", "calc_results.json")
+    required = ("briefing.json", "evidence.json", "stage_5_research.json", "stage_5_mapping.json",
+                "research_card.json", "calc_params.json", "calc_results.json")
     missing = [name for name in required if not (run_dir / name).exists()]
     if missing:
         raise ControllerError("完成运行包缺少文件: " + ", ".join(missing))

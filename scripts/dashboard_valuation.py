@@ -237,7 +237,7 @@ def publish_progress() -> Path:
         ("stage2", "阶段二 · 一致预期与可比", [("研报分批阅读", "stage_2_readings.json", "阶段二"), ("共识、可比与分歧", "stage_2_consensus.json", "stage_2_consensus")]),
         ("stage3", "阶段三 · 项目与预期差", [("专题缓存与去重", "evidence.json", "dynamic_search"), ("专题原文分批阅读", "stage_3_readings.json", "阶段三"), ("项目估值归类", "stage_3_expectations.json", "stage_3_expectations")]),
         ("stage4", "阶段四 · 催化剂与验证", [("复用项目阅读结论", "stage_4_readings.json", None), ("验证节点与风险", "stage_4_catalysts.json", "stage_4_catalysts")]),
-        ("stage5", "阶段五 · 研究卡与通用映射", [("研究结论合并", "research_card.json", "stage_5_mapping"), ("参数契约校验", "calc_params.json", "parameter_validation")]),
+        ("stage5", "阶段五 · 研究卡与通用映射", [("五A1 · 主营与共识", "stage_5_research_core.json", "stage_5_research_core"), ("五A2 · 分歧与期权", "stage_5_research_options.json", "stage_5_research_options"), ("五A3 · 验证与事实", "stage_5_research_validation.json", "stage_5_research_validation"), ("五A · 研究结论合并", "stage_5_research.json", "stage_5_research"), ("五B1 · PE输入", "stage_5_mapping_valuation.json", "stage_5_mapping_valuation"), ("五B2 · 支柱利润映射", "stage_5_mapping_pillars.json", "stage_5_mapping_pillars"), ("五B3 · 分歧与期权映射", "stage_5_mapping_adjustments_v3.json", "stage_5_mapping_adjustments"), ("五B · 参数映射", "stage_5_mapping.json", "stage_5_mapping"), ("五C · 确定性组装", "research_card.json", "stage_5_assembly"), ("参数契约校验", "calc_params.json", "parameter_validation")]),
         ("calculation", "估值计算", [("三情景估值引擎", "calc_results.json", "calculation")]),
     ]
     newest_paths = {}

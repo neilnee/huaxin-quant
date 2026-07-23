@@ -1,5 +1,5 @@
 {
-  "strategy_version": "market_regime_v1",
+  "strategy_version": "market_regime_v2",
   "description": "Independent market regime and TDX block heat parameters. It does not read or modify Model 2 Quant outputs.",
   "benchmarks": {
     "shanghai_composite": "000001",
@@ -39,10 +39,17 @@
   "state_thresholds": {
     "offensive": {"trend_min": 65, "breadth_min": 60, "volatility_max": 60, "rotation_max": 45},
     "defensive": {"breadth_max": 45, "volatility_min": 75, "rotation_min": 65},
+    "consolidating": {"volatility_min": 70, "trend_max": 50, "above_ma20_benchmarks_max": 2, "advance_ratio_min": 50},
+    "selective": {
+      "rotation_min": 60,
+      "persistent_mainline_days": 2,
+      "mainline_block_types": ["industry_sw_l1", "industry_sw_l2", "gn"]
+    },
     "confirmation_days": 2,
     "confirmation_window_days": 3,
     "confirmation_by_state": {
       "DEFENSIVE": 2,
+      "CONSOLIDATING": 2,
       "RECOVERY_WATCH": 3,
       "OFFENSIVE": 3,
       "SELECTIVE": 2

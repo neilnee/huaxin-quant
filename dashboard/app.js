@@ -203,7 +203,7 @@ function loadValuationContext(date) {
   });
 }
 async function loadValuation(date) {
-  try { valuationContext = window.QUANT_DASHBOARD_VALUATION_LATEST || await loadValuationContext(date); renderValuation(); }
+  try { valuationContext = window.QUANT_DASHBOARD_VALUATION_CATALOG || window.QUANT_DASHBOARD_VALUATION_LATEST || await loadValuationContext(date); renderValuation(); }
   catch (error) { $("valuation-meta").textContent = "当前日期尚未发布已验证估值"; $("valuation-summary").innerHTML = ""; $("valuation-table").innerHTML = `<caption class="muted">${esc(error.message)}</caption>`; }
 }
 function valuationNumber(value, digits = 2) { const n = Number(value); return Number.isFinite(n) ? n.toFixed(digits) : "—"; }

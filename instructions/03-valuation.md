@@ -1,7 +1,7 @@
 # 模型三：深度估值模型（自执行指令）
 
 - **版本管理**: 由 Git 分支与提交历史管理，文件名不再携带版本号
-- **最近更新**: 2026-07-23
+- **最近更新**: 2026-07-25
 - **核心哲学**: 脚本编排、校验、存档和渲染；LLM 只完成小范围、结构化的研究判断。
 - **触发方式**: 用户主动按单只标的触发，不消费 Bloom，也不自动给出交易动作。
 - **输出**: `reports/valuation/<code>_<name>.md` + `reports/indexes/valuation_index.csv` + `reports/indexes/valuation_ranking.csv` + 当次可审计运行包 + Dashboard 数据包。
@@ -93,7 +93,7 @@ Layer 3 不是任意主题的溢价：没有明确业务实质、潜在利润、
 |------|----------|-------------|----------------------|
 | 零 | 拉取财务、决策树、漏斗与 briefing | 无 | `briefing.json` |
 | 一 | 读取年报/主营/行业证据；逐批完整阅读后识别业务、资产平台、并购和资本结构 | 业务拆分、逐支柱利润桥、路线、**专题检索计划** | `stage_1_readings.json`、`stage_1_business.json`、`search_plan.json` |
-| 二 | 拉取并逐批完整读取新研报、可比资料；逐机构抽取双年预测 | 共识表、可比表、分歧根因、Layer 1/2 映射 | `stage_2_readings.json`、`stage_2_consensus.json` |
+| 二 | 拉取并逐批完整读取新研报、可比资料；逐机构抽取双年预测并建立机构基准估值模型 | 全量有效共识、分支柱双年三情景输入、估值方法与假设账本 | `stage_2_readings.json`、`stage_2_consensus.json`、`stage_2_baseline.json` |
 | 三 | 按专题计划检索并逐批完整读取公告、订单、REITs、并购、产能、海外、管理层和产业链 | 每个项目的业务实质、利润、倍数、概率、Layer 2/3 映射或排除理由 | `stage_3_readings.json`、`stage_3_expectations.json` |
 | 四 | 逐批读取验证材料并汇总各阶段结论 | 催化剂日历、验证节点、失效条件、风险 | `stage_4_readings.json`、`stage_4_catalysts.json` |
 | 五 A | 合并前四阶段研究结论并校验叙事契约 | 不新增事实；只输出研究结论、共识、可比、事实与风险，不输出计算映射 | `stage_5_research.json` |
@@ -102,15 +102,53 @@ Layer 3 不是任意主题的溢价：没有明确业务实质、潜在利润、
 
 阶段五 A、五 B 必须相互独立并可断点复用。五 A 内部按“主营与共识、分歧与期权、验证与事实”分成三个有界请求；五 B 内部按“PE 输入、支柱利润映射、分歧与期权映射”分成三个有界请求。各子文件分别保存后由脚本合并，避免单张长研究卡触发模型输出上限，也避免公司级净利润、Layer 2 和期权字段相互串扰。五 B 不得再次携带完整原文证据，只读取五 A 研究结论、阶段二/三结构化结论及证据目录。脚本按 `research_id` 确定性合并，禁止让单次 LLM 同时生成长篇研究卡和全部计算参数。`--rerun-stage5` 复用已通过校验的子文件，只重跑缺失或不合格部分。
 
+阶段二同样必须拆成两个有界请求：二A只生成逐机构预测、排除名单、可比和估值锚口径分类，保存 `stage_2_institutions.json`；二B只根据二A与阶段一业务地图生成估值支柱和假设账本，保存 `stage_2_model_inputs.json`。脚本合并为 `stage_2_consensus.json` 并计算 `stage_2_baseline.json`。断点恢复时复用已完成的研报分批阅读和二A/二B子文件，不得因汇总JSON失败而重新搜索或重读原文。
+
 **数值与渲染契约**：营收、利润、净资产、市值及估值增量统一使用“亿元”，股本使用“亿股”，股价使用“元”，概率使用 0~1 小数，增速和毛利率使用百分比数值（如 29.5 表示 29.5%）。`facts`、`assumptions`、`risks`、`catalysts` 必须是 `{statement,source_ids}` 对象数组；渲染层只认 `calculation_mapping`，不得兼容或生成 `calc_mapping`。任何利润桥绝对值超过合理亿元范围、字符串代替对象、缺少渲染字段或非法单位都必须在调用引擎前失败。
 
 **可比与 PE 语义门禁**：公司可比必须注明 `anchor_type=company`、PE/增速/毛利率的预测期与业务相关性，且关键数值不得为空；行业均值不能冒充单家公司。机构目标估值可用 `anchor_type=institution_target` 单独列示。阶段五 B 必须记录阶段二建议 PE、最终采用 PE、选择方法和偏离理由；最终 PE 相对阶段二建议值偏离超过 20% 且无显式证据理由时拒绝发布。经研究确认需要覆盖三步走结果时，必须显式输出 `pe_override`，不得靠不相关低 PE 可比隐式压低估值。
+
+`cross_check_only` 机构锚必须全部进入 `excluded_anchor_names`，不得被阶段五重新描述为“已扣除独立事项的同口径PE”。当同口径 `direct_usable|convertible` PE与带数值的公司可比合计不足2项时，不得执行常规可比三步走；脚本使用交叉检查PE的保守下半区中位数形成显式 `override` 基准，并以基准的0.9/1.0/1.2倍形成情景倍数，标记为“锚不足的保守回退”，而非机构目标估值。若连3个交叉检查PE都不足则拒绝发布。
 
 **机构分歧口径**：分歧度只根据逐机构的 2026E/2027E 净利润预测计算，不得根据不同业务支柱利润计算。行情刷新后，运行包中的 `briefing.market_quote`、`manifest.market_quote`、`calc_params.meta` 和最终报告必须保持同一价格日期与价格值。
 
 利润桥必须声明 `profit_metric=net_profit|gross_profit|operating_profit`，报告按真实口径展示，禁止把毛利标成净利润或泛称利润。PE 倍数分歧一旦进入 `valuation_inputs` 的悲观/基准/乐观 PE，就必须在 Layer 2 映射中排除，不得以市值增量再次计价；阶段五 B 的分歧映射须显式给出 `driver_type=profit|multiple|margin|other` 供脚本去重。
 
 **动态专题检索是强制的**：阶段一发现的重大资产重组/收购、REITs/资产证券化、非经常性项目、在建产能、海外节点、重点客户或新产品，必须各自生成专题查询。不得以固定的低数量上限删减独立项目；仅可合并事实、估值路径和验证节点完全相同的重复查询。阶段三须逐专题输出“计入 Layer 2/3”或“未计入及原因”，不能只写一条泛化公告摘要。
+
+**阶段二基准模型契约**：3家机构只是最低发布门槛，不是提取上限。阶段二必须逐篇列出全部候选研报，按六个月时效、双年预测完整性和利润口径形成有效/排除名单；每家保存原始归母利润、持续利润、非经常项目、`profit_scope=recurring|includes_non_recurring|unknown`、判断依据和证据。机构PE或目标估值还必须记录 `valuation_scope`、包含/排除的项目ID及 `pe_usability=direct_usable|convertible|cross_check_only`。只有利润范围与估值范围一致的 `direct_usable` 锚可以直接进入支柱倍数中枢；可可靠扣除独立事项价值的 `convertible` 锚转换后使用；其余只作交叉验证。
+
+阶段二在阶段一完整经济业务地图之上生成 `stage_2_baseline.json`。机构基准估值模型不是“主营PE表”，必须把核心经营业务、第二核心业务以及已有可靠机构/公告依据的资产事件、并购、REITs、处置收益和其他独立事项分别列成支柱。固定包含：
+
+- `pillars[]`：稳定 `pillar_id`、`pillar_type=operating|independent_event`、名称、利润口径、估值方法，以及2026E/2027E悲观/基准/乐观的利润/项目收益、PE或其他倍数、实现概率、各参数理由和证据；估值由脚本按 `profit × multiple × probability` 确定性计算。经营支柱概率固定为1；独立事项必须逐情景给出0~1概率和阶段依据，不得机械套用统一±比例。明确有启动亏损、处置损失或现金成本的支柱允许负利润及负估值贡献，但倍数不得为负。
+- `assumption_ledger[]`：`assumption_id`、`pillar_id`、年度、指标、基准值、单位、成立条件、信息截止日和证据；每项必须以 `included_in_baseline` 声明是否已纳入阶段二基准估值，并以 `pricing_channel=profit|multiple|standalone|none` 标明进入利润、倍数、独立项目或尚未进入。`pricing_reason` 说明判断依据。`quantification_status=quantitative|qualitative|missing_input` 只作为辅助属性，不能替代定价状态。
+- `totals`：逐年度三情景支柱估值加总。阶段二只形成机构基准模型，不吸收阶段三之后的增量证据。
+
+**业务地图与估值支柱准入必须分开**：阶段一 `business_pillars[]` 是完整经济业务候选地图，不代表每项都能独立估值；阶段二必须额外输出 `business_item_coverage[]`，逐一覆盖阶段一的稳定 `pillar_id`，且只能选择一个 `valuation_role`：
+
+- `valued_operating`：已有持续经营利润及匹配估值方法，必须对应一个 `operating` 估值支柱并进入双年三情景表。
+- `valued_event`：已有可量化收益/资产价值、客观进度节点及独立增量口径，必须对应一个 `independent_event` 估值支柱；悲观情景允许为零，但基准/乐观不得无故缺失。
+- `merged_component`：确有经济贡献但无法从公司级共识可靠拆出，必须声明合并到哪个经营估值支柱及 `overlap_status=inside_target`，页面只能称“业务组成”，不得冒充独立估值支柱。
+- `narrative_observation`：只有方向、概念或远期可能性，目标年度利润/资产价值、倍数或独立口径任一缺失；不进入估值，仅保留验证节点。
+- `historical_excluded`：历史已实现且无可证明的剩余资产价值，只作口径审计，不进入前瞻估值。
+
+每项还必须给 `quantification_status=quantitative|qualitative|missing_input`、`overlap_status=incremental|inside_target|not_applicable`、目标 `valuation_pillar_id`（如适用）、原因和证据。`valued_operating|valued_event` 必须是 `quantitative`；`valued_event` 必须是 `incremental`。脚本须检查阶段一项目完整覆盖、目标支柱存在且类型匹配。凡在页面被称为“估值支柱”的项目必须在估值表中有非缺失估值行；不能独立估值的项目必须改称业务组成、叙事观察或历史排除项。
+
+悲观和乐观默认沿用基准利润、只调整倍数；只有存在明确量化依据时才允许利润变化。独立事项可以保持项目收益不变、按审批/交割阶段调整概率。利润、倍数和概率的每次变化分别说明原因，同一事实不得同时重复调整利润、倍数或独立项目。分部利润缺少机构直接披露时必须标记推算方法与置信度，不得冒充机构分部共识。
+
+**经营利润总量守恒是硬门禁**：阶段二先从 `profit_scope=recurring|unknown` 且未发现重大非经常项目污染的全部双年机构预测中，按异常值清洗后确定公司级持续经营利润控制数；悲观/基准/乐观分别取清洗样本的下沿/中位/上沿，并保存样本机构、范围判断和计算方法。`includes_non_recurring` 不得进入该控制数；“研报未明确写不含非经常损益”只能标记 `unknown`，不能据此擅自判为 `includes_non_recurring`。
+
+业务地图可以拆分而估值支柱不必强行拆分。只有机构或公司披露能够分别支持各经营业务的净利润/经营利润、分配方法和相匹配估值倍数时，才允许多个 `profit_basis=direct_segment_forecast` 经营估值支柱；其逐情景利润之和仍必须与公司级持续经营利润控制数一致。缺少可靠分部利润或分部估值锚时，IDC/AIDC等业务继续在业务结构和假设账本中分别展示，但估值合并为一个 `profit_basis=company_consensus` 的“核心持续经营业务”支柱。禁止根据收入、毛利或主观权重拆出若干净利润后造成利润凭空增加或减少。
+
+脚本必须逐年度、逐情景执行利润对账并输出 `operating_profit_reconciliation`：公司级控制利润、经营支柱利润合计、差额、样本机构及处理方式。单一合并经营支柱由脚本以控制利润覆盖LLM估算值；多个有直接分部证据的支柱仅允许在5%以内按比例对齐控制总量，超过5%直接拒绝发布。该门禁发生在估值计算之前，不能用提高或降低PE补偿利润拆分错误。
+
+阶段三之后发现的已计价独立事项仍在同一估值模型中新增为独立支柱，并标记 `pricing_stage=incremental_evidence`；不得在页面下方另建一套Layer 2/3估值。市场分歧只用于解释基准模型中利润、倍数或概率的三情景差异，不再允许以无法回溯的总市值增减重复进入计算。
+
+阶段三必须把专题事实拆成最小可估值单元，不得把“现有平台持续收益”和“未来扩募/并购/投产”混成同一项目。每个项目固定标记 `valuation_role=baseline_component|probabilistic_event|narrative_observation|historical_excluded`：`baseline_component` 只解释阶段二已计价利润，不能再次加值；`probabilistic_event` 必须证明相对阶段二基准是增量，提供2026E/2027E悲观、基准、乐观的收益/资产价值、倍数、概率及各自证据，并强制进入统一估值表；`narrative_observation` 与 `historical_excluded` 不进入估值。概率只表达事项是否发生，不能替代缺失的利润、资产价值或倍数。阶段五不得将通过该门禁的 `probabilistic_event` 降级为 `exclude`。
+
+独立事项必须区分 `profit_basis=future_event|residual_asset_value|historical_realized`。未来扩募、处置或并购按未来收益/资产价值与概率估值；已实现事项只有在能够建立“期末仍留存的净现金/净资产—已用于偿债或再投资金额—尚未包含在其他估值支柱中的剩余价值”桥接时，才能标记 `residual_asset_value`。仅有往年已确认非经常损益的 `historical_realized` 项目，在所有前瞻年度自动归零，不得把历史利润再次加到2026E/2027E市值中。
+
+页面以“已定价/未定价”为假设账本的主状态；这里的“定价”仅表示是否已纳入本估值模型，不代表股票市场价格已经充分反映。已定价项目须区分 `institution_baseline` 与 `incremental_evidence`，并能回溯到利润、倍数、概率或独立项目中的唯一入口；未定价项目不得暗含在估值中，并须说明缺失输入或暂不纳入的原因。机构基准估值表是页面唯一的估值分项总表，表下不重复展示悲观/基准/乐观三张汇总卡。
 
 **证据粒度**：`evidence.json` 的一个 `source_id` 对应一条研报、公告或新闻结果，而不是整个搜索缓存；必须保留标题、日期、来源、缓存文件、结果序号及完整原文。运行只能装载本次固定检索和本次专题计划明确产出的缓存文件，不能按宽泛文件名关键词扫描历史缓存；同一公告/研报结果须以来源标识、标题和日期去重。阶段三逐条阅读原始专题证据；阶段四复用阶段三的阅读结论和证据引用，只为缺失的验证事件补充增量材料，不得重复逐条阅读阶段三原文。
 
@@ -194,11 +232,15 @@ calc_results.json   # 引擎原始结果
 
 ### Dashboard 发布
 
-完成的 v2 运行由 `dashboard_valuation.py` 发布为按日归档的 `dashboard/data/<YYYYMM>/valuation_context_<YYMMDD>.js`，并额外生成跨日期的 `dashboard/data/valuation_latest.js`。最新目录对每只股票只保留时间最近的已验证运行，页面调试只重建这些只读数据包，不重新搜索、阅读材料或调用 LLM。
+完成的 v2 运行由 `dashboard_valuation.py` 发布为按日归档的轻量摘要 `dashboard/data/<YYYYMM>/valuation_context_<YYMMDD>.js`，并生成 `dashboard/data/valuation/catalog.js`、`dashboard/data/valuation/reports/<run_id>.js` 与 `dashboard/data/valuation/evidence/<run_id>.js`。`dashboard/data/valuation_latest.js` 仅作为轻量兼容目录，不得再内嵌完整研究卡或证据。最新目录对每只股票只保留时间最近的已验证运行，页面调试只重建这些只读数据包，不重新搜索、阅读材料或调用 LLM。
 
 适配器只读取运行包内的 `manifest.json`、`research_card.json`、`calc_params.json`、`calc_results.json` 和 `evidence.json`，不解析 Markdown，也不读取未完成运行补充研究结论。运行整体为 `done` 且研究卡、参数和计算结果通过门禁即可发布；`insufficient_consensus` 是必须展示的研究状态，不能以此为由从目录静默删除。公司名称依次取计算参数、运行清单、研究卡和估值研究索引中的有效名称；纯数字代码、空值和占位符不得作为股票名称展示。进度包对每只股票只发布最新一次运行状态，禁止将旧失败任务、旧中断任务或无开始时间的残留运行重复显示为“分析中”。
 
 Dashboard 主面板中的“投研分析”是最新完成报告索引，显示公司名与代码、报告日期、估值区间、空间和共识状态；点击标的进入独立 `valuation-report.html` 公司研究页。公司页必须完整展示一致预期、PE 构建、三层三情景矩阵、利润支柱、市场分歧、叙事期权、验证节点、事实假设、风险催化剂与证据目录。任何 `insufficient_*` 状态必须原样展示。
+
+公司页首屏必须同时展示行情日期与来源、2026E/2027E 三情景每股估值和基准空间、共识质量、主要估值支柱、首要风险与最近验证节点。双年度估值和空间只能由 `calc_results.json` 与同一 `current_price` 确定性派生；页面不得自行补写研究判断。三层矩阵须支持 2026E/2027E 切换，明确市值、利润和股价单位，缺失值显示为未量化而不是零。
+
+完整公司研究包按用户打开标的时加载，证据包仅在展开证据目录或点击正文 `source_id` 时加载。正文证据引用必须可定位到证据目录中的同一 `source_id`；索引页不得预载完整研究卡、证据摘录或缓存定位。桌面端和移动端都须提供可访问的章节导航，并支持 URL 锚点直接定位章节。
 
 所有 Dashboard 发布器都必须保留其他模块的 `dashboard/data/index.js` 条目；市场、VCP、信号的日常发布不得覆盖 `valuation` 索引。
 

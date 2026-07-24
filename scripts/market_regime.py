@@ -32,7 +32,7 @@ OUTPUT_DIR = ROOT / "market"
 DATA_OUTPUT_DIR = OUTPUT_DIR / "data"
 DASHBOARD_DIR = ROOT / "dashboard"
 DASHBOARD_DATA_DIR = DASHBOARD_DIR / "data"
-DASHBOARD_START_DATE = "260709"
+DASHBOARD_START_DATE = "260701"
 
 
 def load_local_env() -> None:
@@ -473,7 +473,13 @@ def confirm_market_state(state_conn: sqlite3.Connection, as_of: str, report: dic
     elif raw == last_confirmed:
         confirmed, candidate_days = raw, required
     else:
-        candidate_days = 1 + sum(row["raw_state"] == raw for row in previous)
+        consecutive = 1
+        for row in previous:
+            if row["raw_state"] == raw:
+                consecutive += 1
+            else:
+                break
+        candidate_days = consecutive
         confirmed = raw if candidate_days >= required else last_confirmed
     state_conn.execute("""INSERT INTO market_state_history(trade_date,raw_state,confirmed_state,candidate_days,confirmation_days)
         VALUES(?,?,?,?,?) ON CONFLICT(trade_date) DO UPDATE SET raw_state=excluded.raw_state,
@@ -731,6 +737,7 @@ def call_market_llm_analysis(report: dict) -> dict:
                 "parse_mode": "tolerant" if tolerant_parse else "json", "analysis": analysis}
         except Exception as exc:
             last_error = str(exc)[:300]
+    print(f"[market_regime] LLM 分析失败（{model}，重试{retries}次）: {last_error}", file=sys.stderr)
     return {"status": "failed", "reason": last_error, "provider": "deepseek", "model": model, "analysis": ""}
 
 

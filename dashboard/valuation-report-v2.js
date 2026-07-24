@@ -13,13 +13,13 @@ const asList = (value) => {
 const listText = (value) => asList(value).map((item) => typeof item === "object"
   ? text(item, ["event", "name", "node_id", "statement", "description"])
   : item).join("、");
+const itemText = (value, keys) => typeof value === "object" ? text(value, keys) : value;
 const query = new URLSearchParams(location.search);
 const code = query.get("code");
 const catalog = window.QUANT_DASHBOARD_VALUATION_CATALOG || window.QUANT_DASHBOARD_VALUATION_LATEST;
 let catalogEntry;
 let report;
 let selectedYear = "2026e";
-let selectedPillarId;
 let evidenceLoaded = false;
 
 function showError(message) {
@@ -105,40 +105,38 @@ function renderYearComparison() {
 function renderBaselineModelYear() {
   const baseline = report.stage2_baseline || {};
   const yearLabel = selectedYear === "2026e" ? "2026E" : "2027E";
-  const pillars = baseline.pillars || [];
   const scenariosList = [["pessimistic", "悲观"], ["base", "基准"], ["optimistic", "乐观"]];
-  const profitControl = baseline.operating_profit_control?.[selectedYear]?.base;
-  $("baseline-status").textContent = baseline.note || (baseline.status === "ready" ? `利润总量已对账${profitControl == null ? "" : ` · ${yearLabel}基准 ${num(profitControl)} 亿`}` : "兼容旧运行推导");
-  $("matrix-unit").textContent = `${yearLabel} · 金额单位亿元，倍数单位x，概率直接参与独立事项估值`;
-  $("matrix-table").innerHTML = `<thead><tr><th rowspan="2">业务支柱 / 方法</th>${scenariosList.map(([, label]) => `<th colspan="4">${label}</th>`).join("")}</tr><tr>${scenariosList.map(() => "<th>利润/收益</th><th>倍数</th><th>概率</th><th>估值</th>").join("")}</tr></thead><tbody>${pillars.map((pillar) => { const year = pillar.years?.[selectedYear] || {}; const type = pillar.pillar_type === "independent_event" ? "独立事项" : "经营业务"; const basis = pillar.profit_basis === "company_consensus" ? "公司共识利润" : (pillar.profit_basis === "direct_segment_forecast" ? "直接分部预测" : "独立事项"); return `<tr class="baseline-pillar-row" data-pillar-id="${esc(pillar.pillar_id)}"><td><b>${esc(pillar.name)}</b><small>${type} · ${basis} · ${esc(pillar.valuation_method)}</small></td>${scenariosList.map(([key]) => `<td>${num(year[key]?.profit)}</td><td>${num(year[key]?.multiple, 1)}x</td><td>${pct(Number(year[key]?.probability ?? 1) * 100)}</td><td><b>${num(year[key]?.valuation)}</b></td>`).join("")}</tr>`; }).join("") || "<tr><td colspan='13'>暂无机构基准估值模型</td></tr>"}<tr class="total-row"><td><b>估值模型合计</b></td>${scenariosList.map(([key]) => `<td colspan="3"></td><td><b>${num(baseline.totals?.[selectedYear]?.[key])}</b></td>`).join("")}</tr></tbody>`;
-  $("matrix-table").querySelectorAll("[data-pillar-id]").forEach((row) => row.addEventListener("click", () => { selectedPillarId = row.dataset.pillarId; renderAssumptionLedger(); location.hash = "pillars"; }));
+  const consensusYear = baseline.consensus_valuation?.years?.[selectedYear];
+  const fallbackPillar = (baseline.pillars || []).find((pillar) => pillar.pillar_type === "operating") || (baseline.pillars || [])[0];
+  const year = consensusYear || fallbackPillar?.years?.[selectedYear] || {};
+  const sampleCount = baseline.consensus_valuation?.sample_count ?? baseline.operating_profit_control?.[selectedYear]?.included_forecasts?.length;
+  $("baseline-status").textContent = baseline.note || `${sampleCount == null ? "机构样本已清洗" : `${sampleCount} 个有效估值样本`} · 公司整体口径`;
+  $("matrix-unit").textContent = `${yearLabel} · 净利润和估值单位亿元；PE仅采用机构目标估值，不使用当前股价倒推PE`;
+  $("matrix-table").innerHTML = `<thead><tr><th>情景</th><th>对应机构</th><th>净利润</th><th>目标 PE</th><th>目标价</th><th>估值</th><th>取值说明</th></tr></thead><tbody>${scenariosList.map(([key, label]) => { const item = year[key] || {}; return `<tr><td><b>${label}</b></td><td>${esc(listText(item.institutions || item.institution) || "—")}</td><td>${num(item.profit)} 亿</td><td>${num(item.multiple, 1)}x</td><td>${money(item.target_price)}</td><td><b>${num(item.valuation)} 亿</b></td><td>${esc(item.reason || item.profit_reason || "—")}${sourceButtons(item)}</td></tr>`; }).join("")}</tbody>`;
 }
 
-function renderAssumptionLedger() {
-  const baseline = report.stage2_baseline || {};
-  const pillars = baseline.pillars || [];
-  if (!pillars.some((pillar) => pillar.pillar_id === selectedPillarId)) selectedPillarId = pillars[0]?.pillar_id;
-  const pillar = pillars.find((item) => item.pillar_id === selectedPillarId);
-  $("pillar-tabs").innerHTML = pillars.map((item) => `<button type="button" role="tab" data-ledger-pillar="${esc(item.pillar_id)}" class="${item.pillar_id === selectedPillarId ? "active" : ""}" aria-selected="${item.pillar_id === selectedPillarId}">${esc(item.name)}</button>`).join("");
-  $("pillar-tabs").querySelectorAll("[data-ledger-pillar]").forEach((button) => button.addEventListener("click", () => { selectedPillarId = button.dataset.ledgerPillar; renderAssumptionLedger(); }));
-  if (!pillar) { $("pillar-method").innerHTML = "<p>暂无支柱模型。</p>"; $("assumption-list").innerHTML = ""; return; }
-  const pricingStage = { incremental_evidence: "增量证据", final_research: "最终PE研究", institution_baseline: "机构基准" }[pillar.pricing_stage] || "机构基准";
-  $("pillar-method").innerHTML = `<div><span>支柱类型</span><b>${pillar.pillar_type === "independent_event" ? "独立事项" : "经营业务"}</b></div><div><span>估值方法</span><b>${esc(pillar.valuation_method)}</b></div><div><span>利润/收益口径</span><b>${esc(pillar.profit_metric)}</b></div><div><span>定价阶段</span><b>${pricingStage}</b></div><p>${esc(pillar.estimation_method || "")}${sourceButtons(pillar)}</p>`;
-  const assumptions = (baseline.assumption_ledger || []).filter((item) => item.pillar_id === pillar.pillar_id);
-  const channelLabels = { profit: "利润", multiple: "倍数", standalone: "独立项目", none: "未进入" };
-  const quantLabels = { quantitative: "已量化", qualitative: "定性依据", missing_input: "待补输入" };
-  $("assumption-list").innerHTML = assumptions.map((item) => {
-    const priced = item.included_in_model === true || item.included_in_baseline === true;
-    const stageLabel = item.pricing_stage === "incremental_evidence" ? "增量事项" : "机构基准";
-    const value = item.baseline_value == null
-      ? (item.quantification_status === "qualitative" ? "定性条件" : "待补输入")
-      : `${esc(item.baseline_value)} ${esc(item.unit)}`;
-    return `<article class="${priced ? "is-priced" : "is-unpriced"}"><div><span>${esc(item.year)}</span><b>${esc(item.metric)}</b></div><div class="pricing-state"><span class="pricing-badge">${priced ? `已定价 · ${stageLabel}` : "未定价"}</span><small>${esc(channelLabels[item.pricing_channel] || "状态待核对")} · ${esc(quantLabels[item.quantification_status] || "量化状态待核对")}</small></div><p>${esc(item.condition)}</p><div class="pricing-reason"><span>定价判断</span><b>${esc(item.pricing_reason || "待补充判断依据")}</b></div><div class="assumption-value"><span>基准值</span><b>${value}</b></div><small>信息截止：${esc(item.information_cutoff || "—")}</small>${sourceButtons(item)}</article>`;
-  }).join("") || "<p class='section-note'>该支柱暂无结构化假设；需要在新阶段二运行中补齐。</p>";
+function renderBusinessMap() {
+  const pillars = report.business_map || report.business_pillars || [];
+  const natureLabels = { recurring_operation: "持续经营", future_event: "成长项目", historical_realized: "历史事项", narrative_candidate: "潜在事项" };
+  $("business-map").innerHTML = pillars.map((item, index) => {
+    const bridge = item.profit_bridge || {};
+    const coverage = item.institution_coverage || item.coverage_summary || "待结合逐机构研报判断是否已纳入盈利预测";
+    return `<article class="business-map-card"><div class="business-map-index">${String(index + 1).padStart(2, "0")}</div><div><div class="card-top"><h3>${esc(item.name)}</h3><span class="badge">${esc(natureLabels[item.economic_nature] || item.classification || "业务组成")}</span></div><p>${esc(item.business_essence || item.split_rationale || "—")}</p><dl><div><dt>拆分逻辑</dt><dd>${esc(item.split_reason || item.split_rationale || "—")}</dd></div><div><dt>利润关系</dt><dd>${esc(coverage)}</dd></div>${bridge["2025a"] == null ? "" : `<div><dt>2025A参考</dt><dd>${num(bridge["2025a"])} ${esc(bridge.unit || "亿元")}</dd></div>`}</dl>${sourceButtons(item)}</div></article>`;
+  }).join("") || "<p class='section-note'>暂无结构化业务地图。</p>";
+}
+
+function renderProfitAnalysis() {
+  const analyses = report.institution_profit_analysis || [];
+  $("profit-analysis-list").innerHTML = analyses.map((item) => {
+    const assumptions = asList(item.key_assumptions);
+    const drivers = asList(item.profit_drivers);
+    const risks = asList(item.risks);
+    return `<article class="profit-analysis-card"><div class="profit-analysis-head"><div><h3>${esc(item.institution)}</h3><span>${esc(item.report_date || "—")} · ${esc(item.profit_scope || "口径待核对")}</span></div><div><b>2026E ${num(item.np_2026e)} 亿</b><b>2027E ${num(item.np_2027e)} 亿</b></div></div><p class="profit-summary">${esc(item.summary || "研报摘要待补充")}</p><div class="profit-analysis-grid"><div><span>利润驱动</span><ul>${drivers.map((value) => `<li>${esc(itemText(value, ["driver", "statement", "name", "description"]))}</li>`).join("") || "<li>研报未结构化披露</li>"}</ul></div><div><span>关键假设</span><ul>${assumptions.map((value) => `<li>${esc(itemText(value, ["assumption", "statement", "name", "description"]))}</li>`).join("") || "<li>研报未结构化披露</li>"}</ul></div><div><span>主要风险</span><ul>${risks.map((value) => `<li>${esc(itemText(value, ["risk", "statement", "name", "description"]))}</li>`).join("") || "<li>研报未结构化披露</li>"}</ul></div></div>${sourceButtons(item)}</article>`;
+  }).join("") || "<p class='section-note'>旧运行尚未保存逐机构利润逻辑；原始预测仍可在下表查看。</p>";
 }
 
 function renderStatic() {
-  const valuation = report.valuation || {}, thesis = report.investment_thesis || {}, stats = report.research_stats || {}, pe = report.pe_2026e || {}, reverse = report.status?.reverse_check || {};
+  const valuation = report.valuation || {}, thesis = report.investment_thesis || {}, stats = report.research_stats || {}, reverse = report.status?.reverse_check || {};
   const consensusStatus = report.status?.consensus || {};
   document.title = `${report.name}（${report.code}）· 深度估值报告`;
   $("company-name").textContent = report.name;
@@ -148,7 +146,7 @@ function renderStatic() {
   $("company-stage").textContent = `公司阶段：${thesis.company_stage || "—"}`;
   $("consensus-status").textContent = consensusStatus.status === "done" ? `共识合格 · ${consensusStatus.valid_institutions || stats.consensus_count || 0} 家` : (consensusStatus.status || "共识状态缺失");
   $("quote-status").textContent = valuation.price_date ? `行情：${valuation.price_date} · ${valuation.price_source || "未知来源"}` : "行情日期缺失";
-  $("research-stats").innerHTML = [[stats.evidence_count, "份证据"], [stats.consensus_count, "家机构"], [stats.pillar_count, "个支柱"], [stats.verification_count, "个验证点"]].map(([value, label]) => `<div><b>${num(value, 0)}</b><span>${label}</span></div>`).join("");
+  $("research-stats").innerHTML = [[stats.evidence_count, "份证据"], [stats.consensus_count, "家机构"], [(report.business_map || report.business_pillars || []).length, "个业务支柱"], [stats.verification_count, "个验证点"]].map(([value, label]) => `<div><b>${num(value, 0)}</b><span>${label}</span></div>`).join("");
   $("reverse-check").textContent = reverse.triggered ? `反向检查已触发 · ${reverse.discount_rate_desc || ""}` : "反向检查未触发";
   $("core-judgement").textContent = thesis.core_judgement || "—";
 
@@ -161,27 +159,13 @@ function renderStatic() {
   const np26 = consensus.map((item) => Number(text(item, ["np_2026e", "net_profit_2026e"]))).filter(Number.isFinite);
   const np27 = consensus.map((item) => Number(text(item, ["np_2027e", "net_profit_2027e"]))).filter(Number.isFinite);
   $("consensus-summary").innerHTML = [["机构数量", consensus.length], ["2026E 中位利润", median(np26) == null ? "—" : `${num(median(np26))} 亿`], ["2026E 预测区间", np26.length ? `${num(Math.min(...np26))}–${num(Math.max(...np26))} 亿` : "—"], ["2027E 中位利润", median(np27) == null ? "—" : `${num(median(np27))} 亿`]].map(([label, value]) => `<div><span>${label}</span><b>${value}</b></div>`).join("");
-  $("consensus-table").innerHTML = `<thead><tr><th>机构</th><th>报告日期</th><th>2026E 净利</th><th>2027E 净利</th><th>利润口径</th><th>2026E PE</th><th>PE用途</th></tr></thead><tbody>${consensus.map((item) => `<tr><td><b>${esc(item.institution)}</b></td><td>${esc(item.report_date || "—")}</td><td>${num(text(item, ["np_2026e", "net_profit_2026e"]))}</td><td>${num(text(item, ["np_2027e", "net_profit_2027e"]))}</td><td>${esc(item.profit_scope || "待核对")}</td><td>${num(item.pe_2026e, 1)}</td><td><b>${esc(item.pe_usability || "待核对")}</b><small>${esc(item.scope_reason || "")}</small></td></tr>`).join("") || "<tr><td colspan='7'>暂无结构化一致预期</td></tr>"}</tbody>`;
+  $("consensus-table").innerHTML = `<thead><tr><th>机构</th><th>报告日期</th><th>2026E 营收</th><th>2026E 净利</th><th>2027E 净利</th><th>利润口径</th><th>目标价</th></tr></thead><tbody>${consensus.map((item) => `<tr><td><b>${esc(item.institution)}</b></td><td>${esc(item.report_date || "—")}</td><td>${num(item.revenue_2026e)}</td><td>${num(text(item, ["np_2026e", "net_profit_2026e"]))}</td><td>${num(text(item, ["np_2027e", "net_profit_2027e"]))}</td><td><b>${esc(item.profit_scope || "待核对")}</b><small>${esc(item.profit_scope_reason || item.scope_reason || "")}</small></td><td>${money(item.target_price)}</td></tr>`).join("") || "<tr><td colspan='7'>暂无结构化一致预期</td></tr>"}</tbody>`;
 
-  const range = pe.step1_comparable_range || {};
-  const valuationInputs = report.valuation_inputs || {};
-  const modelPillars = report.stage2_baseline?.pillars || [];
-  const pillarMultiples = (type) => modelPillars.filter((pillar) => pillar.pillar_type === type).map((pillar) => {
-    const multiple = pillar.years?.["2026e"]?.base?.multiple;
-    return `${pillar.name} ${multiple == null ? "—" : `${num(multiple, 1)}x`}`;
-  }).join(" / ") || "—";
-  $("pe-panel").innerHTML = [["主营支柱基准倍数", pillarMultiples("operating")], ["独立事项基准倍数", pillarMultiples("independent_event")], ["公司级PE交叉检查", pe.final_pe == null ? "—" : `${num(pe.final_pe, 1)}x（不直接套用）`], ["可比参考区间", `${num(range.lower, 1)}–${num(range.upper, 1)}x`], ["口径匹配", valuationInputs.pe_scope_basis || "旧运行待核对"], ["排除锚", listText(valuationInputs.excluded_anchor_names) || "—"]].map(([label, value]) => `<div><span>${label}</span><b>${esc(value)}</b></div>`).join("") + `<div class="pe-detail">${esc(pe.details || "")}</div>`;
-  $("comparable-table").innerHTML = `<thead><tr><th>估值锚 / 可比</th><th>PE</th><th>增速</th><th>毛利率</th></tr></thead><tbody>${(report.comparables || []).map((item) => `<tr><td>${esc(item.name)}</td><td>${num(item.pe, 1)}x</td><td>${pct(item.growth_rate)}</td><td>${pct(item.gross_margin)}</td></tr>`).join("") || "<tr><td colspan='4'>暂无结构化可比数据</td></tr>"}</tbody>`;
-
-  const baseline = report.stage2_baseline || {};
-  renderAssumptionLedger();
-  $("divergence-cards").innerHTML = (report.market_divergences || []).map((item) => `<article class="divergence-card"><h3>${esc(item.name)}<span class="source-ids">${esc(item.pillar || "")} · ${item.pricing_status === "priced_in" ? "已定价" : "未充分定价"}</span></h3><div class="case bull"><b>乐观情形</b>${esc(item.bull_case)}</div><div class="case bear"><b>悲观情形</b>${esc(item.bear_case)}</div><div class="case ours"><b>我们的判断</b>${esc(item.our_judgement)}<span class="source-ids">根因：${esc(item.root_cause || "—")}</span>${sourceButtons(item)}</div></article>`).join("") || "<p>暂无结构化分歧。</p>";
-  $("option-cards").innerHTML = (report.narrative_options || []).map((item) => `<article class="option-card ${item.included_in_valuation ? "included" : ""}"><span class="badge">${item.included_in_valuation ? "已进入上方估值模型" : "仅观察，不计入"}</span><h3>${esc(item.name)}</h3><p>${esc(item.business_essence)}<br><b>当前判断：</b>${esc(item.pricing_status || "待核对")} · <b>验证节点：</b>${esc(listText(item.verification_nodes) || "待补充")}</p>${sourceButtons(item)}</article>`).join("") || "<p>暂无独立事项。</p>";
+  renderBusinessMap();
+  renderProfitAnalysis();
+  $("divergence-cards").innerHTML = (report.market_divergences || []).map((item) => `<article class="divergence-card"><h3>${esc(item.name)}<span class="source-ids">${esc(item.divergence_type || item.pillar || "机构观点分歧")}</span></h3><div class="case bull"><b>较高预测</b>${esc(item.bull_case)}</div><div class="case bear"><b>较低预测</b>${esc(item.bear_case)}</div><div class="case ours"><b>共识解读</b>${esc(item.our_judgement)}<span class="source-ids">根因：${esc(item.root_cause || "原因未披露")}</span>${sourceButtons(item)}</div></article>`).join("") || "<p>暂无结构化分歧。</p>";
   $("verification-list").innerHTML = (report.verification_nodes || []).map((item) => `<article class="verification-item"><div class="verification-time">${esc(item.timeframe || "待定")}</div><div class="verification-line"></div><div class="verification-body"><h3>${esc(item.event)}</h3><span>${esc(item.node_id || "")} · ${esc(item.pillar || "")}</span><div class="meaning-grid"><p><b>验证成功：</b>${esc(item.success_meaning || "—")}</p><p><b>验证失败：</b>${esc(item.failure_meaning || "—")}</p></div>${sourceButtons(item)}</div></article>`).join("");
-  $("facts-list").innerHTML = (report.facts || []).map((item) => `<li>${esc(text(item, ["statement", "fact", "description"]))}${sourceButtons(item)}</li>`).join("") || "<li>—</li>";
-  $("assumptions-list").innerHTML = (report.assumptions || []).map((item) => `<li><b>${esc(text(item, ["name", "assumption"]))}</b>${item.name ? `：${esc(item.value)}` : ""}${item.rationale ? `<br>${esc(item.rationale)}` : ""}${sourceButtons(item)}</li>`).join("") || "<li>—</li>";
   $("risks-list").innerHTML = (report.risks || []).map((item) => `<li>${esc(text(item, ["statement", "description", "risk"]))}${sourceButtons(item)}</li>`).join("") || "<li>—</li>";
-  $("catalysts-list").innerHTML = (report.catalysts || []).map((item) => `<li><b>${esc(text(item, ["timeframe", "time"]))}</b> · ${esc(item.event || "—")}${sourceButtons(item)}</li>`).join("") || "<li>—</li>";
   $("evidence-summary").textContent = `${stats.evidence_count || 0} 条原始证据 · 按需加载`;
   $("run-id").textContent = `运行包 ${report.run_id}`;
   renderYearComparison();

@@ -102,7 +102,7 @@ def verified_runs():
             card = load_json(path / "research_card.json")
         except (OSError, json.JSONDecodeError):
             continue
-        required_card_keys = ("investment_thesis", "business_pillars", "narrative_options", "verification_nodes")
+        required_card_keys = ("investment_thesis", "business_pillars", "verification_nodes")
         if not all(card.get(key) for key in required_card_keys):
             continue
         runs.append({"path": path, "manifest": manifest, "date": run_date(path, manifest)})
@@ -242,6 +242,10 @@ def merge_priced_independent_items(baseline: dict, card: dict, params: dict, pe_
     model = json.loads(json.dumps(baseline, ensure_ascii=False))
     model.setdefault("pillars", [])
     model.setdefault("assumption_ledger", [])
+    if int(model.get("version") or 0) >= 5:
+        model["source"] = "institution_consensus_valuation"
+        model["note"] = "公司整体机构一致性预期；阶段五不再覆盖PE，也不追加公开信息的二次估值。"
+        return model
     historical = [item for item in model["pillars"] if item.get("profit_basis") == "historical_realized"]
     if historical:
         historical_ids = {str(item.get("pillar_id")) for item in historical}
@@ -404,6 +408,29 @@ def report_run(item: dict) -> dict:
                        else merge_priced_independent_items(stage2_baseline, card, params, {
                            "2026e": result.get("pe_2026e", {}), "2027e": result.get("pe_2027e", {}),
                        }))
+    display_baseline = json.loads(json.dumps(valuation_model, ensure_ascii=False))
+    if int(display_baseline.get("version") or 0) < 5:
+        display_baseline["note"] = "旧运行兼容展示；PE口径尚未按V4共识协议重算，本次页面优化未调用模型。"
+    stage_one = load_json(path / "stage_1_business.json") if (path / "stage_1_business.json").exists() else {}
+    stage_two = load_json(path / "stage_2_consensus.json") if (path / "stage_2_consensus.json").exists() else {}
+    consensus_by_institution = {str(row.get("institution")): row for row in card.get("consensus", []) if row.get("institution")}
+    profit_analysis = stage_two.get("profit_analysis") or []
+    if not profit_analysis:
+        profit_analysis = []
+        for row in stage_two.get("institution_forecasts", []) or []:
+            institution = str(row.get("institution") or "")
+            display = consensus_by_institution.get(institution, {})
+            assumptions = row.get("key_assumptions")
+            if isinstance(assumptions, str):
+                assumptions = [assumptions]
+            profit_analysis.append({
+                "institution": institution, "report_date": display.get("report_date"),
+                "np_2026e": row.get("net_profit_2026e"), "np_2027e": row.get("net_profit_2027e"),
+                "profit_scope": row.get("profit_scope"),
+                "summary": row.get("report_summary") or (assumptions or ["旧运行未单独保存研报逻辑摘要"])[0],
+                "profit_drivers": row.get("profit_drivers") or [], "key_assumptions": assumptions or [],
+                "risks": row.get("risks") or [], "source_ids": row.get("source_ids") or [],
+            })
     total_2026 = valuation_model.get("totals", {}).get("2026e", {})
     total_2027 = valuation_model.get("totals", {}).get("2027e", {})
     shares = meta.get("total_shares")
@@ -438,12 +465,14 @@ def report_run(item: dict) -> dict:
         "calc_pillars": params.get("pillars", []),
         "investment_thesis": card.get("investment_thesis", {}),
         "business_pillars": card.get("business_pillars", []),
+        "business_map": stage_one.get("business_pillars") or card.get("business_pillars", []),
+        "institution_profit_analysis": profit_analysis,
         "market_divergences": card.get("market_divergences", []),
         "narrative_options": card.get("narrative_options", []),
         "verification_nodes": card.get("verification_nodes", []),
         "consensus": card.get("consensus", []), "comparables": card.get("comparables", []),
         "valuation_inputs": card.get("valuation_inputs", {}),
-        "stage2_baseline": valuation_model,
+        "stage2_baseline": display_baseline,
         "facts": card.get("facts", []), "assumptions": card.get("assumptions", []),
         "risks": card.get("risks", []), "catalysts": card.get("catalysts", []),
         "decision_summary": {
@@ -578,7 +607,7 @@ def publish_progress() -> Path:
     stage_schema = [
         ("stage0", "阶段零 · 数据准备", [("基础数据快照", "briefing.json", "evidence")]),
         ("stage1", "阶段一 · 业务与利润支柱", [("原文分批阅读", "stage_1_readings.json", "阶段一"), ("业务拆解与专题计划", "stage_1_business.json", "stage_1_business")]),
-        ("stage2", "阶段二 · 一致预期与基准估值", [("研报分批阅读", "stage_2_readings.json", "阶段二"), ("机构全集与口径审计", "stage_2_institutions.json", "stage_2_consensus"), ("分支柱模型输入", "stage_2_model_inputs.json", "stage_2_consensus"), ("共识与估值锚", "stage_2_consensus.json", "stage_2_consensus"), ("双年三情景统一模型", "stage_2_baseline.json", "stage_2_baseline")]),
+        ("stage2", "阶段二 · 一致预期与公司级估值", [("研报分批阅读", "stage_2_readings.json", "阶段二"), ("机构预测与利润逻辑", "stage_2_institutions.json", "stage_2_consensus"), ("公司级估值输入", "stage_2_model_inputs.json", "stage_2_consensus"), ("共识与口径审计", "stage_2_consensus.json", "stage_2_consensus"), ("双年三情景一致性估值", "stage_2_baseline.json", "stage_2_baseline")]),
         ("stage3", "阶段三 · 项目与预期差", [("专题缓存与去重", "evidence.json", "dynamic_search"), ("专题原文分批阅读", "stage_3_readings.json", "阶段三"), ("项目估值归类", "stage_3_expectations.json", "stage_3_expectations")]),
         ("stage4", "阶段四 · 催化剂与验证", [("复用项目阅读结论", "stage_4_readings.json", None), ("验证节点与风险", "stage_4_catalysts.json", "stage_4_catalysts")]),
         ("stage5", "阶段五 · 研究卡与通用映射", [("五A1 · 主营与共识", "stage_5_research_core.json", "stage_5_research_core"), ("五A2 · 分歧与期权", "stage_5_research_options.json", "stage_5_research_options"), ("五A3 · 验证与事实", "stage_5_research_validation.json", "stage_5_research_validation"), ("五A · 研究结论合并", "stage_5_research.json", "stage_5_research"), ("五B1 · PE输入", "stage_5_mapping_valuation.json", "stage_5_mapping_valuation"), ("五B2 · 支柱利润映射", "stage_5_mapping_pillars.json", "stage_5_mapping_pillars"), ("五B3 · 分歧与期权映射", "stage_5_mapping_adjustments_v3.json", "stage_5_mapping_adjustments"), ("五B · 参数映射", "stage_5_mapping.json", "stage_5_mapping"), ("五C · 确定性组装", "research_card.json", "stage_5_assembly"), ("参数契约校验", "calc_params.json", "parameter_validation")]),

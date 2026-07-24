@@ -48,7 +48,6 @@ SEARCH_TOPICS = (
     ("consensus", "{name} {code} 券商研报 盈利预测 2026 2027 目标价"),
     ("announcements", "{name} {code} 2026 公告 订单 中标 签约"),
     ("management", "{name} {code} 2026 增持 回购 股权激励 投资者交流"),
-    ("comparables", "{name} {code} 可比公司 估值 PE 增长 毛利率"),
     ("market", "{name} {code} 最新股价 总市值"),
 )
 
@@ -666,7 +665,8 @@ def validate_stage_five_mapping(mapping, research):
                 raise PipelineError(f"{label} 映射目标无效")
             if collection == "narrative_options" and research_by_id[item["research_id"]].get("included_in_valuation") is False and target != "exclude":
                 raise PipelineError(f"{label} 未计入估值项目必须 exclude")
-            if collection == "narrative_options" and research_by_id[item["research_id"]].get("included_in_valuation") is True:
+            if (collection == "narrative_options" and int(research.get("contract_version") or 0) < 5
+                    and research_by_id[item["research_id"]].get("included_in_valuation") is True):
                 if target == "exclude":
                     raise PipelineError(f"{label} 已通过概率事项门禁，不得在阶段五降级为 exclude")
                 if research_by_id[item["research_id"]].get("valuation_role") == "probabilistic_event" and target != "type_b_pipeline":
@@ -692,7 +692,7 @@ def validate_stage_five_mapping(mapping, research):
             elif target == "layer3_item" and any(values.get(field) is None for field in ("pessimistic", "base", "optimistic", "probability")):
                 raise PipelineError(f"{label} layer3_item 字段不完整")
     institution_values = [_number(item.get("np_2026e"), "consensus.np_2026e") for item in research.get("consensus", []) or []]
-    if pillar_profit and institution_values:
+    if int(research.get("contract_version") or 0) < 5 and pillar_profit and institution_values:
         consensus_mean = sum(institution_values) / len(institution_values)
         if abs(pillar_profit - consensus_mean) / consensus_mean > 0.35:
             raise PipelineError(f"阶段五B支柱2026E净利合计 {pillar_profit:.2f} 亿偏离机构共识均值 {consensus_mean:.2f} 亿超过35%")
@@ -701,6 +701,8 @@ def validate_stage_five_mapping(mapping, research):
 def normalize_pe_scope_fallback(inputs, stage_two):
     """Prevent cross-check-only anchors from masquerading as direct PE inputs."""
     if not isinstance(inputs, dict) or not isinstance(stage_two, dict):
+        return
+    if int(stage_two.get("contract_version") or 0) >= 5:
         return
     forecasts = [item for item in stage_two.get("institution_forecasts", []) or [] if isinstance(item, dict)]
     usable = [item for item in forecasts
@@ -827,13 +829,16 @@ def validate_stage_five_research(research, evidence):
     for index, item in enumerate(research.get("consensus", []) or []):
         if item.get("pe_usability") == "cross_check_only" and not item.get("valuation_scope"):
             item["valuation_scope"] = "unknown"
-        missing = [field for field in ("institution", "report_date", "np_2026e", "np_2027e", "profit_scope",
-                                       "valuation_scope", "pe_usability", "scope_reason", "source_ids")
+        consensus_fields = (("institution", "report_date", "np_2026e", "np_2027e", "profit_scope", "scope_reason", "source_ids")
+                            if int(research.get("contract_version") or 0) >= 5 else
+                            ("institution", "report_date", "np_2026e", "np_2027e", "profit_scope",
+                             "valuation_scope", "pe_usability", "scope_reason", "source_ids"))
+        missing = [field for field in consensus_fields
                    if item.get(field) in (None, "", [])]
         if missing:
             raise PipelineError(f"阶段五A consensus[{index}] 缺少: " + ", ".join(missing))
         require_sources([item], f"consensus[{index}]", valid_ids)
-    if len(research.get("comparables", []) or []) < 2:
+    if int(research.get("contract_version") or 0) < 5 and len(research.get("comparables", []) or []) < 2:
         raise PipelineError("阶段五A估值锚不足2项")
     for collection, fields in (
         ("market_divergences", ("research_id", "name", "pillar", "bull_case", "bear_case", "root_cause", "our_judgement", "pricing_status", "source_ids")),
@@ -910,24 +915,23 @@ def build_stage_five_research(run_dir, briefing, stage_one, stage_two, stage_thr
         return value
 
     stage_two_baseline = read_json(run_dir / "stage_2_baseline.json")
-    core = part("stage_5_research_core.json", "stage_5_research_core", "阶段五A1：主营与共识", (
-        "不新增事实，禁止输出计算映射。只输出 investment_thesis、business_pillars、consensus、comparables。"
+    core = part("stage_5_research_core.json", "stage_5_research_core", "阶段五A1：业务地图与共识", (
+        "不新增事实，禁止输出计算映射。输出 contract_version=5、investment_thesis、business_pillars、consensus、profit_analysis；comparables输出空数组。"
         "investment_thesis={market_trade,company_stage,core_judgement,source_ids}，绝对不能是字符串。"
-        "business_pillars必须与stage_2_baseline中profit_basis不是historical_realized的估值支柱一对一对应，"
-        "research_id必须原样等于其pillar_id；阶段一merged_component只能写入业务组成和split_rationale，不得重新生成估值支柱。"
+        "business_pillars必须逐一继承stage_1_business完整业务地图，research_id原样使用阶段一pillar_id；业务地图只解释利润来源，不分配利润或估值。"
         "business_pillars 每项完整包含 research_id,name,business_essence,split_rationale,valuation_drivers,source_ids、"
         "classification,profit_timing,accounting_treatment 及 profit_bridge={profit_metric:net_profit|gross_profit|operating_profit,base_2025a,items_2026e:[{item,profit_impact,source_ids}],items_2027e:[...]}；"
-        "profit_bridge 必须位于每个支柱内，items_2026e和items_2027e均至少一项，按阶段二公司级利润控制数解释增量并引用证据。"
+        "profit_bridge只整理已披露信息；无法量化填0并写明未量化，不得把公司共识利润拆给业务支柱。"
         "金额统一亿元，原始元值除以1亿。"
         "consensus 至少3家，每项含 institution,report_date:YYYY-MM-DD,np_2026e,np_2027e,revenue_2026e,revenue_2027e,pe_2026e,pe_2027e,target_price,"
-        "profit_scope,valuation_scope,pe_usability,scope_reason,source_ids；不得丢失阶段二的利润与估值口径判断。"
-        "comparables 每项含 anchor_type(company|institution_target|industry_aggregate),name,pe,growth_rate,gross_margin,pe_horizon,growth_horizon,relevance,source_ids；"
-        "公司可比的增长率和毛利率无证据时不得猜测，应改用有证据的机构目标估值锚；行业均值不能冒充公司。"
+        "profit_scope,valuation_scope,pe_semantics_2026e,pe_semantics_2027e,target_pe_2026e,target_pe_2027e,scope_reason,source_ids。"
+        "profit_analysis逐一继承阶段二A，含institution,report_date,np_2026e,np_2027e,profit_scope,summary,profit_drivers,key_assumptions,included_business_items,excluded_or_unclear_items,risks,source_ids，不得重新推演。"
     ), {"briefing": briefing, "stage_1_business": stage_one, "stage_2_consensus": stage_two,
         "stage_2_baseline": stage_two_baseline})
     options = part("stage_5_research_options.json", "stage_5_research_options", "阶段五A2：分歧与期权", (
         "不新增事实，禁止输出计算映射。只输出 market_divergences、narrative_options。"
-        "market_divergences 每项含 research_id,name,pillar,bull_case,bear_case,root_cause,our_judgement,pricing_status,source_ids及三个标准枚举，禁止只给description。"
+        "market_divergences 每项含 research_id,name,pillar,bull_case,bear_case,root_cause,our_judgement,pricing_status,source_ids及三个标准枚举。"
+        "非经常项目是否纳入属于口径差异，不得当作经营分歧；只有至少两家同口径机构对同一变量有原文支持的不同假设才保留。只看到预测数值不同不得反推根因。"
         "narrative_options必须逐一覆盖阶段三valuation_role为probabilistic_event或narrative_observation的项目，research_id必须原样等于project_id。"
         "每项含 research_id,name,pillar,business_essence,valuation_role,pricing_status,potential_profit,pe,probability,included_in_valuation,"
         "incremental_to_baseline,quantification_status,valuation_scenarios,verification_nodes,source_ids及三个标准枚举。"
@@ -935,18 +939,78 @@ def build_stage_five_research(run_dir, briefing, stage_one, stage_two, stage_thr
         "narrative_observation必须included_in_valuation=false。利润亿元、概率0~1。"
     ), {"stage_1_business": stage_one, "stage_2_consensus": stage_two, "stage_3_expectations": stage_three})
     validation = part("stage_5_research_validation.json", "stage_5_research_validation", "阶段五A3：验证与事实", (
-        "不新增事实，禁止输出计算映射。只输出 verification_nodes、facts、assumptions、risks、catalysts。"
+        "不新增事实，禁止输出计算映射。只输出 verification_nodes、facts、assumptions、risks、catalysts。catalysts固定为空数组，页面只保留verification_nodes与risks。"
         "verification_nodes 为扁平数组，每项={node_id,timeframe,event,pillar,success_meaning,failure_meaning,source_ids}，禁止嵌套 catalyst。"
         "facts/assumptions/risks/catalysts 必须为 {statement,source_ids} 对象数组，不得为字符串数组。"
     ), {"stage_3_expectations": stage_three, "stage_4_catalysts": stage_four})
-    research = {"status": "ready", **core, **options, **validation}
-    validate_stage_five_baseline_pillar_coverage(research, stage_two_baseline)
+    research = {"status": "ready", "contract_version": int(stage_two.get("contract_version") or 5), **core, **options, **validation}
+    if int(research.get("contract_version") or 0) < 5:
+        validate_stage_five_baseline_pillar_coverage(research, stage_two_baseline)
     validate_stage_three_research_coverage(stage_three, research)
     return research
 
 
 def build_stage_five_mapping(run_dir, research, stage_two, stage_three, evidence, resume):
     """Build stage five B from bounded valuation, pillar, and adjustment mappings."""
+    if int(stage_two.get("contract_version") or 0) >= 5:
+        baseline = read_json(run_dir / "stage_2_baseline.json")
+        company = (baseline.get("pillars") or [])[0]
+        years = company.get("years", {})
+        y26, y27 = years.get("2026e", {}), years.get("2027e", {})
+        base26 = _number((y26.get("base") or {}).get("profit"), "stage2.2026e.base.profit")
+        base27 = _number((y27.get("base") or {}).get("profit"), "stage2.2027e.base.profit")
+        growth = max(1.0, min(300.0, (base27 / base26 - 1) * 100 if base26 else 1.0))
+        sources = list(company.get("source_ids") or [])
+        pe_values = {scenario: _number((y26.get(scenario) or {}).get("multiple"), f"stage2.2026e.{scenario}.multiple")
+                     for scenario in ("pessimistic", "base", "optimistic")}
+        legacy_pe_lower = min(pe_values.values())
+        legacy_pe_upper = max(pe_values.values())
+        valuation_inputs = {
+            "growth_quality": "structural" if growth >= 20 else "mature", "market_position": "mid",
+            "comparable_pe_lower": legacy_pe_lower, "comparable_pe_median": pe_values["base"],
+            "comparable_pe_upper": legacy_pe_upper, "company_growth_rate": round(growth, 2),
+            "comp_growth_rate": round(growth, 2), "qualitative_adjustments": [],
+            "stage2_recommended_pe": pe_values["base"], "selected_pe": pe_values["base"],
+            "pe_selection_method": "override", "pe_override": pe_values["base"],
+            "pe_selection_reason": "仅为旧计算引擎适配；页面与最终估值直接采用阶段二机构一致性预期，不在阶段五重选PE",
+            "pe_scope_basis": "公司整体机构目标估值组合", "excluded_anchor_names": [], "source_ids": sources,
+        }
+        engine_values = {
+            "consensus_np_2026e": base26, "consensus_np_2027e": base27,
+            "consensus_np_lower_2026e": _number((y26.get("pessimistic") or {}).get("profit"), "stage2.2026e.pessimistic.profit"),
+            "consensus_np_upper_2026e": _number((y26.get("optimistic") or {}).get("profit"), "stage2.2026e.optimistic.profit"),
+            "consensus_np_lower_2027e": _number((y27.get("pessimistic") or {}).get("profit"), "stage2.2027e.pessimistic.profit"),
+            "consensus_np_upper_2027e": _number((y27.get("optimistic") or {}).get("profit"), "stage2.2027e.optimistic.profit"),
+            "deducted_np": 0,
+        }
+        pillar_mappings = []
+        for index, item in enumerate(research.get("business_pillars", []) or []):
+            common = {
+                "research_id": item["research_id"], "classification": item.get("classification") or "core_operating",
+                "profit_timing": item.get("profit_timing") or "realized",
+                "accounting_treatment": item.get("accounting_treatment") or "recurring",
+            }
+            common["calculation_mapping"] = ({"target": "pillar", "pillar_id": item["research_id"], "route": "A1", "engine_values": engine_values}
+                                                 if index == 0 else {"target": "exclude"})
+            pillar_mappings.append(common)
+        divergence_mappings = [{
+            "research_id": item["research_id"], "classification": item.get("classification") or "core_operating",
+            "profit_timing": item.get("profit_timing") or "realized", "accounting_treatment": item.get("accounting_treatment") or "recurring",
+            "driver_type": "other", "calculation_mapping": {"target": "exclude"},
+        } for item in research.get("market_divergences", []) or []]
+        option_mappings = [{
+            "research_id": item["research_id"], "classification": item.get("classification") or "narrative_option",
+            "profit_timing": item.get("profit_timing") or "long_term", "accounting_treatment": item.get("accounting_treatment") or "non_recurring",
+            "calculation_mapping": {"target": "exclude"},
+        } for item in research.get("narrative_options", []) or []]
+        result = {"valuation_inputs": valuation_inputs, "pillar_mappings": pillar_mappings,
+                  "divergence_mappings": divergence_mappings, "option_mappings": option_mappings}
+        write_json(run_dir / "stage_5_mapping_valuation.json", {"valuation_inputs": valuation_inputs})
+        write_json(run_dir / "stage_5_mapping_pillars.json", {"pillar_mappings": pillar_mappings})
+        write_json(run_dir / "stage_5_mapping_adjustments_v3.json", {
+            "contract_version": 5, "divergence_mappings": divergence_mappings, "option_mappings": option_mappings,
+        })
+        return result
     catalog = evidence_catalog(evidence)
 
     def part(filename, checkpoint_key, stage, task, inputs):
@@ -1064,14 +1128,14 @@ def run_staged_research(run_dir, briefing, evidence, code, name, evidence_dir, f
     else:
         stage1_readings = read_evidence_batches("阶段一", "识别业务、资产平台、并购、REITs、产能和海外项目。", {"briefing": briefing}, stage1_evidence)
         write_json(run_dir / "stage_1_readings.json", stage1_readings)
-        stage_one = llm_stage("阶段一：业务拆解与利润测算", (
+        stage_one = llm_stage("阶段一：业务地图拆解", (
             "完整识别业务线、资产平台、并购/重组、REITs/资产证券化、产能和海外项目；"
             "按最小经济实质拆分：同一资产平台若同时包含现有经常性收益、未来扩募/并购/投产和历史已实现收益，"
             "必须拆成不同pillar_id，禁止在一个业务候选项里混写多种利润性质；"
             "只输出business_pillars和search_plan。business_pillars每项字段精确为pillar_id,name,business_essence,"
             "economic_nature(recurring_operation|future_event|historical_realized|narrative_candidate),"
             "profit_bridge={2025a,2026e,2027e,unit:'亿元'},route(A|A1|B|C|D|E|F),split_reason,source_ids。"
-            "原始元值必须除以1亿；历史事项前瞻为0，未来事项2025a为0，无法量化的叙事候选三年均为0。"
+            "profit_bridge只整理公司或研报明确披露的数值，不自行推演未来利润；原始元值必须除以1亿。历史事项前瞻为0，未来事项2025a为0，无法量化项填0并保留业务说明。"
             "search_plan每项精确为source_pillar_id,topic,query,reason；所有非稳态项目必须有包含公司名和代码的专题query。"
         ), {"briefing": briefing, "code": code, "name": name, "source_readings": stage1_readings}, evidence_catalog(stage1_evidence), False)
     try:
@@ -1121,20 +1185,24 @@ def run_staged_research(run_dir, briefing, evidence, code, name, evidence_dir, f
             stage2_readings = read_json(readings_path)
             checkpoint(run_dir, "阶段二", "done", file=readings_path.name, reused=True)
         else:
-            stage2_readings = read_evidence_batches("阶段二", "提取机构双年盈利预测、目标价、估值方法和可比公司指标。", {"stage_1_business": stage_one}, stage2_evidence)
+            stage2_readings = read_evidence_batches("阶段二", "逐机构提取双年盈利预测、目标估值结论、利润驱动和关键假设；区分当前隐含PE与目标PE。", {"stage_1_business": stage_one}, stage2_evidence)
             write_json(readings_path, stage2_readings)
         institutions_path = run_dir / "stage_2_institutions.json"
         if resume and institutions_path.exists():
             institutions = read_json(institutions_path)
         else:
-            institutions = llm_stage("阶段二A：机构预测与估值锚清洗", (
-                "只输出institution_forecasts、excluded_forecasts、comparable_companies、consensus_divergence、business_line_divergence和layer2_explanation。"
-                "逐篇提取全部候选机构的2026E和2027E营收、净利、PE、目标价和关键假设；3家只是有效共识底线，不是上限。"
+            institutions = llm_stage("阶段二A：机构预测与研报逻辑清洗", (
+                "输出contract_version=5、institution_forecasts、profit_analysis、excluded_forecasts、consensus_divergence和business_line_divergence；不要输出可比公司。"
+                "逐篇提取全部候选机构的2026E和2027E营收、净利、PE、目标价、利润驱动和关键假设；3家只是有效共识底线，不是上限。"
                 "institution_forecasts每家含institution,source_ids,revenue_2026e,revenue_2027e,net_profit_2026e,net_profit_2027e,"
                 "reported_np,recurring_np_2026e,recurring_np_2027e,non_recurring_items,profit_scope(recurring|includes_non_recurring|unknown),profit_scope_reason,"
-                "pe_2026e,pe_2027e,target_price,valuation_scope,included_project_ids,pe_usability(direct_usable|convertible|cross_check_only),scope_reason,key_assumptions。"
+                "pe_2026e,pe_2027e,pe_semantics_2026e,pe_semantics_2027e,target_pe_2026e,target_pe_2027e,target_price,valuation_scope,included_project_ids,scope_reason。"
+                "pe_semantics只能为current_implied|target_explicit|target_implied|unavailable。研报写‘当前股价对应PE’必须标current_implied，绝不能复制到target_pe。"
+                "只有明确目标PE，或由同份研报目标价与预测利润可靠换算的PE，才能写target_pe并标target_explicit或target_implied。没有目标估值结论的研报只贡献利润。"
+                "profit_analysis逐家对应institution_forecasts，含institution,report_date,np_2026e,np_2027e,profit_scope,summary,profit_drivers,key_assumptions,included_business_items,excluded_or_unclear_items,risks,source_ids。"
+                "summary回答该机构为什么得到这组利润；所有驱动和假设必须来自研报原文，未披露就明确写未披露，不得自行推演。"
                 "只有研报明确把REIT、处置、公允价值等非经常项目计入预测时才能标includes_non_recurring；仅仅没有写明排除时必须标unknown。"
-                "利润与估值范围不一致或不清楚的锚不得direct_usable；能可靠扣除独立事项价值时才标convertible。另列逐项排除原因。"
+                "另列过期、双年预测不完整、口径污染和明显异常样本的逐项排除原因。"
             ), {"briefing": briefing, "stage_1_business": stage_one, "source_readings": stage2_readings}, evidence_catalog(stage2_evidence), False, max_tokens=24000)
             write_json(institutions_path, institutions)
             checkpoint(run_dir, "stage_2_institutions", "done", file=institutions_path.name)
@@ -1142,25 +1210,23 @@ def run_staged_research(run_dir, briefing, evidence, code, name, evidence_dir, f
         if resume and model_path.exists():
             model_inputs = read_json(model_path)
         else:
-            model_inputs = llm_stage("阶段二B：机构基准估值支柱", (
-                "只输出baseline_pillars、business_item_coverage和assumption_ledger，不得重复逐机构表。"
-                "基于阶段一完整业务地图和阶段二A清洗结果生成baseline_pillars；已有可靠依据的资产、并购、REITs等独立事项分别成柱。"
-                "业务地图拆分不等于估值必须拆分：只有各业务同时具有直接分部利润预测和匹配估值锚时，才输出多个profit_basis=direct_segment_forecast经营支柱；"
-                "否则IDC/AIDC等结构仍留在阶段一，但估值必须合并成一个profit_basis=company_consensus的核心持续经营业务，利润情景使用清洗后公司级预测下沿/中位/上沿，不得自行缩减利润总量。"
+            model_inputs = llm_stage("阶段二B：公司级一致性预期估值", (
+                "输出contract_version=5、baseline_pillars、business_item_coverage和assumption_ledger，不得重复逐机构表。"
+                "baseline_pillars必须且只能有一个pillar_type=operating、profit_basis=company_consensus的‘公司整体一致性预期’估值行；禁止按业务支柱分配利润或估值，禁止加入阶段三独立事项。"
+                "业务地图只通过business_item_coverage说明多数机构已纳入、部分纳入或未明确，不改变公司整体利润。"
                 "每柱含pillar_id,pillar_type(operating|independent_event),profit_basis(company_consensus|direct_segment_forecast|future_event|residual_asset_value|historical_realized),name,profit_metric,valuation_method,multiple_name,data_confidence,estimation_method,source_ids。"
-                "历史已确认非经常损益必须标historical_realized且前瞻年度profit为0；只有证明期末仍留存且未被其他支柱计价的净现金/净资产才能标residual_asset_value。"
-                "以及years.2026e/2027e的pessimistic/base/optimistic；每个情景含profit,multiple,probability,profit_reason,multiple_reason,probability_reason,source_ids。"
-                "profit和baseline_value的金额单位必须是亿元数值：11.5亿元必须写11.5，绝对禁止写1150000000；原始元值必须先除以1亿。"
-                "经营支柱probability固定1；独立事项按审批、发行、交割事实判断概率，不得机械套统一比例。PE只能使用direct_usable或可靠转换后的锚。"
+                "以及years.2026e/2027e的pessimistic/base/optimistic；每个情景含profit,multiple,probability,target_price,institutions,reason,profit_reason,multiple_reason,probability_reason,source_ids。"
+                "每个情景必须保留同一家机构或同一组可比机构的利润与目标估值完整组合。multiple只允许来自target_explicit或target_implied；current_implied严禁进入。"
+                "按清洗后机构组合估值的下沿、中位、上沿形成悲观、基准、乐观，且估值不得倒挂。合格目标估值组合不足2家时输出status=insufficient_valuation_consensus，不得用当前PE、可比公司或固定比例回退。"
+                "profit和baseline_value使用亿元数值；经营支柱probability固定1。"
                 "business_item_coverage必须逐一覆盖阶段一business_pillars的pillar_id，每项含source_pillar_id,"
                 "valuation_role(valued_operating|valued_event|merged_component|narrative_observation|historical_excluded),"
                 "valuation_pillar_id,quantification_status(quantitative|qualitative|missing_input),"
                 "overlap_status(incremental|inside_target|not_applicable),reason,source_ids。"
-                "valued_operating/valued_event必须对应baseline_pillars中的真实估值行；merged_component必须指向已包含其利润的经营支柱，"
-                "不得仍称独立估值支柱；无法量化的只能narrative_observation；历史已实现且无剩余价值的标historical_excluded。"
+                "持续经营业务组成可merged_component到公司整体估值行；潜在事项可narrative_observation；历史已实现事项标historical_excluded。不得输出valued_event或独立估值支柱。"
                 "assumption_ledger每项含assumption_id,pillar_id,year,metric,baseline_value,unit,condition,information_cutoff,source_ids,"
                 "included_in_baseline,pricing_channel(profit|multiple|standalone|none),pricing_reason,quantification_status(quantitative|qualitative|missing_input)。"
-                "禁止直接输出市值调整，脚本将按profit×multiple×probability计算。"
+                "assumption_ledger只记录估值表取值审计；逐机构业务假设已在profit_analysis中，不在这里重复。"
             ), {"stage_1_business": stage_one, "institution_analysis": institutions}, evidence_catalog(stage2_evidence), False)
             write_json(model_path, model_inputs)
             checkpoint(run_dir, "stage_2_model_inputs", "done", file=model_path.name)
@@ -1202,9 +1268,9 @@ def run_staged_research(run_dir, briefing, evidence, code, name, evidence_dir, f
         stage_four = read_json(run_dir / "stage_4_catalysts.json")
     else:
         write_json(run_dir / "stage_4_readings.json", stage4_readings)
-        stage_four = llm_stage("阶段四：催化剂与验证", (
-        "为每条主营假设、Layer 2分歧和Layer 3项目建立时间、事件、验证成功/失败含义、估值影响和风险。"
-        "输出催化剂日历、verification_nodes、risks，不得遗漏重大项目。"
+        stage_four = llm_stage("阶段四：后续验证与风险", (
+        "为重要机构盈利假设、关键分歧和重大业务项目建立时间、事件、验证成功/失败含义和风险。"
+        "只输出verification_nodes、risks；不要另建催化剂日历，不得遗漏重大项目。"
         ), {"stage_1_business": stage_one, "stage_2_consensus": stage_two, "stage_3_expectations": stage_three,
             "stage_3_readings": stage3_readings, "reuse_note": stage4_readings}, evidence_catalog(stage3_evidence), False)
         write_json(run_dir / "stage_4_catalysts.json", stage_four)
@@ -1604,6 +1670,7 @@ def validate_stage_five_baseline_pillar_coverage(research, baseline):
 
 def build_stage_two_baseline(stage_two, evidence, stage_one=None):
     """Validate stage-two scenario inputs and calculate the baseline valuation table."""
+    contract_version = int(stage_two.get("contract_version") or 4)
     valid_ids = {item.get("source_id") for item in evidence if item.get("source_id")}
     raw_pillars = stage_two.get("baseline_pillars")
     assumptions = stage_two.get("assumption_ledger")
@@ -1612,14 +1679,23 @@ def build_stage_two_baseline(stage_two, evidence, stage_one=None):
     if not isinstance(assumptions, list):
         raise PipelineError("阶段二 assumption_ledger 必须为数组")
     institution_anchors = []
+    target_pe_by_year = {"2026e": {}, "2027e": {}}
+    target_profit_by_year = {"2026e": {}, "2027e": {}}
     for index, raw in enumerate(stage_two.get("institution_forecasts") or []):
         if not isinstance(raw, dict):
             raise PipelineError(f"institution_forecasts[{index}] 必须为对象")
-        if raw.get("pe_2026e") is None and raw.get("target_price") is None:
+        if contract_version >= 5:
+            target_values = [raw.get("target_pe_2026e"), raw.get("target_pe_2027e"), raw.get("target_price")]
+            if all(value is None for value in target_values):
+                continue
+            semantics = {str(raw.get("pe_semantics_2026e") or "unavailable"), str(raw.get("pe_semantics_2027e") or "unavailable")}
+            if not semantics.issubset({"current_implied", "target_explicit", "target_implied", "unavailable"}):
+                raise PipelineError(f"institution_forecasts[{index}] PE语义无效")
+        elif raw.get("pe_2026e") is None and raw.get("target_price") is None:
             continue
         label = f"institution_forecasts[{index}]"
         scope = str(raw.get("profit_scope") or "")
-        usability = str(raw.get("pe_usability") or "")
+        usability = ("direct_usable" if contract_version >= 5 else str(raw.get("pe_usability") or ""))
         if not usability and raw.get("target_price") is not None:
             usability = "cross_check_only"
             raw["pe_usability"] = usability
@@ -1634,9 +1710,9 @@ def build_stage_two_baseline(stage_two, evidence, stage_one=None):
         valuation_scope = str(raw.get("valuation_scope") or "unknown")
         if not raw.get("scope_reason"):
             raise PipelineError(f"{label} 缺少 scope_reason")
-        if usability in {"direct_usable", "convertible"} and valuation_scope == "unknown":
+        if contract_version < 5 and usability in {"direct_usable", "convertible"} and valuation_scope == "unknown":
             raise PipelineError(f"{label} 可用估值锚缺少 valuation_scope")
-        if usability == "direct_usable" and scope == "unknown":
+        if contract_version < 5 and usability == "direct_usable" and scope == "unknown":
             raise PipelineError(f"{label} 利润口径未知，不能 direct_usable")
         anchor_sources = raw.get("source_ids") or []
         if not anchor_sources or not set(anchor_sources).issubset(valid_ids):
@@ -1646,9 +1722,31 @@ def build_stage_two_baseline(stage_two, evidence, stage_one=None):
             "valuation_scope": valuation_scope,
             "included_project_ids": raw.get("included_project_ids") or [],
             "pe_usability": usability, "scope_reason": str(raw["scope_reason"]),
-            "pe_2026e": raw.get("pe_2026e"), "target_price": raw.get("target_price"),
+            "pe_2026e": raw.get("target_pe_2026e") if contract_version >= 5 else raw.get("pe_2026e"),
+            "pe_2027e": raw.get("target_pe_2027e") if contract_version >= 5 else raw.get("pe_2027e"),
+            "pe_semantics_2026e": raw.get("pe_semantics_2026e"),
+            "pe_semantics_2027e": raw.get("pe_semantics_2027e"),
+            "target_price": raw.get("target_price"),
             "source_ids": anchor_sources,
         })
+        if contract_version >= 5 and scope != "includes_non_recurring":
+            institution = str(raw.get("institution") or "").strip()
+            for year in ("2026e", "2027e"):
+                semantics = str(raw.get(f"pe_semantics_{year}") or "unavailable")
+                target_pe = raw.get(f"target_pe_{year}")
+                if institution and semantics in {"target_explicit", "target_implied"} and target_pe is not None:
+                    target_pe_by_year[year][institution] = _number(target_pe, f"institution_forecasts[{index}].target_pe_{year}")
+                    profit_value = raw.get(f"recurring_np_{year}")
+                    if profit_value is None:
+                        profit_value = raw.get(f"net_profit_{year}")
+                    if profit_value is not None:
+                        target_profit_by_year[year][institution] = _forecast_billion(
+                            profit_value, f"institution_forecasts[{index}].net_profit_{year}"
+                        )
+    if contract_version >= 5:
+        for year, values in target_pe_by_year.items():
+            if len(values) < 2:
+                raise PipelineError(f"阶段二{year.upper()}合格机构目标估值组合不足2家")
     profit_control = derive_operating_profit_control(stage_two)
     pillars, pillar_ids = [], set()
     for index, raw in enumerate(raw_pillars):
@@ -1699,10 +1797,32 @@ def build_stage_two_baseline(stage_two, evidence, stage_one=None):
                     raise PipelineError(f"{label}.{year}.{scenario} 缺少有效 source_id")
                 if not raw_scenario.get("profit_reason") or not raw_scenario.get("multiple_reason") or not raw_scenario.get("probability_reason"):
                     raise PipelineError(f"{label}.{year}.{scenario} 缺少利润、倍数或概率依据")
+                if contract_version >= 5:
+                    scenario_institutions = raw_scenario.get("institutions") or []
+                    if isinstance(scenario_institutions, str):
+                        scenario_institutions = [scenario_institutions]
+                    matched_target_pes = [target_pe_by_year[year].get(str(name)) for name in scenario_institutions]
+                    matched_profits = [target_profit_by_year[year].get(str(name)) for name in scenario_institutions]
+                    if (not scenario_institutions or any(value is None for value in matched_target_pes)
+                            or any(value is None for value in matched_profits)):
+                        raise PipelineError(f"{label}.{year}.{scenario} 未对应合格机构目标PE组合")
+                    expected_multiple = _median(matched_target_pes)
+                    if abs(multiple - expected_multiple) > max(0.1, expected_multiple * 0.01):
+                        raise PipelineError(
+                            f"{label}.{year}.{scenario} PE {multiple:.2f}x 与所列机构目标PE中位数 {expected_multiple:.2f}x 不一致"
+                        )
+                    expected_profit = _median(matched_profits)
+                    if abs(profit - expected_profit) > max(0.01, expected_profit * 0.001):
+                        raise PipelineError(
+                            f"{label}.{year}.{scenario} 利润 {profit:.2f}亿 与所列机构利润中位数 {expected_profit:.2f}亿不一致"
+                        )
                 year_row[scenario] = {
                     "profit": round(profit, 4), "multiple": round(multiple, 4),
                     "probability": round(probability, 4),
                     "valuation": round(profit * multiple * probability, 2),
+                    "target_price": raw_scenario.get("target_price"),
+                    "institutions": raw_scenario.get("institutions") or [],
+                    "reason": str(raw_scenario.get("reason") or ""),
                     "profit_reason": str(raw_scenario.get("profit_reason") or ""),
                     "multiple_reason": str(raw_scenario.get("multiple_reason") or ""),
                     "probability_reason": str(raw_scenario.get("probability_reason") or ""),
@@ -1731,6 +1851,8 @@ def build_stage_two_baseline(stage_two, evidence, stage_one=None):
     operating = [pillar for pillar in pillars if pillar["pillar_type"] == "operating"]
     if not operating:
         raise PipelineError("阶段二统一估值模型缺少经营支柱")
+    if contract_version >= 5 and (len(pillars) != 1 or len(operating) != 1 or operating[0]["profit_basis"] != "company_consensus"):
+        raise PipelineError("V5阶段二只能生成一个公司整体一致性预期估值行")
     if len(operating) > 1 and any(pillar["profit_basis"] != "direct_segment_forecast" for pillar in operating):
         raise PipelineError("缺少可靠分部利润时不得强拆多个经营估值支柱；请合并为核心持续经营业务")
     reconciliation = {}
@@ -1744,7 +1866,16 @@ def build_stage_two_baseline(stage_two, evidence, stage_one=None):
                 raise PipelineError(
                     f"阶段二{year.upper()} {scenario} 分部利润合计{before:.2f}亿偏离公司级控制数{target:.2f}亿超过5%"
                 )
-            if len(operating) == 1:
+            if contract_version >= 5:
+                lower = float(profit_control[year]["pessimistic"])
+                upper = float(profit_control[year]["optimistic"])
+                if before < lower - 1e-6 or before > upper + 1e-6:
+                    raise PipelineError(
+                        f"阶段二{year.upper()} {scenario}利润{before:.2f}亿不在清洗后机构区间{lower:.2f}-{upper:.2f}亿"
+                    )
+                allocations = [before]
+                method = "institution_valuation_package_preserved"
+            elif len(operating) == 1:
                 allocations = [target]
                 method = "single_operating_pillar_overridden_by_company_consensus"
             else:
@@ -1769,6 +1900,10 @@ def build_stage_two_baseline(stage_two, evidence, stage_one=None):
             for scenario in ("pessimistic", "base", "optimistic")
         } for year in ("2026e", "2027e")
     }
+    if contract_version >= 5:
+        for year, values in totals.items():
+            if not values["pessimistic"] <= values["base"] <= values["optimistic"]:
+                raise PipelineError(f"阶段二{year.upper()}一致性估值倒挂，拒绝发布")
     pillar_profit_basis = {pillar["pillar_id"]: pillar["profit_basis"] for pillar in pillars}
     normalized_assumptions, assumption_ids = [], set()
     for index, raw in enumerate(assumptions):
@@ -1829,9 +1964,14 @@ def build_stage_two_baseline(stage_two, evidence, stage_one=None):
             "included_in_model": included, "pricing_stage": "institution_baseline" if included else "not_priced",
             "pricing_reason": pricing_reason, "quantification_status": quantification_status,
         })
+    consensus_valuation = {
+        "sample_count": len({item.get("institution") for item in institution_anchors if item.get("institution")}),
+        "years": operating[0]["years"] if contract_version >= 5 else {},
+    }
     return {
-        "version": 4, "status": "ready", "source": "stage_2_native",
+        "version": contract_version, "status": stage_two.get("status") or "ready", "source": "stage_2_native",
         "pillars": pillars, "assumption_ledger": normalized_assumptions,
+        "consensus_valuation": consensus_valuation,
         "business_item_coverage": business_item_coverage,
         "institution_anchors": institution_anchors,
         "operating_profit_control": profit_control,
@@ -1869,6 +2009,9 @@ def enrich_consensus_from_stage_two(card, run_dir):
             "pe_2026e": "pe_2026e", "pe_2027e": "pe_2027e", "target_price": "target_price",
             "profit_scope": "profit_scope", "valuation_scope": "valuation_scope",
             "pe_usability": "pe_usability", "scope_reason": "scope_reason",
+            "profit_scope_reason": "profit_scope_reason",
+            "pe_semantics_2026e": "pe_semantics_2026e", "pe_semantics_2027e": "pe_semantics_2027e",
+            "target_pe_2026e": "target_pe_2026e", "target_pe_2027e": "target_pe_2027e",
             "included_project_ids": "included_project_ids",
         }
         for target_field, source_field in field_map.items():
@@ -1884,7 +2027,8 @@ def enrich_consensus_from_stage_two(card, run_dir):
         if not source:
             continue
         for field in ("revenue_2026e", "revenue_2027e", "net_profit_2026e", "net_profit_2027e", "pe_2026e", "pe_2027e", "target_price",
-                      "profit_scope", "valuation_scope", "pe_usability", "scope_reason", "included_project_ids"):
+                      "profit_scope", "profit_scope_reason", "valuation_scope", "pe_usability", "scope_reason",
+                      "pe_semantics_2026e", "pe_semantics_2027e", "target_pe_2026e", "target_pe_2027e", "included_project_ids"):
             if item.get(field) is None and source.get(field) is not None:
                 item[field] = source[field]
 
@@ -2107,7 +2251,9 @@ def validate_card_v4(card, briefing, evidence, code, name):
     state, count = consensus_status(card)
     if state != "done":
         raise PipelineError(f"一致预期不足：需要至少3家双年预测，当前 {count} 家")
-    require_sources(card.get("comparables"), "comparables", valid_ids)
+    contract_version = int(card.get("contract_version") or 0)
+    if contract_version < 5:
+        require_sources(card.get("comparables"), "comparables", valid_ids)
     raw_shares = _number((briefing.get("valuation_snapshot") or {}).get("total_shares"), "briefing.total_shares")
     total_shares = raw_shares / 1e8
     consensus_by_institution = {
@@ -2145,7 +2291,7 @@ def validate_card_v4(card, briefing, evidence, code, name):
                 _number(item[field], f"comparables[{index}].{field}")
         if anchor_type != "industry_aggregate":
             valid_anchors += 1
-    if valid_anchors < 2:
+    if contract_version < 5 and valid_anchors < 2:
         raise PipelineError("有效估值锚不足：至少需要2个公司或机构目标估值锚")
     pillars = card.get("business_pillars", []) or []
     if not pillars:
@@ -2317,6 +2463,20 @@ def valuation_model_matrix(model, year):
 
 
 def unified_model_markdown(model):
+    if int(model.get("version") or 0) >= 5:
+        lines = ["### 公司整体一致性预期估值表", "",
+                 "| 年份 | 情景 | 对应机构 | 净利润(亿) | 目标PE | 目标价(元) | 估值(亿) |",
+                 "|---|---|---|---:|---:|---:|---:|"]
+        scenario_names = {"pessimistic": "悲观", "base": "基准", "optimistic": "乐观"}
+        pillar = (model.get("pillars") or [{}])[0]
+        for year in ("2026e", "2027e"):
+            for scenario in SCENARIOS:
+                item = pillar.get("years", {}).get(year, {}).get(scenario, {}) or {}
+                institutions = item.get("institutions") or []
+                if isinstance(institutions, str): institutions = [institutions]
+                lines.append(f"| {year.upper()} | {scenario_names[scenario]} | {'、'.join(institutions) or '—'} | "
+                             f"{item.get('profit', '—')} | {item.get('multiple', '—')}x | {item.get('target_price', '—')} | {item.get('valuation', '—')} |")
+        return "\n".join(lines)
     lines = [
         "### 双年、分支柱估值表", "",
         (f"> 经营利润总量控制：2026E基准 {model.get('operating_profit_control', {}).get('2026e', {}).get('base', '—')} 亿；"
@@ -2385,6 +2545,43 @@ def render_report(run_dir, briefing, evidence, card, result):
     meta = result["_meta"]
     total = result["matrix_2026e"]["total"]
     thesis = card["investment_thesis"]
+    if int(card.get("contract_version") or 0) >= 5:
+        lines = [f"# {meta['name']}（{meta['code']}）估值报告", "",
+                 f"> 模型三可审计运行包：`{run_dir.relative_to(ROOT)}`", "",
+                 "## 一、结论摘要", "", f"- 市场主题：{thesis['market_trade']}",
+                 f"- 公司阶段：{thesis['company_stage']}", f"- 核心判断：{thesis['core_judgement']}", "",
+                 result["report_fragments"]["overview_table"], "", "## 二、一致性预期估值表", "",
+                 result["report_fragments"]["matrix_summary"], "", "## 三、业务支柱拆分", "",
+                 "| 业务支柱 | 业务实质 | 拆分逻辑 |", "|---|---|---|"]
+        for pillar in card.get("business_pillars", []):
+            lines.append(f"| {pillar.get('name', '—')} | {pillar.get('business_essence', '—')} | {pillar.get('split_rationale', '—')} |")
+        lines += ["", "## 四、机构利润预测与关键假设", ""]
+        for item in card.get("profit_analysis", []):
+            assumptions = item.get("key_assumptions") or []
+            if isinstance(assumptions, str): assumptions = [assumptions]
+            lines += [f"### {item.get('institution', '—')}", "",
+                      f"- 2026E / 2027E净利润：{item.get('np_2026e', '—')} / {item.get('np_2027e', '—')} 亿元",
+                      f"- 利润口径：{item.get('profit_scope', '—')}", f"- 研报摘要：{item.get('summary', '—')}",
+                      f"- 关键假设：{'；'.join(str(value) for value in assumptions) or '未结构化披露'}", ""]
+        lines += ["## 五、机构一致预期明细", "", "| 机构 | 报告日期 | 2026E净利 | 2027E净利 | 利润口径 | 目标价 |",
+                  "|---|---|---:|---:|---|---:|"]
+        for item in card.get("consensus", []):
+            lines.append(f"| {item.get('institution', '—')} | {item.get('report_date', '—')} | {item.get('np_2026e', '—')} | {item.get('np_2027e', '—')} | {item.get('profit_scope', '—')} | {item.get('target_price', '—')} |")
+        lines += ["", "## 六、关键分歧", ""]
+        for item in card.get("market_divergences", []):
+            lines += [f"### {item.get('name', '—')}", "", f"- 较高预测：{item.get('bull_case', '—')}",
+                      f"- 较低预测：{item.get('bear_case', '—')}", f"- 根因：{item.get('root_cause', '原因未披露')}",
+                      f"- 共识解读：{item.get('our_judgement', '—')}", ""]
+        lines += ["## 七、后续验证节点", "", "| 时间 | 事件 | 验证成功意味着 | 验证失败意味着 |", "|---|---|---|---|"]
+        for item in card.get("verification_nodes", []):
+            lines.append(f"| {item.get('timeframe', '—')} | {item.get('event', '—')} | {item.get('success_meaning', '—')} | {item.get('failure_meaning', '—')} |")
+        lines += ["", "## 八、主要风险", ""]
+        for item in card.get("risks", []):
+            lines.append(f"- {item.get('statement', '')}（来源：{', '.join(item.get('source_ids', []))}）")
+        lines += ["", "## 证据目录", "", "| ID | 类型 | 缓存文件 |", "|---|---|---|"]
+        for item in evidence:
+            lines.append(f"| {item['source_id']} | {item['source_type']} | `{item['cache_path']}` |")
+        return "\n".join(lines + [""])
     lines = [f"# {meta['name']}（{meta['code']}）估值报告", "",
              f"> 模型三可审计运行包：`{run_dir.relative_to(ROOT)}`", "",
              "## 一、结论与市场交易主题", "",

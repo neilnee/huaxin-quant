@@ -107,3 +107,30 @@
   .decision-cards article { min-height: 0; }
   .assumption-list { grid-template-columns: 1fr; }
 }
+
+.business-map, .profit-analysis-list { display: grid; gap: 14px; }
+.business-map-card, .profit-analysis-card { padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+.business-map-card { display: grid; grid-template-columns: 44px 1fr; gap: 14px; }
+.business-map-index { color: var(--gold); font: 700 24px Georgia, serif; }
+.business-map-card h3, .profit-analysis-card h3 { margin: 0; }
+.business-map-card p, .profit-summary { color: #40514a; line-height: 1.7; }
+.business-map-card dl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 14px 0; }
+.business-map-card dl div { padding: 12px; border-radius: 8px; background: #f1efe7; }
+.business-map-card dt { color: var(--muted); font-size: 10px; }
+.business-map-card dd { margin: 5px 0 0; font-size: 12px; line-height: 1.55; }
+.profit-analysis-head { display: flex; justify-content: space-between; gap: 18px; align-items: start; }
+.profit-analysis-head span { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; }
+.profit-analysis-head > div:last-child { display: flex; gap: 8px; }
+.profit-analysis-head > div:last-child b { padding: 7px 10px; border-radius: 7px; background: #edf5f1; font-size: 12px; }
+.profit-analysis-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.profit-analysis-grid > div { padding: 14px; border-radius: 9px; background: #f1efe7; }
+.profit-analysis-grid span { color: var(--muted); font-size: 10px; font-weight: 700; }
+.profit-analysis-grid ul { margin: 8px 0 0; padding-left: 18px; }
+.profit-analysis-grid li { padding: 3px 0; font-size: 12px; line-height: 1.5; }
+
+@media (max-width: 620px) {
+  .business-map-card { grid-template-columns: 1fr; }
+  .business-map-card dl, .profit-analysis-grid { grid-template-columns: 1fr; }
+  .profit-analysis-head { display: block; }
+  .profit-analysis-head > div:last-child { margin-top: 10px; flex-wrap: wrap; }
+}

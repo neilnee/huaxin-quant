@@ -1194,7 +1194,7 @@ def run_staged_research(run_dir, briefing, evidence, code, name, evidence_dir, f
             institutions = llm_stage("阶段二A：机构预测与研报逻辑清洗", (
                 "输出contract_version=5、institution_forecasts、profit_analysis、excluded_forecasts、consensus_divergence和business_line_divergence；不要输出可比公司。"
                 "逐篇提取全部候选机构的2026E和2027E营收、净利、PE、目标价、利润驱动和关键假设；3家只是有效共识底线，不是上限。"
-                "institution_forecasts每家含institution,source_ids,revenue_2026e,revenue_2027e,net_profit_2026e,net_profit_2027e,"
+                "institution_forecasts每家含institution,report_date:YYYY-MM-DD,source_ids,revenue_2026e,revenue_2027e,net_profit_2026e,net_profit_2027e,"
                 "reported_np,recurring_np_2026e,recurring_np_2027e,non_recurring_items,profit_scope(recurring|includes_non_recurring|unknown),profit_scope_reason,"
                 "pe_2026e,pe_2027e,pe_semantics_2026e,pe_semantics_2027e,target_pe_2026e,target_pe_2027e,target_price,valuation_scope,included_project_ids,scope_reason。"
                 "pe_semantics只能为current_implied|target_explicit|target_implied|unavailable。研报写‘当前股价对应PE’必须标current_implied，绝不能复制到target_pe。"
@@ -1244,6 +1244,14 @@ def run_staged_research(run_dir, briefing, evidence, code, name, evidence_dir, f
             institution_dates.append(datetime.strptime(str(item.get("report_date", ""))[:10], "%Y-%m-%d").date())
         except ValueError:
             pass
+    if not institution_dates:
+        institutions_path = run_dir / "stage_2_institutions.json"
+        if institutions_path.exists():
+            for item in read_json(institutions_path).get("institution_forecasts", []) or []:
+                try:
+                    institution_dates.append(datetime.strptime(str(item.get("report_date", ""))[:10], "%Y-%m-%d").date())
+                except ValueError:
+                    pass
     if institution_dates:
         cutoff = sorted(institution_dates)[len(institution_dates) // 2]
         kept, pruned = [], []

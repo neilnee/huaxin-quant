@@ -1238,7 +1238,42 @@ def run_staged_research(run_dir, briefing, evidence, code, name, evidence_dir, f
         checkpoint(run_dir, "stage_2_baseline", file="stage_2_baseline.json")
     dynamic_cache_paths = {str(path.relative_to(ROOT)) for path in dynamic_paths}
     stage3_candidates = [item for item in evidence if item.get("cache_path") in dynamic_cache_paths and not item.get("duplicate_of")]
-    stage3_evidence = stage3_candidates
+    institution_dates = []
+    for item in stage_two.get("institution_forecasts", []) or []:
+        try:
+            institution_dates.append(datetime.strptime(str(item.get("report_date", ""))[:10], "%Y-%m-%d").date())
+        except ValueError:
+            pass
+    if institution_dates:
+        cutoff = max(institution_dates)
+        kept, pruned = [], []
+        for item in stage3_candidates:
+            pub = item.get("published_at")
+            if not pub:
+                kept.append(item)
+                continue
+            try:
+                item_date = datetime.strptime(str(pub)[:10], "%Y-%m-%d").date()
+            except ValueError:
+                kept.append(item)
+                continue
+            if item_date > cutoff:
+                kept.append(item)
+            else:
+                pruned.append({"source_id": item["source_id"], "title": item.get("title", ""),
+                               "published_at": pub, "pruned_before_cutoff": str(cutoff)})
+        stage3_evidence = kept
+        if pruned:
+            manifest = read_json(run_dir / "manifest.json") if (run_dir / "manifest.json").exists() else {}
+            manifest.setdefault("stages", {})["stage_3_evidence"] = {
+                "candidates": len(stage3_candidates), "kept": len(kept),
+                "pruned": len(pruned), "cutoff_date": str(cutoff),
+                "cutoff_source": "最新有效机构研报日期",
+            }
+            write_json(run_dir / "manifest.json", manifest)
+            write_json(run_dir / "stage_3_evidence_pruned.json", pruned)
+    else:
+        stage3_evidence = stage3_candidates
     if resume and not rerun_stage3 and (run_dir / "stage_3_expectations.json").exists():
         stage_three = read_json(run_dir / "stage_3_expectations.json")
         stage3_readings = read_json(run_dir / "stage_3_readings.json")

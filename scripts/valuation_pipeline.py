@@ -1245,7 +1245,7 @@ def run_staged_research(run_dir, briefing, evidence, code, name, evidence_dir, f
         except ValueError:
             pass
     if institution_dates:
-        cutoff = max(institution_dates)
+        cutoff = sorted(institution_dates)[len(institution_dates) // 2]
         kept, pruned = [], []
         for item in stage3_candidates:
             pub = item.get("published_at")

@@ -1,7 +1,7 @@
 # 模型二：量价精筛模型（自执行指令）
 
 - **版本管理**: 由 Git 分支与提交历史管理，文件名不再携带版本号
-- **最近更新**: 2026-07-18（model2_quant_v12）
+- **最近更新**: 2026-07-22（model2_quant_v13）
 - **核心目标**: 在模型一基本面候选池中，寻找 VCP 蓄力结构和可交易触发，输出可复现、可回测、可供模型三/四复用的结构化量价结果。
 - **核心哲学**: 基本面先过滤烂公司，模型二只判断资金行为和价格位置。脚本负责确定性计算，LLM 只做可选解释，不参与结构阶段或交易触发判定。
 - **输入**: `pool/pool_<YYMMDD>.csv`，或命令行指定 `--code/--codes`
@@ -609,10 +609,10 @@ abs(Cn.pullback) <= abs(Cn-1.pullback) * 1.05
 | `POST_BREAKOUT_HOT` | 突破后快速上冲 | 不追高 |
 | `POST_BREAKOUT_RETEST` | 突破后 15 日内受控回踩 Pivot | 仅 RETEST |
 | `POST_BREAKOUT_CONSOLIDATING` | 突破后 16-20 日仍未深度失守 | 观察新 base，不沿用旧买点 |
-| `POST_BREAKOUT_FAILED` | 收盘跌破 Pivot × 0.97，或突破后回撤过深 | WAIT_REBUILD |
+| `POST_BREAKOUT_FAILED` | 突破后任一收盘跌破 Pivot × 0.97，或任一时点突破后回撤过深 | WAIT_REBUILD |
 | `POST_BREAKOUT_EXPIRED` | 突破后超过 20 日，旧买点窗口结束 | WAIT_REBUILD |
 
-硬边界：一旦进入任何 `POST_BREAKOUT_*` 状态，原 `contraction_group` 永久禁止 `PULLBACK_BUY` 与重复 `BREAKOUT_BUY`。当状态失败或过期后，旧结构仅保留审计；之后必须从突破后开始形成新的 contraction cluster，才能重新产生 PULLBACK / BREAKOUT。
+硬边界：一旦进入任何 `POST_BREAKOUT_*` 状态，原 `contraction_group` 永久禁止 `PULLBACK_BUY` 与重复 `BREAKOUT_BUY`。`POST_BREAKOUT_FAILED` 由突破日至当前日的完整路径判定，不是当日状态：命中任一失效事件后不可因后续反弹恢复为 `RETEST` 或重新成为 `VCP_FORMING`。当状态失败或过期后，旧结构仅保留审计；之后必须从失效日后开始形成新的 contraction group，才能重新产生 PULLBACK / BREAKOUT。
 
 相邻收缩轮次允许轻微扩张，但明显扩张会打断旧 VCP 组，后一轮应视为新结构的起点：
 
@@ -647,7 +647,7 @@ post_structure_drawdown >= -18%
 
 ### 1.3.1 突破前旧组破位（保守失效守卫）
 
-为避免历史上收缩较漂亮、但随后已被破坏的旧组继续被选为当前 VCP，脚本仅对**尚未发生有效突破**的候选组增加以下保守否决条件：
+为避免历史上收缩较漂亮、但随后已被破坏的旧组继续被选为当前 VCP，脚本对所有候选组增加以下保守否决条件；突破后组仍同时受突破后硬失效规则约束：
 
 ```text
 最后一轮收缩结束后的 30 个交易日内：
@@ -666,8 +666,8 @@ post_structure_drawdown >= -18%
 | structure_too_old | 最后一轮收缩距当前太久 |
 | far_below_structure_pivot | 当前价距离结构 pivot 过远 |
 | post_structure_extended | 结构后涨幅过大，旧 VCP 已完成 |
-| post_structure_drawdown | 结构后再度深回撤，需要重新形成 |
-| post_group_support_break | 未有效突破前，旧组随后出现连续且深度收盘跌破最后收缩低点 |
+| post_structure_drawdown | 突破后曾出现硬失效或结构后再度深回撤，需要重新形成 |
+| post_group_support_break | 旧组随后出现连续且深度收盘跌破最后收缩低点 |
 
 ### 1.4 量能确认
 

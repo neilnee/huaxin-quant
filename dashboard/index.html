@@ -15,6 +15,10 @@
       <section class="panel vcp-header"><div><p class="section-label">Bloom 信号层 · 动态跟踪</p><h2>VCP 结构</h2><p id="vcp-meta" class="data-status hidden"></p></div><div id="vcp-summary" class="vcp-summary"></div></section>
       <section class="panel"><div class="section-heading"><div><p class="section-label">活跃结构</p><h2>观察列表</h2></div><p id="vcp-filter-note">—</p></div><div id="vcp-filters" class="tabs" aria-label="Bloom 状态筛选"></div><div class="vcp-layout"><div class="table-scroll"><table id="vcp-table"></table></div><aside id="vcp-detail" class="vcp-detail"></aside></div></section>
     </div>
+    <div id="valuation-content" class="hidden">
+      <section class="panel vcp-header"><div><p class="section-label">模型三 · 主动估值</p><h2>投研分析索引</h2><p id="valuation-meta" class="data-status"></p></div><div id="valuation-summary" class="vcp-summary"></div></section>
+      <section class="panel"><div class="section-heading"><div><p class="section-label">已验证运行</p><h2>已完成标的</h2></div><p id="valuation-note">点击标的查看完整研究报告</p></div><div class="table-scroll"><table id="valuation-table"></table></div></section>
+    </div>
     <div id="market-content">
       <section class="panel state-panel"><div class="state-summary"><p class="section-label">当前市场状态</p><div class="state-title-row"><h2 id="market-state">—</h2><button id="state-help-toggle" class="state-help-toggle" type="button" aria-expanded="false" aria-controls="state-rules">详情</button></div><p id="state-duration" class="state-duration">—</p><div id="risk-tags" class="tags"></div></div><div class="state-reading"><p class="section-label">市场解读</p><p id="state-analysis" class="state-analysis">—</p><p id="state-transition" class="state-transition hidden">—</p></div></section>
       <section id="state-rules" class="panel state-rules hidden"></section>
@@ -23,6 +27,6 @@
       <section class="panel"><div class="section-heading"><div><p class="section-label">阶段轨迹</p><h2>板块相对强度排名</h2></div><p>横轴为名次，纵轴为日期；最新日期在上</p></div><nav id="rank-window-tabs" class="tabs" aria-label="相对强度窗口"></nav><div class="table-scroll matrix-wrap"><table id="history-matrix"></table></div></section>
     </div>
   </main>
-  <script src="data/index.js"></script><script src="app.js"></script>
+  <script src="data/index.js"></script><script src="data/valuation/catalog.js"></script><script src="data/valuation_progress.js"></script><script src="app.js"></script>
 </body>
 </html>

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Huaxin Quant · 深度估值报告</title>
+  <link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="valuation-report.css"><link rel="stylesheet" href="valuation-report-v2.css">
+</head>
+<body>
+  <main class="report-shell">
+    <header class="report-nav"><a href="index.html">← 投研分析列表</a><span>HUAXIN QUANT · VALUATION</span><p id="report-meta">—</p></header>
+    <p id="report-error" class="notice hidden"></p>
+    <div id="report-content" class="hidden">
+      <section class="report-hero">
+        <div class="hero-copy"><p class="overline">MODEL 3 · DEEP VALUATION</p><div class="title-line"><h1 id="company-name">—</h1><span id="company-code"></span></div><p id="market-trade" class="market-trade">—</p><div class="hero-meta"><span id="company-stage">—</span><span id="consensus-status">—</span><span id="quote-status">—</span></div></div>
+        <div id="research-stats" class="research-stats"></div>
+      </section>
+
+      <nav class="report-toc" aria-label="报告章节"><a href="#overview" class="active">估值结论</a><a href="#matrix">一致性预期估值</a><a href="#pillars">业务支柱</a><a href="#profit-analysis">机构利润逻辑</a><a href="#consensus">机构预测明细</a><a href="#expectations">关键分歧</a><a href="#verification">验证与风险</a></nav>
+
+      <section id="overview" class="report-section"><div class="section-head"><div><p class="overline">DECISION VIEW</p><h2>估值结论</h2></div><p id="reverse-check"></p></div><div class="year-switch" role="tablist" aria-label="估值年度"><button type="button" role="tab" data-year="2026e" class="active" aria-selected="true">2026E</button><button type="button" role="tab" data-year="2027e" aria-selected="false">2027E</button></div><div id="valuation-cards" class="valuation-cards"></div><div id="valuation-track" class="valuation-track"></div><blockquote id="core-judgement"></blockquote><div id="decision-cards" class="decision-cards"></div></section>
+
+      <section id="matrix" class="report-section"><div class="section-head"><div><p class="overline">INSTITUTION CONSENSUS VALUATION</p><h2>一致性预期估值表</h2></div><p id="baseline-status">—</p></div><div class="year-switch model-year-switch" role="tablist" aria-label="一致性估值年度"><button type="button" role="tab" data-year="2026e" class="active" aria-selected="true">2026E</button><button type="button" role="tab" data-year="2027e" aria-selected="false">2027E</button></div><div id="year-comparison" class="year-comparison"></div><p id="matrix-unit" class="section-note">2026E · 公司整体机构共识口径</p><div class="table-wrap"><table id="matrix-table" class="matrix-table baseline-model-table"></table></div></section>
+
+      <section id="pillars" class="report-section"><div class="section-head"><div><p class="overline">BUSINESS MAP</p><h2>业务支柱拆分</h2></div><p>解释利润来源，不强制分配公司整体估值</p></div><div id="business-map" class="business-map"></div></section>
+
+      <section id="profit-analysis" class="report-section"><div class="section-head"><div><p class="overline">REPORT READING</p><h2>机构利润预测与关键假设</h2></div><p>逐家回答“为什么预测出这个利润”</p></div><div id="profit-analysis-list" class="profit-analysis-list"></div></section>
+
+      <section id="consensus" class="report-section"><div class="section-head"><div><p class="overline">CONSENSUS DETAIL</p><h2>机构一致预期明细</h2></div><p>结构化原始预测底表</p></div><div id="consensus-summary" class="metric-strip"></div><div class="table-wrap"><table id="consensus-table"></table></div></section>
+
+      <section id="expectations" class="report-section"><div class="section-head"><div><p class="overline">KEY DIVERGENCES</p><h2>关键分歧</h2></div><p>解释同口径机构预测区间，不重复调整估值</p></div><div id="divergence-cards" class="divergence-cards"></div></section>
+
+      <section id="verification" class="report-section"><div class="section-head"><div><p class="overline">VERIFICATION MAP</p><h2>后续验证节点</h2></div><p>成功、失败都会改变定价</p></div><div id="verification-list" class="verification-list"></div></section>
+
+      <section class="report-section"><div class="section-head"><div><p class="overline risk-label">RISKS</p><h2>主要风险</h2></div><p>与盈利预测和验证节点对应</p></div><ul id="risks-list" class="plain-list"></ul></section>
+
+      <section><details id="evidence-details"><summary><span><b>证据目录</b><small id="evidence-summary">按需加载原始证据</small></span><i>展开审计信息</i></summary><p id="evidence-state" class="section-note">展开后加载证据包。</p><div class="table-wrap"><table id="evidence-table"></table></div></details></section>
+      <footer><span>本页由已验证运行包自动生成，不构成投资建议。</span><span id="run-id">—</span></footer>
+    </div>
+  </main>
+  <script src="data/valuation/catalog.js"></script><script src="valuation-report-v2.js"></script>
+</body>
+</html>

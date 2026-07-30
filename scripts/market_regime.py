@@ -94,6 +94,32 @@ def percentile_score(value: float, values: pd.Series) -> float:
     return round(float((valid <= value).mean() * 100), 2)
 
 
+def classify_sector_state(row: dict, prior: pd.DataFrame) -> str:
+    """Classify one sector without using a directional label as fallback."""
+    if len(prior) < 5:
+        return "历史积累中"
+    top20_days = int((prior.rank_20 <= 20).sum())
+    prior_states = set(prior.sector_state.dropna()) if "sector_state" in prior else set()
+    latest_state = str(prior.iloc[0].sector_state) if "sector_state" in prior else ""
+    in_top20 = row["rank_20"] <= 20
+    short_weak = row["relative_strength_5"] < 0 or row["up_breadth"] < 45
+    if in_top20 and top20_days >= 4 and row["relative_strength_5"] >= 0 and row["up_breadth"] >= 50:
+        return "持续主线"
+    if (latest_state == "高位分歧" and short_weak) or (
+        not in_top20 and prior_states & {"持续主线", "高位分歧"}
+    ):
+        return "弱势退潮"
+    if in_top20 and top20_days >= 4 and short_weak:
+        return "高位分歧"
+    if in_top20 and row["rank_5"] <= 10 and top20_days < 3:
+        return "新晋强化"
+    if row["rank_5"] <= 10 and not in_top20:
+        return "轮动脉冲"
+    if in_top20 and row["relative_strength_5"] >= 0 and row["up_breadth"] >= 50:
+        return "强势初现"
+    return "观察中"
+
+
 def indicators(frame: pd.DataFrame) -> pd.DataFrame:
     frame = frame.sort_values(["code", "trade_date"]).copy()
     group = frame.groupby("code", group_keys=False)
@@ -323,24 +349,11 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
         if old:
             overlaps.append(len(top_sets[kind] & old) / 10)
     rotation = round((1 - float(np.mean(overlaps))) * 100, 2) if overlaps else 50.0
-    history = pd.read_sql_query("""SELECT trade_date,block_kind,block_name,rank_20,relative_strength_5,advance_ratio AS up_breadth
+    history = pd.read_sql_query("""SELECT trade_date,block_kind,block_name,rank_20,relative_strength_5,advance_ratio AS up_breadth,sector_state
         FROM sector_daily_metrics WHERE trade_date<? ORDER BY trade_date DESC LIMIT 30000""", state_conn, params=(as_of,))
     for row in sector_rows:
         prior = history[(history.block_kind == row["block_type"]) & (history.block_name == row["block_name"])].head(5)
-        if len(prior) < 5:
-            row["sector_state"] = "历史积累中"
-            continue
-        top20_days = int((prior.rank_20 <= 20).sum())
-        if row["rank_20"] <= 20 and top20_days >= 4 and row["relative_strength_5"] >= 0 and row["up_breadth"] >= 50:
-            row["sector_state"] = "持续主线"
-        elif row["rank_20"] <= 20 and top20_days >= 4 and (row["relative_strength_5"] < 0 or row["up_breadth"] < 45):
-            row["sector_state"] = "高位分歧"
-        elif row["rank_20"] <= 20 and row["rank_5"] <= 10 and top20_days < 3:
-            row["sector_state"] = "新晋强化"
-        elif row["rank_5"] <= 10 and row["rank_20"] > 20:
-            row["sector_state"] = "轮动脉冲"
-        else:
-            row["sector_state"] = "弱势退潮"
+        row["sector_state"] = classify_sector_state(row, prior)
     trend_score, volatility_score = float(np.median(trend_scores)), float(np.median(vol_scores))
     above20 = sum(item["above_ma20"] for item in benchmark_metrics.values())
     above60 = sum(item["above_ma60"] for item in benchmark_metrics.values())

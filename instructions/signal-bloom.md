@@ -140,10 +140,13 @@ Bloom 不重新计算模型二，但会使用模型二已输出或可直接读�
 | `structure_stage=VCP_FORMING` | `FORMING` |
 | `structure_stage=VCP_EARLY` | `EARLY` |
 | `structure_stage=POST_BREAKOUT` | `COOLDOWN` |
+| `post_breakout_state=POST_BREAKOUT_RETEST/HOT/CONSOLIDATING/FAILED/EXPIRED` 且未触发买点 | `COOLDOWN` |
 | `structure_stage=TREND_REBUILD` | `INVALID` |
 | `structure_valid=false` | `INVALID` |
 | `structure_stage=DATA_ISSUE` | `DATA_ISSUE` |
 | 已在 Bloom 状态表中的 `model2_include=false` / `action_hint=REJECT` | `COOLDOWN` 或 `EXIT` |
+
+状态判定优先级为：数据异常 → 已触发买点 → 明确结构失效 → 突破后生命周期 → 普通 VCP 阶段 → 未识别阶段兜底。模型二为保留旧 VCP 突破后审计，可能输出 `structure_stage=NONE`、`model2_include=true` 和明确的 `post_breakout_state`；Bloom 必须优先消费 `post_breakout_state`，不得把这类标的按未识别阶段兜底为 `FORMING`。
 
 风险阻断优先级高于普通观察状态。若结构状态为 `FORMING` / `MATURE` / `TRIGGERED`，但触发高风险规则，则输出 `RISK_BLOCKED`。
 
@@ -355,6 +358,7 @@ LLM 观察要点：
 - 全新的 `model2_include=false` 标的不能写入 Bloom 状态表；已在状态表中的标的可因连续冷却或失效进入 `EXIT`。
 - `EXIT` 标的必须从滚动状态表移除，后续只能由模型二重新发现并以新生命周期进入。
 - 高结构分但高风险的股票应输出 `RISK_BLOCKED`，而不是 `TRIGGERED` 的正向交易结论。
+- `structure_stage=NONE` 且存在明确 `POST_BREAKOUT_*` 生命周期的标的必须进入 `COOLDOWN`，不得出现在活跃 VCP 结构列表。
 - `valuation_candidate` 只代表送估值候选，不代表估值结论或交易建议。
 - LLM 观察要点不得静默失败；每日 summary 和 Markdown 必须能看出 LLM 是成功、部分成功、跳过还是失败。
 - 配置了 LLM 且调用失败时，Bloom 命令不得以成功状态退出。

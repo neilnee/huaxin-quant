@@ -1,7 +1,7 @@
 # 模型三：深度估值模型（自执行指令）
 
 - **版本管理**: 由 Git 分支与提交历史管理，文件名不再携带版本号
-- **最近更新**: 2026-07-25
+- **最近更新**: 2026-07-30
 - **核心哲学**: 脚本编排、校验、存档和渲染；LLM 只完成小范围、结构化的研究判断。
 - **触发方式**: 用户主动按单只标的触发，不消费 Bloom，也不自动给出交易动作。
 - **输出**: `reports/valuation/<code>_<name>.md` + `reports/indexes/valuation_index.csv` + `reports/indexes/valuation_ranking.csv` + 当次可审计运行包 + Dashboard 数据包。
@@ -30,16 +30,36 @@ V4 覆盖本文件后续 V3 中关于分支柱估值、可比公司 PE、Layer 2
 
 ### 页面与分析结构
 
-1. 结论摘要：行情日期、双年三情景估值和主要风险。
-2. 一致性预期估值表：公司整体口径，按年度展示悲观、基准、乐观的净利润、目标 PE 和估值。
+1. 公司核心摘要：在估值结论之前，以结构化总结栏展示公司画像、盈利共识、增长逻辑、关键不确定性和跟踪重点。
+2. 估值结论与一致性预期：共用一个年度切换，先展示行情日期、三情景价格和区间轨道，再展示公司整体口径的净利润、目标 PE、估值和取值说明；不重复展示目标价。
 3. 业务支柱拆分：列出主营、增长业务、资产平台和潜在事项，说明业务实质、进展和利润形成逻辑；不分配利润或估值。
-4. 机构利润预测与关键假设：逐家说明双年利润、利润口径、增长来源、成立条件、风险和研报摘要，回答“这家机构为什么得到这个利润”。
-5. 机构一致预期明细表：保留逐机构双年营收、净利润、报告日期和口径，作为横向底表。
+4. 机构利润预测与关键假设：逐家展示双年利润、从经营驱动到收入及净利润的证据链，以及预测成立所依赖的假设、后续跟踪指标和失效信号，回答“这家机构为什么得到这个利润、以后用什么验证”。
+5. 机构一致预期明细表：展示逐机构双年营收、净利润、报告日期和目标价，作为横向底表；`profit_scope` 等内部清洗枚举不得直接展示。
 6. 关键分歧：只解释同口径机构预测区间，不自动调整利润、PE或另加估值。
 7. 后续验证节点：统一承接原催化剂和验证事项，说明时间、事件、成功与失败含义。
-8. 主要风险与证据目录。
+8. 主要风险。
 
-页面删除“PE如何形成”“估值锚与可比”“独立事项估值状态”“核心假设汇总”“近期催化剂”“已验证事实”。事实和假设仍可保存在运行包中供审计，但不形成重复页面模块。
+页面删除“PE如何形成”“估值锚与可比”“独立事项估值状态”“核心假设汇总”“近期催化剂”“已验证事实”和“证据目录”。`source_ids`、证据分级和缓存定位继续保存在运行包中用于契约校验与内部审计，但公司报告页不得展示证据 ID、索引按钮、证据标签或原始证据目录。
+
+估值结论只保留当前价、双年三情景价格和区间轨道；原单句 `core_judgement` 由前置公司核心摘要替代，不再单独展示，也不再展示“主要估值支柱/首要风险/最近验证节点”摘要卡。一致性预期估值区只保留年度切换和三情景明细表，不展示重复的双年度估值方块；明细表不展示内部情景对应机构，机构来源仅保留在运行包中。
+
+报告表格的文本列统一左对齐，数值列的表头和数据统一右对齐；机构一致预期明细中的数值 `0` 视为未披露并显示 `—`，不得误导为机构明确预测零值。
+
+阶段五A1必须输出 `investment_thesis.company_summary`，包含 `company_profile`、`earnings_consensus`、`growth_logic`、`key_uncertainties`、`tracking_focus` 五项；每项为 `{text,source_ids}`。公司画像必须说明主营业务、已披露经营规模或公司阶段；盈利共识必须包含历史经常性利润或双年机构预测的具体数字；增长逻辑必须指向有证据的业务、产能或经营变量；不确定性和跟踪重点必须与机构利润假设相连。禁止使用“盈利稳健、前景广阔、长期成长”等无量化或无业务指向的套话代替公司总结，缺少数据时必须明确写出缺口。
+
+阶段五A1还必须输出 `business_pillar_analysis[]`，按 `source_pillar_id` 一对一覆盖阶段一完整业务地图，专供业务价值画像展示，不参与利润分配或估值计算。每项包含：
+
+- `role_in_company={text,evidence_status,source_ids}`：说明该业务是当前利润基础、增长引擎、产能储备、资产平台、期权还是历史事项。
+- `earnings_model={text,evidence_status,source_ids}`：说明收入和利润如何形成，披露不足时写清可确认的传导关系与缺口。
+- `core_metrics[]`：每项为 `{name,value,unit,period,scope,evidence_status,source_ids}`；只记录公司或机构明确披露的数据，`scope` 必须说明是分部、项目还是公司整体参考。
+- `growth_potential={text,horizon,drivers[],constraints[],evidence_status,source_ids}`：说明增长来源、兑现周期和约束；缺少上架率、价格、利润率等输入时不得测算增长上限。
+- `valuation_anchor={level,text,evidence_status,source_ids}`：`level` 只能为 `core_anchor|important_component|growth_option|observation|excluded|unclear`。没有直接分部利润和估值时不得给出估值贡献百分比。
+- `tracking_metrics[]`：每项为 `{name,direction,why,source_ids}`，必须能够验证增长和估值锚定是否成立。
+- `data_gaps[]`：明确列出分部收入、利润、利润率、业务量、价格等缺失项。
+
+页面业务支柱卡只展示上述业务价值画像，删除“拆分逻辑、利润关系、2025A参考”等分类过程字段。阶段五原 `business_pillars[]` 继续只服务于阶段二估值支柱继承和计算映射，不得替代阶段一业务地图。
+
+业务支柱页面必须保留阶段一完整业务地图，并由 Dashboard 适配器按 `business_pillars[].pillar_id = business_item_coverage[].source_pillar_id` 合并阶段二的机构覆盖结论、原因和证据。不得用阶段五合并后的公司整体估值支柱替代业务地图；只有历史运行包确实缺少 `business_item_coverage` 时才能显示“待结合逐机构研报判断”。
 
 ### 一致性预期估值
 
@@ -56,7 +76,11 @@ V4 覆盖本文件后续 V3 中关于分支柱估值、可比公司 PE、Layer 2
 
 阶段一继续按业务实质拆分完整业务地图，包括已运营业务、在建/新增产能、海外项目、资产平台、REITs/并购和历史事项。业务地图只回答“利润可能从哪里来”，不决定公司级估值如何分配。
 
-阶段二逐机构输出 `profit_analysis`：`institution`、`report_date`、`np_2026e`、`np_2027e`、`profit_scope`、`summary`、`profit_drivers[]`、`key_assumptions[]`、`included_business_items[]`、`excluded_or_unclear_items[]`、`risks[]` 和 `source_ids`。摘要必须忠于研报，不得补写研报未披露的推演。
+阶段二逐机构输出 `profit_analysis`：`institution`、`report_date`、`np_2026e`、`np_2027e`、`profit_scope`、`summary`、`profit_logic`、`key_assumptions[]`、`included_business_items[]`、`excluded_or_unclear_items[]`、`risks[]` 和 `source_ids`。
+
+`profit_logic={status,summary,steps[],missing_links[]}`。`status` 只能为 `complete|partial|endpoint_only`；`steps[]` 按经营驱动、业务量/价格、收入、利润率/成本费用、归母净利润的实际披露顺序记录，每项包含 `stage`、`statement`、`period`、`value`、`unit`、`evidence_level` 和 `source_ids`。`evidence_level` 只能为 `explicit|qualitative`：研报明确披露的数值才可标 `explicit`，只说明方向时标 `qualitative` 且 `value/unit` 留空。2026E、2027E 归母净利润终点必须与同机构 `institution_forecasts` 完全一致；中间环节未披露时写入 `missing_links`，不得倒推或补造经营参数。
+
+`key_assumptions[]` 每项包含 `assumption`、`tracking_metric`、`expected_direction`、`explicit_target`、`timeframe`、`failure_signal`、`tracking_origin` 和 `source_ids`。`tracking_origin` 只能为 `report_explicit|derived_monitoring`；研报没有明确数值目标时 `explicit_target` 必须为空。可以把研报假设映射为可观察的后续指标，但必须标记 `derived_monitoring`，不得把跟踪建议伪装成机构原话，也不得自行添加数值阈值。研报没有披露利润形成逻辑或成立假设时允许输出空项或 `endpoint_only`，禁止为了结构完整而推演。
 
 业务支柱与机构假设只建立“多数机构已纳入 / 部分纳入 / 普遍未纳入”等说明性关系，不得把公司整体净利润机械拆给各支柱。
 
@@ -70,11 +94,26 @@ V4 覆盖本文件后续 V3 中关于分支柱估值、可比公司 PE、Layer 2
 - 阶段四只形成后续验证节点和主要风险，不再单列催化剂页面模块。
 - 阶段五不得重新选择 PE，也不得用可比公司、当前隐含 PE 或后续公开信息覆盖阶段二一致性估值。
 
+### 阶段三证据时限与增量门禁
+
+阶段三只判断机构一致预期形成后的新增变化，不得把阶段二已经知道的事项再次计价。脚本从实际进入阶段二悲观、基准、乐观估值组合的机构中提取经原始证据日期校验的研报日期，并固定形成两个边界：有效研报日期的上中位数和最晚日期。被排除的机构、日期缺失或与引用证据不一致的研报不得参与边界计算。
+
+动态专题证据按单条材料自身发布日期分为四类：
+
+- `baseline_context`：早于上中位研报日，视为阶段一、二已经覆盖的背景，只保留审计，不送入阶段三阅读。
+- `overlap_window`：不早于上中位研报日且不晚于最晚研报日，部分机构可能已经知悉；只保留审计，不送入阶段三阅读，也不得作为新增触发证据。
+- `post_consensus`：晚于最晚有效研报日，是阶段三增量判断的必要触发证据，但时间较新本身不代表未计价。
+- `date_unverified`：发布日期缺失、非法或晚于当前日期；只进入审计隔离区，不送入阶段三阅读，也不得支持估值。
+
+单条材料不得继承同一搜索缓存中其他结果的最新日期，搜索抓取时间也不得替代发布时间。同日材料归入 `overlap_window`。阶段三阅读集合只能包含 `post_consensus`；业务背景和机构已知信息直接复用阶段一、二结构化结论，不得为补背景再次阅读旧专题原文。`probabilistic_event` 必须引用 `post_consensus` 证据，并显式输出 `baseline_overlap=not_included`、`overlap_reason` 和 `incremental_evidence_ids`；否则只能归为 `narrative_observation` 或不进入阶段三项目。
+
+若没有任何 `post_consensus` 证据，脚本直接生成 `no_post_consensus_evidence` 结果，不调用阶段三研究 LLM，不得把“未发现合格新增证据”写成“公司没有预期差”。每次运行均须保存门禁版本、机构样本、双边界、各类材料数量和结果级分类；门禁规则、机构样本或证据集合变化时，续跑必须使阶段三至阶段五失效并重做。
+
 ### 运行包契约
 
 阶段二继续保存 `stage_2_readings.json`、`stage_2_institutions.json`、`stage_2_model_inputs.json`、`stage_2_consensus.json` 和 `stage_2_baseline.json`。二A输出全量机构预测、PE语义、逐机构利润逻辑和排除清单；二B只输出公司级双年三情景一致性估值，不生成分业务估值。
 
-研究卡保留 `investment_thesis`、`business_pillars`、`consensus`、`market_divergences`、`verification_nodes`、`risks` 及审计字段。`comparables`、旧 `assumption_ledger`、`narrative_options` 为兼容字段，不再是页面和公司级一致性估值的必需输入。
+研究卡保留 `investment_thesis`、`business_pillar_analysis`、`business_pillars`、`consensus`、`market_divergences`、`verification_nodes`、`risks` 及审计字段。`comparables`、旧 `assumption_ledger`、`narrative_options` 为兼容字段，不再是页面和公司级一致性估值的必需输入。
 
 金额统一使用亿元，股本使用亿股，股价使用元，PE使用倍数。所有研报结论、利润驱动、分歧、验证节点和风险必须回溯到 `source_id`。
 

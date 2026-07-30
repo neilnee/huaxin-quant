@@ -1,24 +1,188 @@
 #!/usr/bin/env python3
 """Focused regression tests for the valuation stage-five contract."""
 
+import json
+import tempfile
 import unittest
+from datetime import date
+from pathlib import Path
 
 from scripts.calc_valuation import calc_divergence, parse_params
 from scripts.valuation_pipeline import (
     PipelineError,
+    ROOT,
     _canonical_billion,
     assemble_stage_five,
+    build_stage_three_evidence_gate,
     build_stage_two_baseline,
+    evidence_from_cache,
     apply_unified_model_result,
     merge_manifest_stages,
     normalize_pe_scope_fallback,
+    select_stage_three_reading_evidence,
+    validate_profit_analysis,
     validate_stage_three_contract,
+    validate_business_pillar_analysis,
     valuation_model_matrix,
     validate_stage_five_mapping,
 )
 
 
 class ValuationContractTest(unittest.TestCase):
+    def test_business_value_profile_covers_stage_one_without_invented_profit_split(self):
+        block = {"text": "该业务构成公司当前经常性盈利基础", "evidence_status": "qualitative", "source_ids": ["s1"]}
+        research = {"contract_version": 8, "business_pillar_analysis": [{
+            "source_pillar_id": "p1",
+            "role_in_company": dict(block),
+            "earnings_model": dict(block),
+            "core_metrics": [{"name": "运营规模", "value": 100, "unit": "MW", "period": "2025A", "scope": "公司运营项目", "evidence_status": "disclosed", "source_ids": ["s1"]}],
+            "growth_potential": {**block, "horizon": "未来两年", "drivers": ["利用率提升"], "constraints": ["价格未披露"]},
+            "valuation_anchor": {**block, "level": "core_anchor"},
+            "tracking_metrics": [{"name": "利用率", "direction": "提升", "why": "验证产能转化", "source_ids": ["s1"]}],
+            "data_gaps": ["分部利润率"],
+        }]}
+        validate_business_pillar_analysis(
+            research, {"business_pillars": [{"pillar_id": "p1"}]}, [{"source_id": "s1"}],
+        )
+        research["business_pillar_analysis"][0]["source_pillar_id"] = "p2"
+        with self.assertRaisesRegex(PipelineError, "一对一覆盖"):
+            validate_business_pillar_analysis(
+                research, {"business_pillars": [{"pillar_id": "p1"}]}, [{"source_id": "s1"}],
+            )
+
+    def test_profit_analysis_requires_sourced_chain_and_matching_endpoints(self):
+        forecast = {
+            "institution": "示例证券", "report_date": "2026-07-01",
+            "net_profit_2026e": 10, "net_profit_2027e": 12,
+        }
+        analysis = {
+            "institution": "示例证券", "report_date": "2026-07-01",
+            "np_2026e": 10, "np_2027e": 12, "profit_scope": "recurring",
+            "summary": "销量增长推动收入和利润增长", "source_ids": ["s1"],
+            "profit_logic": {
+                "status": "partial", "summary": "销量增长传导至利润",
+                "steps": [
+                    {"stage": "volume", "statement": "销量预计增长", "period": "2026E",
+                     "value": None, "unit": None, "evidence_level": "qualitative", "source_ids": ["s1"]},
+                    {"stage": "net_profit", "statement": "2026E归母净利润10亿元", "period": "2026E",
+                     "value": 10, "unit": "亿元", "evidence_level": "explicit", "source_ids": ["s1"]},
+                    {"stage": "net_profit", "statement": "2027E归母净利润12亿元", "period": "2027E",
+                     "value": 12, "unit": "亿元", "evidence_level": "explicit", "source_ids": ["s1"]},
+                ],
+                "missing_links": ["研报未披露单价和利润率"],
+            },
+            "key_assumptions": [{
+                "assumption": "销量继续增长", "tracking_metric": "季度销量",
+                "expected_direction": "同比增长", "explicit_target": None,
+                "timeframe": "2026年", "failure_signal": "销量同比下降",
+                "tracking_origin": "derived_monitoring", "source_ids": ["s1"],
+            }],
+        }
+        validate_profit_analysis(
+            {"institution_forecasts": [forecast], "profit_analysis": [analysis]},
+            [{"source_id": "s1"}],
+        )
+        analysis["profit_logic"]["steps"][-1]["value"] = 13
+        with self.assertRaisesRegex(PipelineError, "2027E"):
+            validate_profit_analysis(
+                {"institution_forecasts": [forecast], "profit_analysis": [analysis]},
+                [{"source_id": "s1"}],
+            )
+
+    def test_stage_three_evidence_gate_uses_selected_institutions_and_four_time_buckets(self):
+        evidence = [
+            {"source_id": "r1", "published_at": "2026-07-01"},
+            {"source_id": "r2", "published_at": "2026-07-10"},
+            {"source_id": "r3", "published_at": "2026-07-20"},
+            {"source_id": "r4", "published_at": "2026-07-29"},
+        ]
+        stage_two = {"institution_forecasts": [
+            {"institution": name, "report_date": report_date, "source_ids": [source_id]}
+            for name, report_date, source_id in (
+                ("甲", "2026-07-01", "r1"), ("乙", "2026-07-10", "r2"),
+                ("丙", "2026-07-20", "r3"), ("未采用", "2026-07-29", "r4"),
+            )
+        ]}
+        baseline = {"pillars": [{"years": {"2026e": {
+            "pessimistic": {"institutions": ["甲"]},
+            "base": {"institutions": ["乙"]},
+            "optimistic": {"institutions": ["丙"]},
+        }}}]}
+        candidates = [
+            {"source_id": "c1", "published_at": "2026-06-30"},
+            {"source_id": "c2", "published_at": "2026-07-10"},
+            {"source_id": "c3", "published_at": "2026-07-20"},
+            {"source_id": "c4", "published_at": "2026-07-21"},
+            {"source_id": "c5", "published_at": None},
+            {"source_id": "c6", "published_at": "2026-07-31"},
+        ]
+        classified, gate = build_stage_three_evidence_gate(
+            stage_two, baseline, candidates, evidence, today=date(2026, 7, 30)
+        )
+        self.assertEqual(gate["median_report_date"], "2026-07-10")
+        self.assertEqual(gate["latest_report_date"], "2026-07-20")
+        self.assertEqual(gate["counts"], {
+            "baseline_context": 1, "overlap_window": 2,
+            "post_consensus": 1, "date_unverified": 2,
+        })
+        self.assertNotIn("未采用", {item["institution"] for item in gate["institution_sample"]})
+        self.assertEqual(
+            {item["source_id"]: item["stage3_timing_class"] for item in classified}["c2"],
+            "overlap_window",
+        )
+        self.assertEqual(
+            [item["source_id"] for item in select_stage_three_reading_evidence(classified)],
+            ["c4"],
+        )
+
+    def test_stage_three_evidence_gate_rejects_unverified_institution_report_date(self):
+        stage_two = {"institution_forecasts": [{
+            "institution": "甲", "report_date": "2026-07-10", "source_ids": ["r1"],
+        }]}
+        baseline = {"pillars": [{"years": {"2026e": {"base": {"institutions": ["甲"]}}}}]}
+        _, gate = build_stage_three_evidence_gate(
+            stage_two, baseline, [{"source_id": "c1", "published_at": "2026-07-20"}],
+            [{"source_id": "r1", "published_at": "2026-07-09"}], today=date(2026, 7, 30),
+        )
+        self.assertEqual(gate["status"], "institution_cutoff_unavailable")
+        self.assertEqual(gate["rejected_institutions"][0]["reason"], "report_date_source_mismatch")
+        self.assertEqual(gate["counts"]["date_unverified"], 1)
+
+    def test_stage_three_evidence_gate_supports_legacy_anchors_and_rejects_stale_reports(self):
+        stage_two = {"institution_forecasts": [
+            {"institution": "采用", "report_date": "2026-06-23", "source_ids": ["r1"]},
+            {"institution": "过期", "report_date": "2025-11-21", "source_ids": ["r2"]},
+            {"institution": "未采用", "report_date": "2026-07-01", "source_ids": ["r3"]},
+        ]}
+        baseline = {"institution_anchors": [{"institution": "采用"}, {"institution": "过期"}]}
+        evidence = [
+            {"source_id": "r1", "published_at": "2026-06-23"},
+            {"source_id": "r2", "published_at": "2025-11-21"},
+            {"source_id": "r3", "published_at": "2026-07-01"},
+        ]
+        _, gate = build_stage_three_evidence_gate(
+            stage_two, baseline, [], evidence, today=date(2026, 7, 30)
+        )
+        self.assertEqual(gate["institution_sample"][0]["institution"], "采用")
+        self.assertEqual(gate["latest_report_date"], "2026-06-23")
+        self.assertEqual(gate["rejected_institutions"][0]["reason"], "report_date_stale")
+        self.assertNotIn("未采用", {item["institution"] for item in gate["institution_sample"]})
+
+    def test_undated_search_result_does_not_inherit_sibling_date(self):
+        root_tmp = ROOT / ".tmp"
+        root_tmp.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=root_tmp) as directory:
+            path = Path(directory) / "valuation_search_000001_stage3_01_project.json"
+            payload = {"data": {"data": {"llmSearchResponse": {"data": [
+                {"code": "000001", "title": "有日期", "date": "2026-07-20"},
+                {"code": "000001", "title": "无日期"},
+            ]}}}}
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            rows, rejected = evidence_from_cache("000001", "示例", path.parent, [path])
+        self.assertFalse(rejected)
+        self.assertEqual(rows[0]["published_at"], "2026-07-20")
+        self.assertIsNone(rows[1]["published_at"])
+
     def test_cross_check_only_pe_uses_conservative_explicit_fallback(self):
         inputs = {
             "selected_pe": 44, "pe_selection_method": "three_step",
@@ -163,6 +327,30 @@ class ValuationContractTest(unittest.TestCase):
         stage_three["projects"][0]["years"]["2026e"]["base"]["profit"] = 0
         with self.assertRaisesRegex(PipelineError, "缺少可估值收益"):
             validate_stage_three_contract(stage_three, [{"source_id": "s1"}])
+
+    def test_stage_three_probability_event_requires_post_consensus_trigger(self):
+        stage_three = {"projects": [{
+            "project_id": "event_01", "name": "扩产", "business_essence": "新增独立产能",
+            "valuation_role": "probabilistic_event", "quantification_status": "quantitative",
+            "included_in_valuation": True, "incremental_to_baseline": True,
+            "timing_class": "post_consensus", "baseline_overlap": "not_included",
+            "overlap_reason": "机构研报尚未覆盖新增审批", "incremental_evidence_ids": ["new"],
+            "source_ids": ["old", "new"], "invalidation_conditions": "审批失败",
+            "years": {year: {scenario: {
+                "profit": 0 if scenario == "pessimistic" else 1,
+                "multiple": 15, "probability": {"pessimistic": 0, "base": 0.5, "optimistic": 0.8}[scenario],
+                "profit_reason": "新增收益", "multiple_reason": "独立可比", "probability_reason": "审批进度",
+                "source_ids": ["old", "new"],
+            } for scenario in ("pessimistic", "base", "optimistic")} for year in ("2026e", "2027e")},
+        }]}
+        evidence = [
+            {"source_id": "old", "stage3_timing_class": "baseline_context"},
+            {"source_id": "new", "stage3_timing_class": "post_consensus"},
+        ]
+        validate_stage_three_contract(stage_three, evidence)
+        stage_three["projects"][0]["incremental_evidence_ids"] = ["old"]
+        with self.assertRaisesRegex(PipelineError, "共识后新增证据"):
+            validate_stage_three_contract(stage_three, evidence)
 
     def test_stage_two_rejects_forced_segment_split_without_direct_profit_evidence(self):
         scenarios = {

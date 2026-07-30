@@ -15,15 +15,15 @@
         <div id="research-stats" class="research-stats"></div>
       </section>
 
-      <nav class="report-toc" aria-label="报告章节"><a href="#overview" class="active">估值结论</a><a href="#matrix">一致性预期估值</a><a href="#pillars">业务支柱</a><a href="#profit-analysis">机构利润逻辑</a><a href="#consensus">机构预测明细</a><a href="#expectations">关键分歧</a><a href="#verification">验证与风险</a></nav>
+      <nav class="report-toc" aria-label="报告章节"><a href="#overview" class="active">估值与一致预期</a><a href="#pillars">业务支柱</a><a href="#profit-analysis">机构利润逻辑</a><a href="#consensus">机构预测明细</a><a href="#expectations">关键分歧</a><a href="#verification">验证与风险</a></nav>
 
-      <section id="overview" class="report-section"><div class="section-head"><div><p class="overline">DECISION VIEW</p><h2>估值结论</h2></div><p id="reverse-check"></p></div><div class="year-switch" role="tablist" aria-label="估值年度"><button type="button" role="tab" data-year="2026e" class="active" aria-selected="true">2026E</button><button type="button" role="tab" data-year="2027e" aria-selected="false">2027E</button></div><div id="valuation-cards" class="valuation-cards"></div><div id="valuation-track" class="valuation-track"></div><blockquote id="core-judgement"></blockquote><div id="decision-cards" class="decision-cards"></div></section>
+      <section class="company-summary-panel"><div class="company-summary-head"><p class="overline">COMPANY IN ONE VIEW</p><h2>公司核心摘要</h2></div><p id="summary-company-profile" class="company-summary-lead">—</p><div class="company-summary-grid"><div><span>盈利共识</span><p id="summary-earnings">—</p></div><div><span>增长逻辑</span><p id="summary-growth">—</p></div><div><span>关键不确定性</span><p id="summary-uncertainties">—</p></div><div><span>跟踪重点</span><p id="summary-tracking">—</p></div></div></section>
 
-      <section id="matrix" class="report-section"><div class="section-head"><div><p class="overline">INSTITUTION CONSENSUS VALUATION</p><h2>一致性预期估值表</h2></div><p id="baseline-status">—</p></div><div class="year-switch model-year-switch" role="tablist" aria-label="一致性估值年度"><button type="button" role="tab" data-year="2026e" class="active" aria-selected="true">2026E</button><button type="button" role="tab" data-year="2027e" aria-selected="false">2027E</button></div><div id="year-comparison" class="year-comparison"></div><p id="matrix-unit" class="section-note">2026E · 公司整体机构共识口径</p><div class="table-wrap"><table id="matrix-table" class="matrix-table baseline-model-table"></table></div></section>
+      <section id="overview" class="report-section"><div class="section-head"><div><p class="overline">DECISION & CONSENSUS</p><h2>估值结论与一致性预期</h2></div><p id="reverse-check"></p></div><div class="year-switch" role="tablist" aria-label="估值年度"><button type="button" role="tab" data-year="2026e" class="active" aria-selected="true">2026E</button><button type="button" role="tab" data-year="2027e" aria-selected="false">2027E</button></div><div id="valuation-cards" class="valuation-cards"></div><div id="valuation-track" class="valuation-track"></div><div class="consensus-valuation-block"><div class="consensus-valuation-head"><div><p class="overline">INSTITUTION CONSENSUS VALUATION</p><h3>一致性预期估值表</h3><p id="matrix-unit" class="section-note">2026E · 公司整体机构共识口径</p></div><p id="baseline-status">—</p></div><div class="table-wrap"><table id="matrix-table" class="matrix-table baseline-model-table"></table></div></div></section>
 
-      <section id="pillars" class="report-section"><div class="section-head"><div><p class="overline">BUSINESS MAP</p><h2>业务支柱拆分</h2></div><p>解释利润来源，不强制分配公司整体估值</p></div><div id="business-map" class="business-map"></div></section>
+      <section id="pillars" class="report-section"><div class="section-head"><div><p class="overline">BUSINESS MAP</p><h2>业务支柱拆分</h2></div></div><div id="business-map" class="business-map"></div></section>
 
-      <section id="profit-analysis" class="report-section"><div class="section-head"><div><p class="overline">REPORT READING</p><h2>机构利润预测与关键假设</h2></div><p>逐家回答“为什么预测出这个利润”</p></div><div id="profit-analysis-list" class="profit-analysis-list"></div></section>
+      <section id="profit-analysis" class="report-section"><div class="section-head"><div><p class="overline">REPORT READING</p><h2>机构利润预测与关键假设</h2></div><p>逐家回答“利润为什么成立、以后跟踪什么”</p></div><div id="profit-analysis-list" class="profit-analysis-list"></div></section>
 
       <section id="consensus" class="report-section"><div class="section-head"><div><p class="overline">CONSENSUS DETAIL</p><h2>机构一致预期明细</h2></div><p>结构化原始预测底表</p></div><div id="consensus-summary" class="metric-strip"></div><div class="table-wrap"><table id="consensus-table"></table></div></section>
 
@@ -33,7 +33,6 @@
 
       <section class="report-section"><div class="section-head"><div><p class="overline risk-label">RISKS</p><h2>主要风险</h2></div><p>与盈利预测和验证节点对应</p></div><ul id="risks-list" class="plain-list"></ul></section>
 
-      <section><details id="evidence-details"><summary><span><b>证据目录</b><small id="evidence-summary">按需加载原始证据</small></span><i>展开审计信息</i></summary><p id="evidence-state" class="section-note">展开后加载证据包。</p><div class="table-wrap"><table id="evidence-table"></table></div></details></section>
       <footer><span>本页由已验证运行包自动生成，不构成投资建议。</span><span id="run-id">—</span></footer>
     </div>
   </main>

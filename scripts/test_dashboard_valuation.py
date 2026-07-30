@@ -4,7 +4,10 @@
 import unittest
 
 from scripts.dashboard_valuation import (
+    business_map_with_coverage,
     catalog_row,
+    company_summary_for_display,
+    institution_profit_analysis,
     legacy_stage_two_baseline,
     merge_priced_independent_items,
     primary_pillar,
@@ -13,6 +16,73 @@ from scripts.dashboard_valuation import (
 
 
 class DashboardValuationTest(unittest.TestCase):
+    def test_company_summary_flattens_sourced_fields_for_display(self):
+        result = company_summary_for_display({"company_summary": {
+            "company_profile": {"text": "主营数据中心服务", "source_ids": ["s1"]},
+            "earnings_consensus": {"text": "2026E中位利润10亿元", "source_ids": ["s2"]},
+        }})
+        self.assertEqual(result["company_profile"], "主营数据中心服务")
+        self.assertEqual(result["earnings_consensus"], "2026E中位利润10亿元")
+        self.assertEqual(result["tracking_focus"], "")
+
+    def test_legacy_profit_analysis_is_explicitly_endpoint_only(self):
+        result = institution_profit_analysis({"institution_forecasts": [{
+            "institution": "示例证券", "report_date": "2026-07-01",
+            "net_profit_2026e": 10, "net_profit_2027e": 12,
+            "profit_scope": "recurring", "source_ids": ["s1"],
+        }]})
+        self.assertEqual(result[0]["profit_logic"]["status"], "endpoint_only")
+        self.assertEqual(
+            [step["value"] for step in result[0]["profit_logic"]["steps"]], [10, 12],
+        )
+
+    def test_business_map_joins_stage_two_coverage_by_stable_pillar_id(self):
+        stage_one = {"business_pillars": [{
+            "pillar_id": "p1", "name": "在建产能", "source_ids": ["stage1"],
+        }]}
+        stage_two = {"business_item_coverage": [{
+            "source_pillar_id": "p1", "valuation_role": "merged_component",
+            "overlap_status": "inside_target", "reason": "多数机构已纳入核心经营预测",
+            "source_ids": ["institution"],
+        }]}
+        result = business_map_with_coverage(stage_one, stage_two)
+        self.assertEqual(result[0]["institution_coverage"], "多数机构已纳入核心经营预测")
+        self.assertEqual(result[0]["institution_coverage_status"], "included")
+        self.assertEqual(result[0]["source_ids"], ["stage1", "institution"])
+        self.assertNotIn("institution_coverage", stage_one["business_pillars"][0])
+
+    def test_business_map_joins_value_profile_by_stage_one_pillar_id(self):
+        stage_one = {"business_pillars": [{"pillar_id": "p1", "name": "成熟机房"}]}
+        card = {"business_pillar_analysis": [{
+            "source_pillar_id": "p1",
+            "role_in_company": {"text": "公司当前经常性利润基础"},
+        }]}
+        result = business_map_with_coverage(stage_one, {}, card)
+        self.assertEqual(
+            result[0]["business_value_profile"]["role_in_company"]["text"],
+            "公司当前经常性利润基础",
+        )
+        self.assertNotIn("business_value_profile", stage_one["business_pillars"][0])
+
+    def test_business_map_keeps_fallback_only_when_historical_coverage_is_missing(self):
+        result = business_map_with_coverage(
+            {"business_pillars": [{"pillar_id": "legacy", "name": "旧业务"}]}, {},
+        )
+        self.assertNotIn("institution_coverage", result[0])
+
+    def test_business_map_marks_realized_history_as_excluded_for_legacy_roles(self):
+        result = business_map_with_coverage(
+            {"business_pillars": [{
+                "pillar_id": "history", "name": "历史处置收益",
+                "economic_nature": "historical_realized",
+            }]},
+            {"business_item_coverage": [{
+                "source_pillar_id": "history", "valuation_role": "valued_event",
+                "overlap_status": "not_applicable", "reason": "未来年度无价值贡献",
+            }]},
+        )
+        self.assertEqual(result[0]["institution_coverage_status"], "historical_excluded")
+
     def test_scenario_per_share_builds_dual_year_summary_values(self):
         scenario = scenario_per_share(
             {"pessimistic": 420, "base": 500, "optimistic": 620},
@@ -47,7 +117,7 @@ class DashboardValuationTest(unittest.TestCase):
         }
         row = catalog_row(report)
         self.assertEqual(row["report_path"], "data/valuation/reports/688676_20260723_101826.js")
-        self.assertEqual(row["evidence_path"], "data/valuation/evidence/688676_20260723_101826.js")
+        self.assertNotIn("evidence_path", row)
         self.assertNotIn("facts", row)
 
     def test_legacy_baseline_uses_layer_one_without_later_adjustments(self):

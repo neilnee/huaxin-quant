@@ -20,7 +20,6 @@ RUNS_DIR = ROOT / "cache" / "valuation_runs"
 DATA_DIR = ROOT / "dashboard" / "data"
 VALUATION_DATA_DIR = DATA_DIR / "valuation"
 REPORT_DATA_DIR = VALUATION_DATA_DIR / "reports"
-EVIDENCE_DATA_DIR = VALUATION_DATA_DIR / "evidence"
 
 
 def normalize_code(value) -> str:
@@ -139,6 +138,109 @@ def primary_pillar(result: dict) -> dict:
         return {}
     value, row = max(ranked, key=lambda pair: pair[0])
     return {"name": row.get("pillar_name"), "base_value": round(value, 2), "unit": "亿元市值"}
+
+
+def business_map_with_coverage(stage_one: dict, stage_two: dict, card: dict | None = None) -> list[dict]:
+    """Join the stage-two coverage and stage-five value profile onto stage one."""
+    raw_map = stage_one.get("business_pillars") or (card or {}).get("business_pillars", [])
+    business_map = json.loads(json.dumps(raw_map, ensure_ascii=False))
+    coverage_by_id = {
+        str(item.get("source_pillar_id")): item
+        for item in stage_two.get("business_item_coverage", []) or []
+        if isinstance(item, dict) and item.get("source_pillar_id")
+    }
+    profile_by_id = {
+        str(item.get("source_pillar_id")): item
+        for item in (card or {}).get("business_pillar_analysis", []) or []
+        if isinstance(item, dict) and item.get("source_pillar_id")
+    }
+    for item in business_map:
+        pillar_id = str(item.get("pillar_id") or item.get("research_id") or "")
+        profile = profile_by_id.get(pillar_id)
+        if profile:
+            item["business_value_profile"] = json.loads(json.dumps(profile, ensure_ascii=False))
+        coverage = coverage_by_id.get(pillar_id)
+        if not coverage:
+            continue
+        reason = str(coverage.get("reason") or "").strip()
+        if reason:
+            item["institution_coverage"] = reason
+            item["coverage_summary"] = reason
+        role = str(coverage.get("valuation_role") or "")
+        overlap = str(coverage.get("overlap_status") or "")
+        if role == "historical_excluded" or item.get("economic_nature") == "historical_realized":
+            status = "historical_excluded"
+        elif overlap == "inside_target":
+            status = "included"
+        elif overlap == "incremental":
+            status = "not_included"
+        else:
+            status = "unknown"
+        coverage_sources = list(coverage.get("source_ids") or [])
+        item.update({
+            "institution_coverage_status": status,
+            "coverage_role": role,
+            "coverage_overlap_status": overlap,
+            "coverage_source_ids": coverage_sources,
+        })
+        item["source_ids"] = list(dict.fromkeys([*(item.get("source_ids") or []), *coverage_sources]))
+    return business_map
+
+
+def institution_profit_analysis(stage_two: dict, card: dict | None = None) -> list[dict]:
+    """Expose the structured stage-two chain, with an endpoint-only legacy fallback."""
+    analyses = stage_two.get("profit_analysis") or []
+    if analyses:
+        return json.loads(json.dumps(analyses, ensure_ascii=False))
+    consensus_by_institution = {
+        str(row.get("institution")): row
+        for row in (card or {}).get("consensus", []) or []
+        if row.get("institution")
+    }
+    result = []
+    for row in stage_two.get("institution_forecasts", []) or []:
+        institution = str(row.get("institution") or "")
+        display = consensus_by_institution.get(institution, {})
+        assumptions = row.get("key_assumptions")
+        if isinstance(assumptions, str):
+            assumptions = [assumptions]
+        sources = row.get("source_ids") or []
+        steps = []
+        for year in ("2026e", "2027e"):
+            value = row.get(f"net_profit_{year}")
+            if value is not None:
+                steps.append({
+                    "stage": "net_profit", "statement": f"研报预测{year.upper()}归母净利润{value}亿元",
+                    "period": year, "value": value, "unit": "亿元", "evidence_level": "explicit",
+                    "source_ids": sources,
+                })
+        result.append({
+            "institution": institution,
+            "report_date": row.get("report_date") or display.get("report_date"),
+            "np_2026e": row.get("net_profit_2026e"), "np_2027e": row.get("net_profit_2027e"),
+            "profit_scope": row.get("profit_scope"),
+            "summary": row.get("report_summary") or (assumptions or ["旧运行仅保存利润预测终点"])[0],
+            "profit_logic": {
+                "status": "endpoint_only", "summary": "旧运行仅保存机构利润预测终点，未形成结构化传导链",
+                "steps": steps, "missing_links": ["经营指标、收入及利润率传导未结构化保存"],
+            },
+            "profit_drivers": row.get("profit_drivers") or [], "key_assumptions": assumptions or [],
+            "risks": row.get("risks") or [], "source_ids": sources,
+        })
+    return result
+
+
+def company_summary_for_display(thesis: dict) -> dict:
+    """Flatten the sourced stage-five summary while keeping legacy reports readable."""
+    raw = thesis.get("company_summary") or {}
+    fields = ("company_profile", "earnings_consensus", "growth_logic", "key_uncertainties", "tracking_focus")
+    result = {}
+    for field in fields:
+        value = raw.get(field)
+        result[field] = str(value.get("text") or "").strip() if isinstance(value, dict) else str(value or "").strip()
+    if not result["company_profile"]:
+        result["company_profile"] = str(thesis.get("core_judgement") or "历史运行尚未保存结构化公司摘要")
+    return result
 
 
 def legacy_stage_two_baseline(card: dict, params: dict, result: dict) -> dict:
@@ -413,24 +515,8 @@ def report_run(item: dict) -> dict:
         display_baseline["note"] = "旧运行兼容展示；PE口径尚未按V4共识协议重算，本次页面优化未调用模型。"
     stage_one = load_json(path / "stage_1_business.json") if (path / "stage_1_business.json").exists() else {}
     stage_two = load_json(path / "stage_2_consensus.json") if (path / "stage_2_consensus.json").exists() else {}
-    consensus_by_institution = {str(row.get("institution")): row for row in card.get("consensus", []) if row.get("institution")}
-    profit_analysis = stage_two.get("profit_analysis") or []
-    if not profit_analysis:
-        profit_analysis = []
-        for row in stage_two.get("institution_forecasts", []) or []:
-            institution = str(row.get("institution") or "")
-            display = consensus_by_institution.get(institution, {})
-            assumptions = row.get("key_assumptions")
-            if isinstance(assumptions, str):
-                assumptions = [assumptions]
-            profit_analysis.append({
-                "institution": institution, "report_date": display.get("report_date"),
-                "np_2026e": row.get("net_profit_2026e"), "np_2027e": row.get("net_profit_2027e"),
-                "profit_scope": row.get("profit_scope"),
-                "summary": row.get("report_summary") or (assumptions or ["旧运行未单独保存研报逻辑摘要"])[0],
-                "profit_drivers": row.get("profit_drivers") or [], "key_assumptions": assumptions or [],
-                "risks": row.get("risks") or [], "source_ids": row.get("source_ids") or [],
-            })
+    business_map = business_map_with_coverage(stage_one, stage_two, card)
+    profit_analysis = institution_profit_analysis(stage_two, card)
     total_2026 = valuation_model.get("totals", {}).get("2026e", {})
     total_2027 = valuation_model.get("totals", {}).get("2027e", {})
     shares = meta.get("total_shares")
@@ -453,6 +539,7 @@ def report_run(item: dict) -> dict:
     evidence = load_json(path / "evidence.json").get("evidence", [])
     risks = card.get("risks", [])
     verification_nodes = card.get("verification_nodes", [])
+    thesis = card.get("investment_thesis", {})
     return {
         "code": code, "name": name,
         "run_id": path.name, "run_at": item["manifest"].get("started_at"), "analysis_date": item["date"],
@@ -463,9 +550,10 @@ def report_run(item: dict) -> dict:
         "matrix_2026e": result.get("matrix_2026e", {}), "matrix_2027e": result.get("matrix_2027e", {}),
         "pillars_2026e": result.get("pillars_2026e", []),
         "calc_pillars": params.get("pillars", []),
-        "investment_thesis": card.get("investment_thesis", {}),
+        "investment_thesis": thesis,
+        "company_summary": company_summary_for_display(thesis),
         "business_pillars": card.get("business_pillars", []),
-        "business_map": stage_one.get("business_pillars") or card.get("business_pillars", []),
+        "business_map": business_map,
         "institution_profit_analysis": profit_analysis,
         "market_divergences": card.get("market_divergences", []),
         "narrative_options": card.get("narrative_options", []),
@@ -504,30 +592,17 @@ def catalog_row(report: dict) -> dict:
         "research_stats": report.get("research_stats", {}),
         "decision_summary": report.get("decision_summary", {}),
         "report_path": f"data/valuation/reports/{run_id}.js",
-        "evidence_path": f"data/valuation/evidence/{run_id}.js",
     }
-
-
-def evidence_package(item: dict, report: dict) -> dict:
-    evidence = load_json(item["path"] / "evidence.json").get("evidence", [])
-    return {"run_id": report["run_id"], "code": report["code"], "evidence": evidence}
 
 
 def write_report_packages(item: dict, report: dict) -> None:
     REPORT_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    EVIDENCE_DATA_DIR.mkdir(parents=True, exist_ok=True)
     run_id = report["run_id"]
     report_target = REPORT_DATA_DIR / f"{run_id}.js"
-    evidence_target = EVIDENCE_DATA_DIR / f"{run_id}.js"
     report_target.write_text(
         "window.QUANT_DASHBOARD_VALUATION_REPORTS = window.QUANT_DASHBOARD_VALUATION_REPORTS || {};\n"
         f"window.QUANT_DASHBOARD_VALUATION_REPORTS[{json.dumps(run_id)}] = "
         + json.dumps(report, ensure_ascii=False) + ";\n", encoding="utf-8",
-    )
-    evidence_target.write_text(
-        "window.QUANT_DASHBOARD_VALUATION_EVIDENCE = window.QUANT_DASHBOARD_VALUATION_EVIDENCE || {};\n"
-        f"window.QUANT_DASHBOARD_VALUATION_EVIDENCE[{json.dumps(run_id)}] = "
-        + json.dumps(evidence_package(item, report), ensure_ascii=False) + ";\n", encoding="utf-8",
     )
 
 

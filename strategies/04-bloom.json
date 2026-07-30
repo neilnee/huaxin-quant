@@ -1,5 +1,5 @@
 {
-  "strategy_version": "model4_bloom_signal_v2",
+  "strategy_version": "model4_bloom_signal_v3",
   "description": "Bloom signal layer parameters. Bloom consumes Model 2 quant JSON, tracks signal lifecycle, and does not run valuation or position management.",
   "inputs": {
     "quant_run_dir": "cache/quant_runs",
@@ -46,6 +46,13 @@
     "TREND_REBUILD": "INVALID",
     "DATA_ISSUE": "DATA_ISSUE",
     "DATA_INSUFFICIENT": "DATA_ISSUE"
+  },
+  "post_breakout_mapping": {
+    "POST_BREAKOUT_RETEST": "COOLDOWN",
+    "POST_BREAKOUT_HOT": "COOLDOWN",
+    "POST_BREAKOUT_CONSOLIDATING": "COOLDOWN",
+    "POST_BREAKOUT_FAILED": "COOLDOWN",
+    "POST_BREAKOUT_EXPIRED": "COOLDOWN"
   },
   "setup_mapping": {
     "PULLBACK_BUY": "TRIGGERED",

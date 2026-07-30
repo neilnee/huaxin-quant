@@ -25,6 +25,25 @@
       <section class="panel"><div class="table-scroll"><table id="index-table"></table></div></section>
       <section class="panel"><div class="section-heading"><div><p class="section-label">板块分布与延续性</p><h2>板块排名</h2></div><p>主排名：20日相对强度；点击行查看阶段证据</p></div><nav id="sector-tabs" class="tabs" aria-label="板块类别"></nav><div class="leaderboard-layout"><div class="table-scroll"><table id="sector-table"></table></div><aside id="sector-detail" class="sector-detail"></aside></div></section>
       <section class="panel"><div class="section-heading"><div><p class="section-label">阶段轨迹</p><h2>板块相对强度排名</h2></div><p>横轴为名次，纵轴为日期；最新日期在上</p></div><nav id="rank-window-tabs" class="tabs" aria-label="相对强度窗口"></nav><div class="table-scroll matrix-wrap"><table id="history-matrix"></table></div></section>
+      <section class="panel market-guide">
+        <div class="section-heading"><div><p class="section-label">READING GUIDE</p><h2>指标与状态说明</h2></div><p>以下说明对应页面当前规则，仅用于理解展示结果</p></div>
+        <div class="market-guide-grid">
+          <article><h3>阶段位置</h3><p>按收盘价距离近 60 日最高价划分。</p><dl><div><dt>60日新高</dt><dd>距离 ≥ −0.005%</dd></div><div><dt>浅回撤</dt><dd>−5% 至 −0.005%</dd></div><div><dt>中度回撤</dt><dd>−15% 至 −5%</dd></div><div><dt>深度回撤</dt><dd>距离 &lt; −15%</dd></div></dl></article>
+          <article><h3>近期量能</h3><p>5 日平均成交量 ÷ 20 日平均成交量。</p><dl><div><dt>活跃</dt><dd>≥ 1.15x，近期明显放量</dd></div><div><dt>常态</dt><dd>≥ 0.90x 且 &lt; 1.15x</dd></div><div><dt>收缩</dt><dd>&lt; 0.90x，近期成交降温</dd></div></dl></article>
+          <article><h3>短期趋势</h3><p>MA20 五日斜率 = 当前 MA20 ÷ 五个交易日前 MA20 − 1。</p><dl><div><dt>上行</dt><dd>斜率 ≥ 0.20%</dd></div><div><dt>走平</dt><dd>斜率介于 −0.20% 与 0.20%</dd></div><div><dt>下行</dt><dd>斜率 ≤ −0.20%</dd></div></dl></article>
+          <article><h3>14日平均波动</h3><p>显示值为 ATR14 ÷ 收盘价。单日真实波幅取高低差、高点与昨收差、低点与昨收差三者最大值，ATR14 为其 14 日均值；标签由 ATR14、10 日实现波动、10 日振幅三项历史分位的综合风险分决定。</p><dl><div><dt>低波动</dt><dd>综合分 &lt; 40</dd></div><div><dt>中波动</dt><dd>≥ 40 且 &lt; 75</dd></div><div><dt>高波动</dt><dd>综合分 ≥ 75</dd></div></dl></article>
+        </div>
+        <div class="sector-guide"><h3>板块当前状态</h3><p class="muted">排名均在各自类别内计算；“此前 5 日”不包含当前交易日。</p><div class="sector-guide-grid">
+          <div><span class="sector-state emerging">强势初现</span><p>当前 20 日排名前 20、5 日相对强度非负、上涨成员占比不低于 50%，但持续时间或短期排名尚未满足更高阶段。</p></div>
+          <div><span class="sector-state mainline">持续主线</span><p>当前 20 日排名前 20，此前 5 日至少 4 日处于前 20，且 5 日相对强度不弱于全 A、当日上涨成员占比不低于 50%。</p></div>
+          <div><span class="sector-state strengthening">新晋强化</span><p>当前 20 日排名前 20、5 日排名前 10，但此前 5 日进入前 20 少于 3 日，表示短期新近转强。</p></div>
+          <div><span class="sector-state divergence">高位分歧</span><p>当前 20 日排名前 20且此前 5 日至少 4 日处于前 20，但 5 日相对强度转负，或当日上涨成员占比低于 45%。</p></div>
+          <div><span class="sector-state pulse">轮动脉冲</span><p>5 日排名进入前 10，但 20 日排名仍在前 20之外，表示短线脉冲尚未形成中期持续性。</p></div>
+          <div><span class="sector-state fading">弱势退潮</span><p>此前已经处于持续主线或高位分歧，随后短期强度继续恶化或20日排名跌出前20；必须有从强转弱的生命周期证据。</p></div>
+          <div><span class="sector-state watch">观察中</span><p>数据完整但尚未形成明确阶段结论，仅作中性兜底，不表达正在转强或转弱。</p></div>
+          <div><span class="sector-state building">历史积累中</span><p>此前有效观察日不足 5 日，暂不做板块阶段判断；这不是强弱结论。</p></div>
+        </div></div>
+      </section>
     </div>
   </main>
   <script src="data/index.js"></script><script src="data/valuation/catalog.js"></script><script src="data/valuation_progress.js"></script><script src="app.js"></script>

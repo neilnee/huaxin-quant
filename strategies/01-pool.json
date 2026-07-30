@@ -1,6 +1,6 @@
 {
-  "strategy_version": "model1_pool_v1",
-  "description": "Model 1 pool screening parameters. This file contains query terms, thresholds, segments, industry exclusions, and soft-tag weights only.",
+  "strategy_version": "model1_pool_v2",
+  "description": "Model 1 pool screening parameters. This file contains query terms, thresholds, segments, industry classification settings, and soft-tag weights only.",
   "runtime": {
     "cache_max_age_days": 5,
     "fetch_delay_seconds": 1.5,
@@ -87,32 +87,7 @@
   },
   "industry": {
     "semiconductor_keyword": "半导体",
-    "exclude_keywords": [
-      "银行",
-      "保险",
-      "证券",
-      "多元金融",
-      "白酒",
-      "食品饮料",
-      "服装家纺",
-      "家用电器",
-      "旅游零售",
-      "农林牧渔",
-      "商业物业经营",
-      "房地产开发",
-      "房地产服务",
-      "水泥",
-      "建筑装饰",
-      "煤炭",
-      "钢铁",
-      "石油石化",
-      "航运港口",
-      "航空机场",
-      "燃气",
-      "水务",
-      "环保",
-      "医药生物"
-    ]
+    "exclude_keywords": []
   },
   "soft_tags": {
     "small_cap_tag_ceiling": 10000000000,

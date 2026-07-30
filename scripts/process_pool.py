@@ -24,7 +24,6 @@ HARD_FILTER_CFG = POOL_STRATEGY["hard_filters"]
 INDUSTRY_CFG = POOL_STRATEGY["industry"]
 SOFT_TAG_CFG = POOL_STRATEGY["soft_tags"]
 
-INDUSTRY_EXCLUDE = INDUSTRY_CFG["exclude_keywords"]
 SEMICONDUCTOR_KW = INDUSTRY_CFG["semiconductor_keyword"]
 
 # Tiered gross margin floors by sub-industry
@@ -369,35 +368,16 @@ for reason, count in rejected.items():
     print(f"    {reason}: {count} 只剔除")
 print(f"  通过: {len(passed)} 只")
 
-# ── Phase 3: Industry exclusion ──────────────────────────
+# ── Phase 3: Industry pass-through ───────────────────────
 
 print("\n" + "=" * 60)
-print("Phase 3: Industry exclusion")
+print("Phase 3: Industry pass-through")
 print("=" * 60)
 
 industry_key = KEY_INDUSTRY
-excluded_by_ind = []
-final = {}
+final = dict(passed)
 
-for code, row in passed.items():
-    industry = str(row.get(industry_key, "")) if industry_key else ""
-    hit = False
-    for kw in INDUSTRY_EXCLUDE:
-        if kw in industry:
-            hit = True
-            break
-    if hit:
-        excluded_by_ind.append((code, row.get("SECURITY_SHORT_NAME", ""), industry))
-    else:
-        final[code] = row
-
-print(f"  行业排除: {len(excluded_by_ind)} 只")
-if excluded_by_ind:
-    ind_counter = Counter()
-    for _, _, ind in excluded_by_ind:
-        ind_counter[ind] += 1
-    for ind, cnt in ind_counter.most_common(10):
-        print(f"    {ind}: {cnt}")
+print("  行业限制: 已放开（不按行业剔除）")
 print(f"  最终入池: {len(final)} 只")
 
 # ── Phase 4: Output CSV ──────────────────────────────────
@@ -509,7 +489,7 @@ print(f"\n  阶段一: API 拉取 {len(all_stocks)} 只（理论总数合计 {to
 print(f"  阶段二: 通过 {len(passed)} 只")
 for reason, count in rejected.items():
     print(f"    - {reason}: {count} 只")
-print(f"  阶段三: 行业排除 {len(excluded_by_ind)} 只 → 最终入池 {len(final)} 只")
+print(f"  阶段三: 行业限制已放开 → 最终入池 {len(final)} 只")
 
 # Industry distribution
 ind_dist = Counter()

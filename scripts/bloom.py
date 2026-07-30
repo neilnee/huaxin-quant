@@ -377,6 +377,7 @@ def base_status(row):
     stage = quant_stage(row)
     setup = quant_signal(row)
     action = str(quant_action(row)).upper()
+    post_breakout_state = str(row.get("post_breakout_state") or "").upper()
 
     if stage in {"DATA_ISSUE", "DATA_INSUFFICIENT"}:
         return "DATA_ISSUE"
@@ -387,7 +388,9 @@ def base_status(row):
     else:
         if row.get("structure_valid") is False or stage == "STRUCTURE_INVALID":
             return "INVALID"
-        status = CONFIG["stage_mapping"].get(stage)
+        status = CONFIG.get("post_breakout_mapping", {}).get(post_breakout_state)
+        if not status:
+            status = CONFIG["stage_mapping"].get(stage)
 
     if not status:
         status = "COOLDOWN" if (not quant_model2_include(row) or action == "REJECT") else "FORMING"

@@ -33,6 +33,7 @@ DATA_OUTPUT_DIR = OUTPUT_DIR / "data"
 DASHBOARD_DIR = ROOT / "dashboard"
 DASHBOARD_DATA_DIR = DASHBOARD_DIR / "data"
 DASHBOARD_START_DATE = "260701"
+MX_SEARCH_URL = "https://mkapi2.dfcfs.com/finskillshub/api/claw/news-search"
 
 
 def load_local_env() -> None:
@@ -78,6 +79,15 @@ def connect_state_db() -> sqlite3.Connection:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(sector_daily_metrics)")}
     if "history_basis" not in columns:
         conn.execute("ALTER TABLE sector_daily_metrics ADD COLUMN history_basis TEXT NOT NULL DEFAULT 'point_in_time'")
+    daily_columns = {
+        "rank_1": "INTEGER NOT NULL DEFAULT 0",
+        "relative_strength_1": "REAL NOT NULL DEFAULT 0",
+        "daily_strong_density": "REAL NOT NULL DEFAULT 0",
+        "daily_score": "REAL NOT NULL DEFAULT 0",
+    }
+    for name, definition in daily_columns.items():
+        if name not in columns:
+            conn.execute(f"ALTER TABLE sector_daily_metrics ADD COLUMN {name} {definition}")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sector_daily_lookup ON sector_daily_metrics(block_kind, block_name, trade_date)")
     conn.execute("""CREATE TABLE IF NOT EXISTS market_state_history (
         trade_date TEXT PRIMARY KEY, raw_state TEXT NOT NULL, confirmed_state TEXT NOT NULL,
@@ -92,6 +102,35 @@ def percentile_score(value: float, values: pd.Series) -> float:
     if valid.empty or not math.isfinite(value):
         return 50.0
     return round(float((valid <= value).mean() * 100), 2)
+
+
+def finalize_sector_rankings(records: list[dict]) -> list[dict]:
+    """Attach independent 1/5/20-day ranks without changing medium-term states."""
+    settings = CONFIG["daily_mainline"]
+    weights = settings["weights"]
+    sector_rows = []
+    for kind in sorted({row["block_type"] for row in records}):
+        rows = [row for row in records if row["block_type"] == kind]
+        for rank, row in enumerate(sorted(rows, key=lambda item: item["relative_strength_20"], reverse=True), 1):
+            row["rank_20"] = rank
+            row["rank"] = rank
+        for rank, row in enumerate(sorted(rows, key=lambda item: item["relative_strength_5"], reverse=True), 1):
+            row["rank_5"] = rank
+        rel1_values = pd.Series([row["relative_strength_1"] for row in rows], dtype=float)
+        volume_values = pd.Series([row["volume_activity"] for row in rows], dtype=float)
+        density_values = pd.Series([row["daily_strong_density"] for row in rows], dtype=float)
+        for row in rows:
+            components = {
+                "relative_strength_1": percentile_score(row["relative_strength_1"], rel1_values),
+                "up_breadth": row["up_breadth"],
+                "volume_activity": percentile_score(row["volume_activity"], volume_values),
+                "daily_strong_density": percentile_score(row["daily_strong_density"], density_values),
+            }
+            row["daily_score"] = round(sum(weights[key] * components[key] for key in weights), 2)
+        for rank, row in enumerate(sorted(rows, key=lambda item: (item["daily_score"], item["relative_strength_1"]), reverse=True), 1):
+            row["rank_1"] = rank
+        sector_rows.extend(sorted(rows, key=lambda item: item["rank_20"]))
+    return sector_rows
 
 
 def classify_sector_state(row: dict, prior: pd.DataFrame) -> str:
@@ -145,32 +184,28 @@ def indicators(frame: pd.DataFrame) -> pd.DataFrame:
 
 def sector_rows_for_date(universe: pd.DataFrame, blocks: pd.DataFrame, trade_date: str, history_basis: str) -> list[dict]:
     current = universe[(universe.trade_date == trade_date) & universe.ma60.notna()].copy()
+    current["rps1_market"] = current["ret1"].rank(pct=True, method="average") * 100
     merged = blocks.merge(current, on="code", how="inner")
-    market_median = {window: float(current[f"ret{window}"].median()) for window in (5, 20)}
+    market_median = {window: float(current[f"ret{window}"].median()) for window in (1, 5, 20)}
     records = []
     for (kind, name), group in merged.groupby(["block_kind", "block_name"]):
         if len(group) < 3:
             continue
+        rel1 = group.ret1.median() - market_median[1]
         rel5 = group.ret5.median() - market_median[5]
         rel20 = group.ret20.median() - market_median[20]
         strong = ((group.new_high60) | (group.ret5 >= group.ret5.quantile(0.9))).mean()
         records.append({"date": trade_date, "block_type": kind, "block_name": name, "member_count": len(group),
             "return_1": round(float(group.ret1.median() * 100), 3), "return_5": round(float(group.ret5.median() * 100), 3),
             "return_10": round(float(group.ret10.median() * 100), 3), "return_20": round(float(group.ret20.median() * 100), 3),
+            "relative_strength_1": round(float(rel1 * 100), 3),
             "relative_strength_5": round(float(rel5 * 100), 3), "relative_strength_20": round(float(rel20 * 100), 3),
             "volume_activity": round(float(group.volume_ratio.median()), 3), "up_breadth": round(float((group.ret1 > 0).mean() * 100), 2),
+            "daily_strong_density": round(float((group.rps1_market >= 90).mean() * 100), 2),
             "median_return_1": round(float(group.ret1.median() * 100), 3), "above_ma20_ratio": round(float((group.close > group.ma20).mean() * 100), 2),
             "above_ma60_ratio": round(float((group.close > group.ma60).mean() * 100), 2), "new_high_ratio": round(float(group.new_high60.mean() * 100), 2),
             "strong_stock_density": round(float(strong * 100), 2), "sector_state": "基线回填", "history_basis": history_basis})
-    sector_rows = []
-    for kind in sorted({row["block_type"] for row in records}):
-        rows = [row for row in records if row["block_type"] == kind]
-        for rank, row in enumerate(sorted(rows, key=lambda item: item["relative_strength_20"], reverse=True), 1):
-            row["rank_20"] = rank; row["rank"] = rank
-        for rank, row in enumerate(sorted(rows, key=lambda item: item["relative_strength_5"], reverse=True), 1):
-            row["rank_5"] = rank
-        sector_rows.extend(sorted(rows, key=lambda item: item["rank_20"]))
-    return sector_rows
+    return finalize_sector_rankings(records)
 
 
 def ensure_sector_baseline(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as_of: str) -> int:
@@ -271,7 +306,7 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
     universe = indicators(universe)
     current = universe[universe.trade_date == as_of].copy()
     current = current[current.ma60.notna()].copy()
-    for window in (5, 20, 60):
+    for window in (1, 5, 20, 60):
         current[f"rps{window}_market"] = current[f"ret{window}"].rank(pct=True, method="average") * 100
     breadth = {
         "universe_size": int(total), "valid_count": int(valid), "coverage_ratio": round(ratio, 4),
@@ -322,25 +357,21 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
     for (kind, name), group in merged.groupby(["block_kind", "block_name"]):
         if len(group) < 3:
             continue
+        rel1 = group.ret1.median() - market_median[1]
         rel5 = group.ret5.median() - market_median[5]
         rel20 = group.ret20.median() - market_median[20]
         strong = ((group.new_high60) | (group.ret5 >= group.ret5.quantile(0.9))).mean()
         records.append({"date": as_of, "block_type": kind, "block_name": name, "member_count": len(group),
             "return_1": round(float(group.ret1.median() * 100), 3), "return_5": round(float(group.ret5.median() * 100), 3),
             "return_10": round(float(group.ret10.median() * 100), 3), "return_20": round(float(group.ret20.median() * 100), 3),
+            "relative_strength_1": round(float(rel1 * 100), 3),
             "relative_strength_5": round(float(rel5 * 100), 3), "relative_strength_20": round(float(rel20 * 100), 3),
             "volume_activity": round(float(group.volume_ratio.median()), 3), "up_breadth": round(float((group.ret1 > 0).mean() * 100), 2),
+            "daily_strong_density": round(float((group.rps1_market >= 90).mean() * 100), 2),
             "median_return_1": round(float(group.ret1.median() * 100), 3), "above_ma20_ratio": round(float((group.close > group.ma20).mean() * 100), 2),
             "above_ma60_ratio": round(float((group.close > group.ma60).mean() * 100), 2), "new_high_ratio": round(float(group.new_high60.mean() * 100), 2),
             "strong_stock_density": round(float(strong * 100), 2), "sector_state": "历史积累中", "history_basis": "point_in_time"})
-    sector_rows = []
-    for kind in sorted({row["block_type"] for row in records}):
-        rows = [row for row in records if row["block_type"] == kind]
-        for rank, row in enumerate(sorted(rows, key=lambda item: item["relative_strength_20"], reverse=True), 1):
-            row["rank_20"] = rank; row["rank"] = rank
-        for rank, row in enumerate(sorted(rows, key=lambda item: item["relative_strength_5"], reverse=True), 1):
-            row["rank_5"] = rank
-        sector_rows.extend(sorted(rows, key=lambda item: item["rank_20"]))
+    sector_rows = finalize_sector_rankings(records)
     top_sets = {kind: {row["block_name"] for row in sector_rows if row["block_type"] == kind and row["rank"] <= 10} for kind in {row["block_type"] for row in sector_rows}}
     previous = pd.read_sql_query("SELECT block_kind,block_name,rank_20 AS rank FROM sector_daily_metrics WHERE trade_date=(SELECT max(trade_date) FROM sector_daily_metrics WHERE trade_date<?)", state_conn, params=(as_of,))
     overlaps = []
@@ -376,15 +407,18 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
     stock_frame = stock_frame.merge(sw_l2_names, left_on="sw_l2_code", right_on="industry_code", how="left")
     stock_frame["rps20_industry"] = stock_frame.groupby("sw_l2_code")["ret20"].rank(pct=True, method="average") * 100
     stock_frame["rps60_industry"] = stock_frame.groupby("sw_l2_code")["ret60"].rank(pct=True, method="average") * 100
+    stock_frame["volume_rank"] = stock_frame["volume_ratio"].rank(pct=True, method="average") * 100
     l2_heat = {(row["block_name"]): row for row in sector_rows if row["block_type"] == "industry_sw_l2"}
     stock_rows = []
     for row in stock_frame.itertuples(index=False):
         industry_row = l2_heat.get(row.industry_name, {}) if pd.notna(row.industry_name) else {}
         trend_position = (50 if row.close > row.ma20 else 0) + (50 if row.close > row.ma60 else 0)
         strength = 0.35 * row.rps20_market + 0.25 * row.rps60_market + 0.20 * row.rps20_industry + 0.10 * trend_position + 0.10 * min(100, row.volume_ratio * 50)
-        stock_rows.append({"date": as_of, "code": row.code, "name": row.name, "close": round(float(row.close), 4), "return_5": round(float(row.ret5 * 100), 3), "return_20": round(float(row.ret20 * 100), 3), "return_60": round(float(row.ret60 * 100), 3), "rps5_market": round(float(row.rps5_market), 2), "rps20_market": round(float(row.rps20_market), 2), "rps60_market": round(float(row.rps60_market), 2), "sw_l2_code": row.sw_l2_code, "sw_l2_name": row.industry_name if pd.notna(row.industry_name) else "", "rps20_industry": round(float(row.rps20_industry), 2), "rps60_industry": round(float(row.rps60_industry), 2), "industry_relative_strength_20": industry_row.get("relative_strength_20"), "industry_rank": industry_row.get("rank_20"), "above_ma20": bool(row.close > row.ma20), "above_ma60": bool(row.close > row.ma60), "distance_high60_pct": round(float((row.close / row.high60 - 1) * 100), 3), "atr14_pct": round(float(row.atr14_pct * 100), 3), "volume_ratio_20": round(float(row.volume_ratio), 3), "strength_score": round(float(strength), 2)})
+        daily_strength = 0.55 * row.rps1_market + 0.15 * row.rps5_market + 0.20 * row.volume_rank + 0.10 * trend_position
+        stock_rows.append({"date": as_of, "code": row.code, "name": row.name, "close": round(float(row.close), 4), "return_1": round(float(row.ret1 * 100), 3), "return_5": round(float(row.ret5 * 100), 3), "return_20": round(float(row.ret20 * 100), 3), "return_60": round(float(row.ret60 * 100), 3), "rps1_market": round(float(row.rps1_market), 2), "rps5_market": round(float(row.rps5_market), 2), "rps20_market": round(float(row.rps20_market), 2), "rps60_market": round(float(row.rps60_market), 2), "sw_l2_code": row.sw_l2_code, "sw_l2_name": row.industry_name if pd.notna(row.industry_name) else "", "rps20_industry": round(float(row.rps20_industry), 2), "rps60_industry": round(float(row.rps60_industry), 2), "industry_relative_strength_20": industry_row.get("relative_strength_20"), "industry_rank": industry_row.get("rank_20"), "above_ma20": bool(row.close > row.ma20), "above_ma60": bool(row.close > row.ma60), "distance_high60_pct": round(float((row.close / row.high60 - 1) * 100), 3), "atr14_pct": round(float(row.atr14_pct * 100), 3), "volume_ratio_20": round(float(row.volume_ratio), 3), "daily_strength_score": round(float(daily_strength), 2), "strength_score": round(float(strength), 2)})
     stock_by_code = {row["code"]: row for row in stock_rows}
     sector_leaders = {}
+    daily_sector_leaders = {}
     for (kind, name), group in merged.groupby(["block_kind", "block_name"]):
         if kind not in {"industry_sw_l1", "industry_sw_l2", "gn", "fg"}:
             continue
@@ -394,6 +428,10 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
             role = "领涨" if rank == 1 else "趋势核心" if stock["above_ma20"] and stock["above_ma60"] else "观察"
             leaders.append({key: stock[key] for key in ("code", "name", "strength_score", "rps20_market", "rps20_industry", "return_20", "above_ma20", "above_ma60", "volume_ratio_20")} | {"rank": rank, "role": role})
         sector_leaders[f"{kind}:{name}"] = leaders
+        daily_leaders = []
+        for rank, stock in enumerate(sorted(members, key=lambda item: item["daily_strength_score"], reverse=True)[:5], start=1):
+            daily_leaders.append({key: stock[key] for key in ("code", "name", "return_1", "rps1_market", "rps5_market", "volume_ratio_20", "daily_strength_score")} | {"rank": rank})
+        daily_sector_leaders[f"{kind}:{name}"] = daily_leaders
     concept_heat = {(row["block_name"]): row for row in sector_rows if row["block_type"] == "gn"}
     concept_frame = merged[merged.block_kind == "gn"].merge(stock_frame[["code", "name", "ret20"]], on="code", how="left", suffixes=("", "_stock"))
     concept_rows = []
@@ -403,7 +441,7 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
         within = float((same_concept.ret20 <= row.ret20).mean() * 100)
         heat = concept_heat.get(name, {})
         concept_rows.append({"date": as_of, "code": code, "name": row.get("name", ""), "concept_name": name, "concept_relative_strength_20": heat.get("relative_strength_20"), "concept_rank": heat.get("rank_20"), "stock_return_20": round(float(row.ret20 * 100), 3), "rps20_within_concept": round(within, 2), "stock_vs_concept_return_20": round(float((row.ret20 - same_concept.ret20.mean()) * 100), 3)})
-    report = {"meta": {"run_date": as_of, "strategy_version": CONFIG["strategy_version"], "data_status": "VALID", "config": str(CONFIG_PATH)}, "state": {"current": state, "raw_state": state, "trend_score": round(trend_score, 2), "volatility_score": round(volatility_score, 2), "breadth_score": round(float(breadth_score), 2), "rotation_score": rotation, "persistent_mainline_count": len(persistent_mainlines), "persistent_mainlines": persistent_mainlines}, "benchmarks": benchmark_metrics, "breadth": breadth, "rotation": {"top10_sets": {k: sorted(v) for k, v in top_sets.items()}}, "sector_leaders": sector_leaders}
+    report = {"meta": {"run_date": as_of, "strategy_version": CONFIG["strategy_version"], "data_status": "VALID", "config": str(CONFIG_PATH)}, "state": {"current": state, "raw_state": state, "trend_score": round(trend_score, 2), "volatility_score": round(volatility_score, 2), "breadth_score": round(float(breadth_score), 2), "rotation_score": rotation, "persistent_mainline_count": len(persistent_mainlines), "persistent_mainlines": persistent_mainlines}, "benchmarks": benchmark_metrics, "breadth": breadth, "rotation": {"top10_sets": {k: sorted(v) for k, v in top_sets.items()}}, "sector_leaders": sector_leaders, "daily_sector_leaders": daily_sector_leaders}
     return report, sector_rows, stock_rows, concept_rows
 
 
@@ -430,12 +468,29 @@ def write_markdown(report: dict, sectors: list[dict], stocks: list[dict], as_of:
         "| 趋势 | 波动风险 | 广度 | 轮动 |",
         "|---:|---:|---:|---:|",
         f"| {state['trend_score']:.2f} | {state['volatility_score']:.2f} | {state['breadth_score']:.2f} | {state['rotation_score']:.2f} |",
+    ]
+    mainline = report.get("daily_mainline", {})
+    if mainline:
+        lines.extend([
+            "", "## 今日盘面主线", "",
+            f"**{mainline.get('name', '当日主线待归纳')}**  ",
+            f"核心事件：{mainline.get('core_event', '—')}", "",
+            mainline.get("narrative_logic", "—"), "",
+            "强势板块：" + "、".join(item["block_name"] for item in mainline.get("strong_blocks", [])) if mainline.get("strong_blocks") else "强势板块：—",
+            "强势个股：" + "、".join(
+                f"{item['name']}（{item['code']}，{item['return_1']:.2f}%；关联：{'/'.join(item.get('selected_block_names', [])) or '—'}）"
+                for item in mainline.get("strong_stocks", [])
+            ) if mainline.get("strong_stocks") else "强势个股：—",
+        ])
+        if mainline.get("evidence"):
+            lines.extend(["", "事件依据："] + [f"- {item['date']}｜{item['source']}｜{item['title']}" for item in mainline["evidence"]])
+    lines.extend([
         "",
         "## 宽基与广度",
         "",
         "| 指数 | 收盘 | 20日收益 | 趋势分 | 波动分 |",
         "|---|---:|---:|---:|---:|",
-    ]
+    ])
     for name, item in report["benchmarks"].items():
         lines.append(f"| {name} | {item['close']:.2f} | {item['return_20']:.2f}% | {item['trend_score']:.2f} | {item['volatility_score']:.2f} |")
     lines.extend([
@@ -647,6 +702,341 @@ def parse_llm_json_object(content: str) -> dict:
     return parsed
 
 
+def daily_mainline_candidates(report: dict, sectors: list[dict]) -> dict:
+    settings = CONFIG["daily_mainline"]
+    candidates = []
+    stock_pool = {}
+    for kind in settings["block_types"]:
+        rows = sorted(
+            (row for row in sectors if row["block_type"] == kind),
+            key=lambda item: (item["daily_score"], item["relative_strength_1"]), reverse=True,
+        )[:int(settings["candidate_limits"][kind])]
+        for row in rows:
+            block_id = f"{kind}:{row['block_name']}"
+            leaders = report.get("daily_sector_leaders", {}).get(block_id, [])
+            for stock in leaders:
+                previous = stock_pool.get(stock["code"])
+                if previous is None:
+                    stock_pool[stock["code"]] = {**stock, "candidate_block_ids": [block_id]}
+                else:
+                    previous["candidate_block_ids"] = list(dict.fromkeys(previous["candidate_block_ids"] + [block_id]))
+                    if stock["daily_strength_score"] > previous["daily_strength_score"]:
+                        previous.update(stock)
+            candidates.append({
+                "block_id": block_id, "block_type": kind, "block_name": row["block_name"],
+                "rank_1": row["rank_1"], "daily_score": row["daily_score"],
+                "relative_strength_1": row["relative_strength_1"], "median_return_1": row["median_return_1"],
+                "up_breadth": row["up_breadth"], "volume_activity": row["volume_activity"],
+                "daily_strong_density": row["daily_strong_density"], "leaders": leaders,
+                "qualified": (
+                    row["daily_score"] >= settings["minimum_daily_score"]
+                    and row["relative_strength_1"] >= settings["minimum_relative_strength_1"]
+                    and row["up_breadth"] >= settings["minimum_up_breadth"]
+                ),
+            })
+    stocks = sorted(stock_pool.values(), key=lambda item: item["daily_strength_score"], reverse=True)[:30]
+    return {"blocks": candidates, "stocks": stocks, "qualified_count": sum(item["qualified"] for item in candidates)}
+
+
+def mx_search_items(raw: dict | None) -> list[dict] | None:
+    current = raw
+    for key in ("data", "data", "llmSearchResponse", "data"):
+        if not isinstance(current, dict) or key not in current:
+            return None
+        current = current[key]
+    return current if isinstance(current, list) else None
+
+
+def classify_news_phase(published_at: str, as_of: str, title: str = "") -> str:
+    """Classify when an article became public relative to the target A-share session."""
+    value = str(published_at or "").strip()
+    match = re.match(r"^(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}):(\d{2}))?", value)
+    if not match:
+        return "unknown"
+    publish_date = match.group(1)
+    if publish_date < as_of:
+        return "pre_open"
+    if publish_date > as_of:
+        return "future"
+    if publish_date == as_of and re.search(r"复盘|收评|盘后|收官|资金净流入|涨停潮|集体爆发|全面走强", title):
+        return "post_close"
+    if match.group(2) is None:
+        return "unknown"
+    minutes = int(match.group(2)) * 60 + int(match.group(3))
+    if minutes < 9 * 60 + 30:
+        return "pre_open"
+    if minutes < 15 * 60:
+        return "intraday"
+    return "post_close"
+
+
+def select_daily_mainline_news(raw_results: list[dict], as_of: str, limit: int) -> list[dict]:
+    """Normalize, deduplicate and retain a balanced event timeline for the LLM."""
+    normalized = []
+    seen_titles = set()
+    for item in raw_results:
+        if not isinstance(item, dict):
+            continue
+        published_at = str(item.get("date") or "").strip()
+        title = re.sub(r"\s+", " ", str(item.get("title") or "")).strip()
+        content = re.sub(r"\s+", " ", str(item.get("content") or "")).strip()
+        phase = classify_news_phase(published_at, as_of, title)
+        if phase == "future":
+            continue
+        if not title or not content or title in seen_titles:
+            continue
+        seen_titles.add(title)
+        core_eligible = False
+        if phase == "pre_open" and published_at[:10]:
+            try:
+                age_days = (pd.Timestamp(as_of) - pd.Timestamp(published_at[:10])).days
+                core_eligible = 0 <= age_days <= int(CONFIG["daily_mainline"]["core_catalyst_lookback_days"])
+            except ValueError:
+                core_eligible = False
+        normalized.append({
+            "title": title,
+            "date": published_at[:10],
+            "publish_time": published_at,
+            "phase": phase,
+            "core_eligible": core_eligible,
+            "source": str(item.get("source") or ""),
+            "content": content[:700],
+        })
+
+    quotas = (("pre_open", 6), ("intraday", 3), ("post_close", 2), ("unknown", 1))
+    selected = []
+    selected_titles = set()
+    for phase, quota in quotas:
+        for item in (row for row in normalized if row["phase"] == phase):
+            if sum(row["phase"] == phase for row in selected) >= quota:
+                break
+            selected.append(item)
+            selected_titles.add(item["title"])
+    for item in normalized:
+        if len(selected) >= limit:
+            break
+        if item["title"] not in selected_titles:
+            selected.append(item)
+            selected_titles.add(item["title"])
+    return selected[:limit]
+
+
+def core_evidence_is_eligible(titles: list[str], evidence_map: dict[str, dict]) -> bool:
+    return bool(titles and evidence_map.get(titles[0], {}).get("core_eligible"))
+
+
+def link_mainline_stocks(
+    block_ids: list[str], stock_codes: list[str], block_map: dict[str, dict], stock_map: dict[str, dict],
+) -> tuple[list[dict], set[str]]:
+    """Attach selected block relationships and report any block without a representative stock."""
+    selected_ids = set(block_ids)
+    rows = []
+    covered_ids = set()
+    for code in stock_codes:
+        stock = stock_map[code]
+        related_ids = [block_id for block_id in block_ids if block_id in stock.get("candidate_block_ids", [])]
+        covered_ids.update(related_ids)
+        rows.append({
+            **stock,
+            "selected_block_ids": related_ids,
+            "selected_block_names": [block_map[block_id]["block_name"] for block_id in related_ids],
+        })
+    return rows, selected_ids - covered_ids
+
+
+def fetch_mx_search_cache(cache_path: Path, query: str) -> tuple[dict | None, str, str]:
+    raw = None
+    if cache_path.exists():
+        try:
+            raw = json.loads(cache_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            raw = None
+    if mx_search_items(raw) not in (None, []):
+        return raw, "cached", ""
+    api_key = os.environ.get("MX_APIKEY", "").strip()
+    if not api_key:
+        return None, "skipped", "MX_APIKEY missing"
+    try:
+        response = requests.post(
+            MX_SEARCH_URL,
+            headers={"apikey": api_key, "Content-Type": "application/json"},
+            json={"query": query},
+            timeout=45,
+        )
+        response.raise_for_status()
+        raw = response.json()
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return raw, "fetched", ""
+    except (requests.RequestException, ValueError, OSError) as exc:
+        return None, "failed", str(exc)[:300]
+
+
+def catalyst_entities(raw_results: list[dict], as_of: str) -> list[str]:
+    """Extract a small deterministic entity set to focus the pre-open verification search."""
+    vocabulary = (
+        ("微软", ("微软", "Microsoft")), ("谷歌", ("谷歌", "Google", "Alphabet")),
+        ("Meta", ("Meta",)), ("亚马逊", ("亚马逊", "Amazon", "AWS")),
+        ("英伟达", ("英伟达", "NVIDIA")), ("苹果", ("苹果", "Apple")),
+        ("特斯拉", ("特斯拉", "Tesla")), ("OpenAI", ("OpenAI",)),
+        ("DeepSeek", ("DeepSeek", "深度求索")), ("月之暗面", ("月之暗面", "Kimi")),
+        ("智谱", ("智谱", "GLM")), ("阿里", ("阿里", "Alibaba")),
+        ("腾讯", ("腾讯", "Tencent")), ("字节跳动", ("字节跳动", "字节", "ByteDance")),
+        ("华为", ("华为", "Huawei")), ("国务院", ("国务院",)),
+        ("国家发改委", ("国家发改委", "发改委")), ("工信部", ("工信部",)),
+        ("央行", ("央行",)), ("证监会", ("证监会",)),
+    )
+    counts = {entity: 0 for entity, _ in vocabulary}
+    for item in raw_results:
+        if not isinstance(item, dict):
+            continue
+        publish_date = str(item.get("date") or "")[:10]
+        if publish_date and publish_date > as_of:
+            continue
+        text = f"{item.get('title') or ''} {item.get('content') or ''}"
+        lowered = text.lower()
+        for entity, aliases in vocabulary:
+            counts[entity] += sum(lowered.count(alias.lower()) for alias in aliases)
+    order = {entity: index for index, (entity, _) in enumerate(vocabulary)}
+    return sorted((entity for entity, count in counts.items() if count), key=lambda entity: (-counts[entity], order[entity]))[:6]
+
+
+def daily_mainline_search_topics(block_names: list[str]) -> list[str]:
+    """Add only the minimum umbrella terms needed to search a fragmented concept cluster."""
+    topics = list(block_names[:6])
+    ai_markers = ("AI", "ChatGPT", "AIGC", "大模型", "多模态", "智谱", "Kimi")
+    if sum(any(marker.lower() in name.lower() for marker in ai_markers) for name in block_names[:12]) >= 2:
+        topics = ["AI应用", "AI商业化"] + topics
+    return list(dict.fromkeys(topics))
+
+
+def fetch_daily_mainline_news(as_of: str, candidates: dict) -> dict:
+    """Fetch separate trigger/context searches and attach a deterministic timeline."""
+    ranked_blocks = sorted(candidates["blocks"], key=lambda item: item["daily_score"], reverse=True)
+    block_names = [item["block_name"] for item in ranked_blocks[:12]]
+    search_topics = daily_mainline_search_topics(block_names)
+    context_topics = search_topics[:2] if search_topics[:2] == ["AI应用", "AI商业化"] else search_topics[:6]
+    context_query = f"{as_of} A股 早盘高开 原因 隔夜消息 海外财报 商业化催化 " + " ".join(context_topics)
+    context_raw, context_status, context_error = fetch_mx_search_cache(
+        STATE_DIR / f"daily_mainline_context_news_v6_{today_stamp(as_of)}.json", context_query,
+    )
+    context_results = mx_search_items(context_raw) or []
+    entities = catalyst_entities(context_results, as_of)
+    focused_entity = entities[0] if entities else ""
+    trigger_query = f"{as_of} A股 开盘前 隔夜 核心催化 最新财报 公告 政策 {focused_entity} " + " ".join(search_topics[:2])
+    trigger_raw, trigger_status, trigger_error = fetch_mx_search_cache(
+        STATE_DIR / f"daily_mainline_trigger_news_v6_{today_stamp(as_of)}.json", trigger_query,
+    )
+    trigger_results = mx_search_items(trigger_raw) or []
+    raw_results = trigger_results + context_results
+    statuses = [context_status, trigger_status]
+    errors = [error for error in (context_error, trigger_error) if error]
+    queries = {"context": context_query, "trigger": trigger_query}
+    items = select_daily_mainline_news(raw_results, as_of, int(CONFIG["daily_mainline"]["news_max_items"]))
+    source_status = "fetched" if "fetched" in statuses else "cached" if "cached" in statuses else statuses[0]
+    result = {"status": source_status if items else "empty", "queries": queries, "items": items}
+    if errors:
+        result["reason"] = "; ".join(errors)
+    return result
+
+
+def daily_mainline_fallback(candidates: dict, news: dict, reason: str) -> dict:
+    settings = CONFIG["daily_mainline"]
+    blocks = sorted((item for item in candidates["blocks"] if item["qualified"]), key=lambda item: item["daily_score"], reverse=True)[:settings["maximum_strong_blocks"]]
+    allowed_codes = {stock["code"] for block in blocks for stock in block["leaders"]}
+    stocks = [item for item in candidates["stocks"] if item["code"] in allowed_codes][:settings["maximum_strong_stocks"]]
+    block_ids = [item["block_id"] for item in blocks]
+    block_map = {item["block_id"]: item for item in blocks}
+    stock_map = {item["code"]: item for item in stocks}
+    linked_stocks, _ = link_mainline_stocks(block_ids, list(stock_map), block_map, stock_map)
+    return {
+        "status": "degraded", "name": "当日主线待归纳" if blocks else "当日无清晰主线",
+        "core_event": "资讯或主线归纳不可用，未生成事件判断。",
+        "narrative_logic": "仅保留当日行情筛选结果，不根据模型常识补写催化或因果关系。",
+        "strong_blocks": [{key: value for key, value in item.items() if key != "leaders"} for item in blocks], "strong_stocks": linked_stocks, "evidence": [],
+        "reason": reason, "news_status": news.get("status", "unknown"),
+    }
+
+
+def call_daily_mainline_analysis(as_of: str, candidates: dict, news: dict) -> dict:
+    settings = CONFIG["daily_mainline"]
+    if candidates["qualified_count"] < 2:
+        result = daily_mainline_fallback(candidates, news, "fewer than two qualified blocks")
+        result.update({"status": "unclear", "name": "当日无清晰主线", "core_event": "强势板块未形成足够的横向共振。"})
+        return result
+    if not news.get("items"):
+        return daily_mainline_fallback(candidates, news, "no auditable news evidence")
+    api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    if not api_key:
+        return daily_mainline_fallback(candidates, news, "DEEPSEEK_API_KEY missing")
+    model = settings.get("model", "deepseek-v4-flash")
+    base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
+    block_payload = [{key: item[key] for key in ("block_id", "block_type", "block_name", "rank_1", "daily_score", "relative_strength_1", "median_return_1", "up_breadth", "volume_activity", "daily_strong_density", "qualified")} for item in candidates["blocks"]]
+    stock_payload = [{key: item[key] for key in ("code", "name", "return_1", "rps1_market", "rps5_market", "volume_ratio_20", "daily_strength_score", "candidate_block_ids")} for item in candidates["stocks"]]
+    system_prompt = (
+        "你是A股盘后主线归纳器。只能依据输入的当日行情候选和妙想资讯证据，归纳一条今日盘面主线。"
+        "主线是多个强势板块和核心个股围绕同一事件与预期变化形成的叙事链，不是简单复制涨幅最高的概念名。"
+        "如果候选方向互不相关、只有单点上涨，或资讯无法解释盘面共振，status必须为unclear。"
+        "status=clear时，从候选block_id中选择2至6个strong_block_ids，从候选股票代码中选择2至6个strong_stock_codes；"
+        "每只核心股的candidate_block_ids必须至少包含一个最终选择的strong_block_id，每个最终选择的strong_block_id也必须至少被一只核心股覆盖。"
+        "从资讯标题中原样选择1至3个evidence_titles，第一条必须同时满足phase=pre_open和core_eligible=true，core_event只能概括第一条证据。"
+        "先判断哪些事件在行情启动前已被市场获知；phase=intraday只能作为强化催化写入narrative_logic，phase=post_close只能验证盘面事实，"
+        "phase=unknown不得承担核心催化，不得把盘中或收盘后消息倒推为启动原因。name采用‘共同母题+当日交易焦点’的4至24字中性名称，"
+        "不得使用引爆、狂欢、全面爆发、主升、掀起涨停潮等情绪化或趋势预测表达；core_event用一句话概括一项主要事件，其他事件只能作为辅助催化；"
+        "narrative_logic用80至180字写清‘事件→预期变化→受益环节→盘面响应’，保持客观克制。"
+        "不得使用候选之外的板块或股票，不得使用资讯之外的事件和数字，不得提供买卖、仓位、涨跌预测。"
+        "只返回JSON对象，字段固定为status、name、core_event、narrative_logic、strong_block_ids、strong_stock_codes、evidence_titles。"
+    )
+    payload = {"trade_date": as_of, "qualified_block_count": candidates["qualified_count"], "block_candidates": block_payload, "stock_candidates": stock_payload, "news_evidence": news["items"]}
+    last_error = "unknown"
+    for _ in range(int(settings["llm_max_retries"])):
+        try:
+            response = requests.post(
+                f"{base_url}/chat/completions", headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={"model": model, "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}], "temperature": 0.1, "max_tokens": int(settings["llm_max_tokens"]), "response_format": {"type": "json_object"}, "stream": False}, timeout=60,
+            )
+            response.raise_for_status()
+            parsed = parse_llm_json_object(response.json()["choices"][0]["message"].get("content", ""))
+            if parsed.get("status") not in {"clear", "unclear"}:
+                raise ValueError("invalid status")
+            block_map = {item["block_id"]: item for item in candidates["blocks"]}
+            stock_map = {item["code"]: item for item in candidates["stocks"]}
+            evidence_map = {item["title"]: item for item in news["items"]}
+            block_ids = list(dict.fromkeys(parsed.get("strong_block_ids") or []))
+            stock_codes = list(dict.fromkeys(str(code) for code in (parsed.get("strong_stock_codes") or [])))
+            titles = list(dict.fromkeys(parsed.get("evidence_titles") or []))
+            if any(item not in block_map for item in block_ids) or any(item not in stock_map for item in stock_codes) or any(item not in evidence_map for item in titles):
+                raise ValueError("response contains evidence outside candidate set")
+            if parsed["status"] == "clear" and (not 2 <= len(block_ids) <= settings["maximum_strong_blocks"] or not 2 <= len(stock_codes) <= settings["maximum_strong_stocks"] or not titles):
+                raise ValueError("clear mainline lacks cross-validated evidence")
+            if parsed["status"] == "clear" and not core_evidence_is_eligible(titles, evidence_map):
+                raise ValueError("first evidence is not an eligible recent pre-open catalyst")
+            if parsed["status"] == "clear" and any(not block_map[item]["qualified"] for item in block_ids):
+                raise ValueError("clear mainline selected an unqualified block")
+            selected_ids = set(block_ids)
+            if parsed["status"] == "clear" and any(not selected_ids.intersection(stock_map[code]["candidate_block_ids"]) for code in stock_codes):
+                raise ValueError("selected stock is unrelated to selected blocks")
+            linked_stocks, uncovered_ids = link_mainline_stocks(block_ids, stock_codes, block_map, stock_map)
+            if parsed["status"] == "clear" and uncovered_ids:
+                raise ValueError("selected blocks lack representative stocks: " + ", ".join(sorted(uncovered_ids)))
+            name, core_event, logic = (str(parsed.get(key) or "").strip() for key in ("name", "core_event", "narrative_logic"))
+            if not name or not core_event or not logic:
+                raise ValueError("mainline text fields are incomplete")
+            if not 4 <= len(name) <= 24 or any(term in name for term in ("引爆", "狂欢", "全面爆发", "主升", "掀起", "暴涨", "涨停潮")):
+                raise ValueError("mainline name is not neutral and concise")
+            return {
+                "status": parsed["status"], "name": name if parsed["status"] == "clear" else "当日无清晰主线",
+                "core_event": core_event, "narrative_logic": logic,
+                "strong_blocks": [{key: value for key, value in block_map[item].items() if key != "leaders"} for item in block_ids], "strong_stocks": linked_stocks,
+                "evidence": [{key: evidence_map[item][key] for key in ("title", "date", "source")} for item in titles],
+                "news_status": news["status"], "provider": "deepseek", "model": model,
+            }
+        except Exception as exc:
+            last_error = str(exc)[:300]
+    print(f"[market_regime] 今日主线归纳失败（{model}）: {last_error}", file=sys.stderr)
+    return daily_mainline_fallback(candidates, news, last_error)
+
+
 def extract_market_analysis(content: str) -> tuple[str, bool]:
     """Prefer strict JSON, while tolerating a malformed wrapper from the provider."""
     try:
@@ -698,7 +1088,7 @@ def call_market_llm_analysis(report: dict) -> dict:
     api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
     if not api_key:
         return {"status": "skipped", "reason": "DEEPSEEK_API_KEY missing", "analysis": ""}
-    model = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
+    model = CONFIG.get("reporting", {}).get("model", "deepseek-v4-flash")
     base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
     system_prompt = (
         "你是A股市场环境解读助手。只根据用户提供的结构化数据，用90-150字解释当前市场表现，"
@@ -758,8 +1148,8 @@ def build_market_context(report: dict, sectors: list[dict], stocks: list[dict], 
     kinds = ("industry_sw_l1", "industry_sw_l2", "gn", "fg")
     rankings = {kind: [row for row in sectors if row["block_type"] == kind][:20] for kind in kinds}
     selected = {(kind, row["block_name"]) for kind, rows in rankings.items() for row in rows}
-    history = pd.read_sql_query("""SELECT trade_date,block_kind,block_name,rank_20,rank_5,return_1,return_5,return_20,
-        relative_strength_5,relative_strength_20,advance_ratio,volume_activity,above_ma20_ratio,sector_state,history_basis
+    history = pd.read_sql_query("""SELECT trade_date,block_kind,block_name,rank_1,rank_20,rank_5,return_1,return_5,return_20,
+        relative_strength_1,relative_strength_5,relative_strength_20,daily_score,advance_ratio,volume_activity,above_ma20_ratio,sector_state,history_basis
         FROM sector_daily_metrics WHERE trade_date<=? ORDER BY trade_date""", state_conn, params=(as_of,))
     sector_history = {kind: [] for kind in kinds}
     for kind, name in sorted(selected):
@@ -788,6 +1178,7 @@ def build_market_context(report: dict, sectors: list[dict], stocks: list[dict], 
         "baseline_history_days": baseline_count},
         "market_state": market_state_view(report), "market_state_explainer": market_state_explainer(report), "indexes": report["benchmarks"],
         "breadth": {"all_a": report["breadth"], "top_scopes": top_scopes},
+        "daily_mainline": report.get("daily_mainline", {}),
         "sector_rankings": rankings, "sector_history": sector_history, "sector_rank_matrix": rank_matrix, "sector_leaders": sector_leaders}
 
 
@@ -867,15 +1258,15 @@ def persist_sector_metrics(conn: sqlite3.Connection, as_of: str, sectors: list[d
             [(as_of, row["block_type"], row["block_name"], row["relative_strength_20"], row["rank_20"]) for row in sectors],
         )
     conn.executemany(
-        """INSERT INTO sector_daily_metrics(trade_date,block_kind,block_name,member_count,rank_20,rank_5,
-            return_1,return_5,return_10,return_20,relative_strength_5,relative_strength_20,median_return_1,
+        """INSERT INTO sector_daily_metrics(trade_date,block_kind,block_name,member_count,rank_1,rank_20,rank_5,
+            return_1,return_5,return_10,return_20,relative_strength_1,relative_strength_5,relative_strength_20,median_return_1,
             advance_ratio,volume_activity,above_ma20_ratio,above_ma60_ratio,new_high_ratio,strong_stock_density,
-            sector_state,history_basis) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        [(as_of, row["block_type"], row["block_name"], row["member_count"], row["rank_20"], row["rank_5"],
-          row["return_1"], row["return_5"], row["return_10"], row["return_20"], row["relative_strength_5"],
-          row["relative_strength_20"], row["median_return_1"], row["up_breadth"], row["volume_activity"],
+            daily_strong_density,daily_score,sector_state,history_basis) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        [(as_of, row["block_type"], row["block_name"], row["member_count"], row["rank_1"], row["rank_20"], row["rank_5"],
+          row["return_1"], row["return_5"], row["return_10"], row["return_20"], row["relative_strength_1"],
+          row["relative_strength_5"], row["relative_strength_20"], row["median_return_1"], row["up_breadth"], row["volume_activity"],
           row["above_ma20_ratio"], row["above_ma60_ratio"], row["new_high_ratio"], row["strong_stock_density"],
-          row["sector_state"], row["history_basis"])
+          row["daily_strong_density"], row["daily_score"], row["sector_state"], row["history_basis"])
          for row in sectors],
     )
     conn.commit()
@@ -924,6 +1315,12 @@ def main() -> int:
         report["llm"] = call_market_llm_analysis(report) if not args.no_llm else {
             "status": "skipped", "reason": "disabled_by_flag", "analysis": ""
         }
+        candidates = daily_mainline_candidates(report, sectors)
+        if args.no_llm:
+            report["daily_mainline"] = daily_mainline_fallback(candidates, {"status": "skipped"}, "disabled_by_flag")
+        else:
+            news = fetch_daily_mainline_news(as_of, candidates)
+            report["daily_mainline"] = call_daily_mainline_analysis(as_of, candidates, news)
         save_block_metrics(state_conn, as_of, sectors); write_outputs(report, sectors, stocks, concepts, state_conn, as_of)
         print(json.dumps(report["state"], ensure_ascii=False, indent=2)); return 0
     finally:

@@ -34,11 +34,14 @@
   },
   "reporting": {
     "model": "deepseek-v4-flash",
+    "thinking": "disabled",
     "llm_max_tokens": 1600,
     "llm_max_retries": 4
   },
   "daily_mainline": {
     "model": "deepseek-v4-flash",
+    "thinking": "enabled",
+    "fallback_thinking": "disabled",
     "block_types": ["industry_sw_l1", "industry_sw_l2", "gn"],
     "candidate_limits": {"industry_sw_l1": 4, "industry_sw_l2": 8, "gn": 12},
     "weights": {"relative_strength_1": 0.40, "up_breadth": 0.25, "volume_activity": 0.20, "daily_strong_density": 0.15},
@@ -47,9 +50,12 @@
     "minimum_up_breadth": 55,
     "maximum_strong_blocks": 6,
     "maximum_strong_stocks": 6,
+    "maximum_chain_extensions": 2,
+    "minimum_extension_stock_coverage": 2,
     "news_max_items": 12,
     "core_catalyst_lookback_days": 4,
-    "llm_max_tokens": 3200,
+    "llm_max_tokens": 12000,
+    "llm_timeout_seconds": 120,
     "llm_max_retries": 3
   },
   "state_thresholds": {

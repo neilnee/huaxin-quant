@@ -5,13 +5,18 @@ import unittest
 
 from scripts.market_regime import (
     classify_news_phase,
+    completion_content,
+    completion_requires_nonthinking_retry,
     core_evidence_is_eligible,
     catalyst_entities,
     daily_mainline_search_topics,
+    daily_mainline_trigger_topics,
     daily_mainline_candidates,
     daily_mainline_fallback,
+    expand_mainline_block_ids,
     finalize_sector_rankings,
     link_mainline_stocks,
+    reported_prior_catalyst_date,
     select_daily_mainline_news,
 )
 
@@ -32,6 +37,23 @@ def sector(name, rel1, rel5, rel20, breadth, volume, density, kind="gn"):
 
 
 class DailyMainlineTests(unittest.TestCase):
+    def test_completion_rejects_reasoning_budget_exhaustion(self):
+        payload = {
+            "choices": [{"finish_reason": "length", "message": {"content": ""}}],
+            "usage": {"completion_tokens": 3200, "completion_tokens_details": {"reasoning_tokens": 3200}},
+        }
+        with self.assertRaisesRegex(ValueError, "reasoning_tokens=3200"):
+            completion_content(payload)
+
+    def test_completion_accepts_nonempty_stopped_content(self):
+        payload = {"choices": [{"finish_reason": "stop", "message": {"content": '  {"status": "ok"}  '}}]}
+        self.assertEqual(completion_content(payload), '{"status": "ok"}')
+
+    def test_only_completion_exhaustion_switches_off_thinking(self):
+        self.assertTrue(completion_requires_nonthinking_retry(ValueError("LLM completion exhausted (finish_reason=length)")))
+        self.assertTrue(completion_requires_nonthinking_retry(ValueError("LLM completion content is empty (finish_reason=stop)")))
+        self.assertFalse(completion_requires_nonthinking_retry(ValueError("selected blocks lack representative stocks")))
+
     def test_daily_rank_is_independent_from_twenty_day_rank(self):
         rows = finalize_sector_rankings([
             sector("旧主线", -1.0, 4.0, 12.0, 35.0, 0.8, 0.0),
@@ -92,10 +114,45 @@ class DailyMainlineTests(unittest.TestCase):
         self.assertFalse(core_evidence_is_eligible(["盘中政策", "微软财报"], evidence_map))
         self.assertFalse(core_evidence_is_eligible(["智谱旧闻", "微软财报"], evidence_map))
 
+    def test_intraday_report_can_audit_explicit_prior_catalyst(self):
+        content = "核电概念走强，受7月31日国常会核准四个核电项目的消息提振。"
+        self.assertEqual(reported_prior_catalyst_date(content, "2026-08-03"), "2026-07-31")
+        raw = [{"title": "核电开盘速递", "date": "2026-08-03 10:05:00", "source": "测试", "content": content}]
+        item = select_daily_mainline_news(raw, "2026-08-03", 12)[0]
+        self.assertTrue(item["core_eligible"])
+        self.assertEqual(item["core_timing_basis"], "reported_prior_event")
+        self.assertEqual(item["event_date"], "2026-07-31")
+
+    def test_preopen_article_preserves_explicit_prior_event_date(self):
+        raw = [{"title": "核电盘前", "date": "2026-08-03 08:05:00", "source": "测试",
+                "content": "7月31日国务院常务会议核准四个核电项目。"}]
+        item = select_daily_mainline_news(raw, "2026-08-03", 12)[0]
+        self.assertEqual(item["core_timing_basis"], "article_pre_open")
+        self.assertEqual(item["event_date"], "2026-07-31")
+
+    def test_intraday_report_without_dated_event_stays_ineligible(self):
+        raw = [{"title": "核电盘中走强", "date": "2026-08-03 10:05:00", "source": "测试", "content": "核电概念盘中大涨。"}]
+        item = select_daily_mainline_news(raw, "2026-08-03", 12)[0]
+        self.assertFalse(item["core_eligible"])
+
     def test_fragmented_ai_blocks_add_application_search_topic(self):
         topics = daily_mainline_search_topics(["AI营销", "智谱AI", "ChatGPT", "软件服务"])
         self.assertEqual(topics[:2], ["AI应用", "AI商业化"])
         self.assertNotIn("AI应用", daily_mainline_search_topics(["白酒概念", "预制菜"]))
+
+    def test_trigger_topics_prioritize_cross_covered_blocks(self):
+        blocks = [
+            {"block_id": "gn:风电", "block_name": "风电", "daily_score": 99.0, "qualified": True},
+            {"block_id": "gn:核电", "block_name": "核电", "daily_score": 92.0, "qualified": True},
+            {"block_id": "gn:电网", "block_name": "电网", "daily_score": 91.0, "qualified": True},
+            {"block_id": "gn:综合", "block_name": "综合", "daily_score": 100.0, "qualified": True},
+        ]
+        stocks = [
+            {"candidate_block_ids": ["gn:核电", "gn:电网"]},
+            {"candidate_block_ids": ["gn:核电", "gn:电网"]},
+            {"candidate_block_ids": ["gn:风电"]},
+        ]
+        self.assertEqual(daily_mainline_trigger_topics({"blocks": blocks, "stocks": stocks}, 3), ["核电", "电网", "风电"])
 
     def test_catalyst_entities_rank_by_context_frequency(self):
         raw = [
@@ -119,6 +176,29 @@ class DailyMainlineTests(unittest.TestCase):
         self.assertEqual(rows[0]["selected_block_names"], ["AIGC", "多模态"])
         _, uncovered = link_mainline_stocks(list(block_map), ["300001"], block_map, stock_map)
         self.assertEqual(uncovered, {"gn:AI营销"})
+
+    def test_concept_only_selection_adds_cross_covered_industries(self):
+        block_map = {
+            "gn:核电": {"block_id": "gn:核电", "block_type": "gn", "block_name": "核电", "daily_score": 92.0, "qualified": True},
+            "gn:核变": {"block_id": "gn:核变", "block_type": "gn", "block_name": "核变", "daily_score": 91.0, "qualified": True},
+            "industry_sw_l2:电网": {"block_id": "industry_sw_l2:电网", "block_type": "industry_sw_l2", "block_name": "电网", "daily_score": 94.0, "qualified": True},
+            "industry_sw_l1:电力": {"block_id": "industry_sw_l1:电力", "block_type": "industry_sw_l1", "block_name": "电力", "daily_score": 90.0, "qualified": True},
+            "industry_sw_l1:建筑": {"block_id": "industry_sw_l1:建筑", "block_type": "industry_sw_l1", "block_name": "建筑", "daily_score": 99.0, "qualified": True},
+        }
+        stock_map = {
+            "1": {"candidate_block_ids": ["gn:核电", "gn:核变", "industry_sw_l2:电网", "industry_sw_l1:电力", "industry_sw_l1:建筑"]},
+            "2": {"candidate_block_ids": ["gn:核电", "gn:核变", "industry_sw_l2:电网", "industry_sw_l1:电力"]},
+        }
+        result = expand_mainline_block_ids(["gn:核电", "gn:核变"], ["1", "2"], block_map, stock_map)
+        self.assertEqual(result, ["gn:核电", "gn:核变", "industry_sw_l2:电网", "industry_sw_l1:电力"])
+
+    def test_mixed_level_selection_is_not_expanded(self):
+        block_map = {
+            "gn:核电": {"block_id": "gn:核电", "block_type": "gn"},
+            "industry_sw_l2:电网": {"block_id": "industry_sw_l2:电网", "block_type": "industry_sw_l2"},
+        }
+        result = expand_mainline_block_ids(list(block_map), [], block_map, {})
+        self.assertEqual(result, list(block_map))
 
 
 if __name__ == "__main__":

@@ -702,6 +702,32 @@ def parse_llm_json_object(content: str) -> dict:
     return parsed
 
 
+def completion_content(payload: dict) -> str:
+    """Reject exhausted or empty completions with provider diagnostics."""
+    choices = payload.get("choices") or []
+    if not choices:
+        raise ValueError("LLM response has no choices")
+    choice = choices[0]
+    finish_reason = choice.get("finish_reason") or "unknown"
+    content = str((choice.get("message") or {}).get("content") or "").strip()
+    usage = payload.get("usage") or {}
+    details = usage.get("completion_tokens_details") or {}
+    diagnostic = (
+        f"finish_reason={finish_reason}, completion_tokens={usage.get('completion_tokens', 'unknown')}, "
+        f"reasoning_tokens={details.get('reasoning_tokens', usage.get('reasoning_tokens', 'unknown'))}"
+    )
+    if finish_reason == "length":
+        raise ValueError(f"LLM completion exhausted ({diagnostic})")
+    if not content:
+        raise ValueError(f"LLM completion content is empty ({diagnostic})")
+    return content
+
+
+def completion_requires_nonthinking_retry(error: Exception) -> bool:
+    message = str(error)
+    return message.startswith("LLM completion exhausted") or message.startswith("LLM completion content is empty")
+
+
 def daily_mainline_candidates(report: dict, sectors: list[dict]) -> dict:
     settings = CONFIG["daily_mainline"]
     candidates = []
@@ -770,6 +796,31 @@ def classify_news_phase(published_at: str, as_of: str, title: str = "") -> str:
     return "post_close"
 
 
+def reported_prior_catalyst_date(content: str, as_of: str) -> str:
+    """Return a recent prior date only when nearby text describes an auditable event."""
+    event_terms = re.compile(
+        r"核准|批准|获批|公告|披露|发布|出台|通过|宣布|签署|财报|业绩|上调|下调|"
+        r"落地|启动|召开|决定|订单|中标|收购|回购|增持|减持"
+    )
+    target = pd.Timestamp(as_of)
+    lookback = int(CONFIG["daily_mainline"]["core_catalyst_lookback_days"])
+    dates = []
+    pattern = re.compile(r"(?:(\d{4})[年/-])?(\d{1,2})[月/-](\d{1,2})日?")
+    for match in pattern.finditer(str(content or "")):
+        year = int(match.group(1) or target.year)
+        try:
+            event_date = pd.Timestamp(year=year, month=int(match.group(2)), day=int(match.group(3)))
+        except ValueError:
+            continue
+        age_days = (target - event_date).days
+        if not 1 <= age_days <= lookback:
+            continue
+        nearby = str(content or "")[max(0, match.start() - 40):match.end() + 100]
+        if event_terms.search(nearby):
+            dates.append(event_date)
+    return max(dates).strftime("%Y-%m-%d") if dates else ""
+
+
 def select_daily_mainline_news(raw_results: list[dict], as_of: str, limit: int) -> list[dict]:
     """Normalize, deduplicate and retain a balanced event timeline for the LLM."""
     normalized = []
@@ -787,18 +838,30 @@ def select_daily_mainline_news(raw_results: list[dict], as_of: str, limit: int) 
             continue
         seen_titles.add(title)
         core_eligible = False
+        core_timing_basis = ""
+        event_date = ""
         if phase == "pre_open" and published_at[:10]:
             try:
                 age_days = (pd.Timestamp(as_of) - pd.Timestamp(published_at[:10])).days
                 core_eligible = 0 <= age_days <= int(CONFIG["daily_mainline"]["core_catalyst_lookback_days"])
+                if core_eligible:
+                    core_timing_basis = "article_pre_open"
+                    event_date = reported_prior_catalyst_date(content, as_of) or published_at[:10]
             except ValueError:
                 core_eligible = False
+        elif phase in {"intraday", "post_close"}:
+            event_date = reported_prior_catalyst_date(content, as_of)
+            if event_date:
+                core_eligible = True
+                core_timing_basis = "reported_prior_event"
         normalized.append({
             "title": title,
             "date": published_at[:10],
             "publish_time": published_at,
             "phase": phase,
             "core_eligible": core_eligible,
+            "core_timing_basis": core_timing_basis,
+            "event_date": event_date,
             "source": str(item.get("source") or ""),
             "content": content[:700],
         })
@@ -842,6 +905,43 @@ def link_mainline_stocks(
             "selected_block_names": [block_map[block_id]["block_name"] for block_id in related_ids],
         })
     return rows, selected_ids - covered_ids
+
+
+def expand_mainline_block_ids(
+    block_ids: list[str], stock_codes: list[str], block_map: dict[str, dict], stock_map: dict[str, dict],
+) -> list[str]:
+    """Deterministically add cross-level blocks represented by the selected stocks."""
+    selected_types = {block_map[block_id]["block_type"] for block_id in block_ids}
+    has_concept = "gn" in selected_types
+    has_industry = bool(selected_types.intersection({"industry_sw_l1", "industry_sw_l2"}))
+    if has_concept == has_industry:
+        return block_ids
+    target_types = {"industry_sw_l1", "industry_sw_l2"} if has_concept else {"gn"}
+    coverage = {block_id: 0 for block_id in block_map}
+    for code in stock_codes:
+        for block_id in set(stock_map[code].get("candidate_block_ids", [])):
+            if block_id in coverage:
+                coverage[block_id] += 1
+    settings = CONFIG["daily_mainline"]
+    minimum_coverage = int(settings.get("minimum_extension_stock_coverage", 2))
+    generic_names = {"综合", "综合类"}
+    candidates = sorted(
+        (
+            item for item in block_map.values()
+            if item["block_id"] not in block_ids
+            and item["block_type"] in target_types
+            and item["qualified"]
+            and item["block_name"] not in generic_names
+            and coverage[item["block_id"]] >= minimum_coverage
+        ),
+        key=lambda item: (coverage[item["block_id"]], item["daily_score"]),
+        reverse=True,
+    )
+    room = min(
+        int(settings.get("maximum_chain_extensions", 2)),
+        int(settings["maximum_strong_blocks"]) - len(block_ids),
+    )
+    return block_ids + [item["block_id"] for item in candidates[:max(0, room)]]
 
 
 def fetch_mx_search_cache(cache_path: Path, query: str) -> tuple[dict | None, str, str]:
@@ -910,22 +1010,40 @@ def daily_mainline_search_topics(block_names: list[str]) -> list[str]:
     return list(dict.fromkeys(topics))
 
 
+def daily_mainline_trigger_topics(candidates: dict, limit: int = 8) -> list[str]:
+    """Focus catalyst verification on blocks jointly represented by strong stocks."""
+    block_map = {item["block_id"]: item for item in candidates["blocks"] if item["qualified"]}
+    coverage = {block_id: 0 for block_id in block_map}
+    for stock in candidates["stocks"]:
+        for block_id in set(stock.get("candidate_block_ids", [])):
+            if block_id in coverage:
+                coverage[block_id] += 1
+    generic_names = {"综合", "综合类"}
+    ranked = sorted(
+        (item for item in block_map.values() if item["block_name"] not in generic_names),
+        key=lambda item: (coverage[item["block_id"]], item["daily_score"]),
+        reverse=True,
+    )
+    return daily_mainline_search_topics([item["block_name"] for item in ranked[:limit]])[:limit]
+
+
 def fetch_daily_mainline_news(as_of: str, candidates: dict) -> dict:
     """Fetch separate trigger/context searches and attach a deterministic timeline."""
     ranked_blocks = sorted(candidates["blocks"], key=lambda item: item["daily_score"], reverse=True)
     block_names = [item["block_name"] for item in ranked_blocks[:12]]
     search_topics = daily_mainline_search_topics(block_names)
-    context_topics = search_topics[:2] if search_topics[:2] == ["AI应用", "AI商业化"] else search_topics[:6]
+    context_topics = search_topics[:2] if search_topics[:2] == ["AI应用", "AI商业化"] else search_topics[:8]
     context_query = f"{as_of} A股 早盘高开 原因 隔夜消息 海外财报 商业化催化 " + " ".join(context_topics)
     context_raw, context_status, context_error = fetch_mx_search_cache(
-        STATE_DIR / f"daily_mainline_context_news_v6_{today_stamp(as_of)}.json", context_query,
+        STATE_DIR / f"daily_mainline_context_news_v7_{today_stamp(as_of)}.json", context_query,
     )
     context_results = mx_search_items(context_raw) or []
     entities = catalyst_entities(context_results, as_of)
     focused_entity = entities[0] if entities else ""
-    trigger_query = f"{as_of} A股 开盘前 隔夜 核心催化 最新财报 公告 政策 {focused_entity} " + " ".join(search_topics[:2])
+    trigger_topics = daily_mainline_trigger_topics(candidates)
+    trigger_query = f"{as_of} A股 开盘前 隔夜 核心催化 原始公告 事件日期 最新财报 政策 {focused_entity} " + " ".join(trigger_topics)
     trigger_raw, trigger_status, trigger_error = fetch_mx_search_cache(
-        STATE_DIR / f"daily_mainline_trigger_news_v6_{today_stamp(as_of)}.json", trigger_query,
+        STATE_DIR / f"daily_mainline_trigger_news_v8_{today_stamp(as_of)}.json", trigger_query,
     )
     trigger_results = mx_search_items(trigger_raw) or []
     raw_results = trigger_results + context_results
@@ -977,11 +1095,13 @@ def call_daily_mainline_analysis(as_of: str, candidates: dict, news: dict) -> di
         "你是A股盘后主线归纳器。只能依据输入的当日行情候选和妙想资讯证据，归纳一条今日盘面主线。"
         "主线是多个强势板块和核心个股围绕同一事件与预期变化形成的叙事链，不是简单复制涨幅最高的概念名。"
         "如果候选方向互不相关、只有单点上涨，或资讯无法解释盘面共振，status必须为unclear。"
+        "在资讯能够支持的前提下，优先解释daily_score靠前且被多只候选股共同覆盖的板块组合，不得仅因某条资讯更容易命名就忽略更强的盘面共振。"
         "status=clear时，从候选block_id中选择2至6个strong_block_ids，从候选股票代码中选择2至6个strong_stock_codes；"
         "每只核心股的candidate_block_ids必须至少包含一个最终选择的strong_block_id，每个最终选择的strong_block_id也必须至少被一只核心股覆盖。"
-        "从资讯标题中原样选择1至3个evidence_titles，第一条必须同时满足phase=pre_open和core_eligible=true，core_event只能概括第一条证据。"
-        "先判断哪些事件在行情启动前已被市场获知；phase=intraday只能作为强化催化写入narrative_logic，phase=post_close只能验证盘面事实，"
-        "phase=unknown不得承担核心催化，不得把盘中或收盘后消息倒推为启动原因。name采用‘共同母题+当日交易焦点’的4至24字中性名称，"
+        "从资讯标题中原样选择1至3个evidence_titles，第一条必须满足core_eligible=true，core_event只能概括第一条证据。"
+        "core_timing_basis=article_pre_open表示文章本身盘前可知；reported_prior_event表示文章虽在盘中或盘后发布，但正文明确记载了event_date发生的更早事件，"
+        "此时core_event只能概括该明确日期附近的事件动作，不能概括文章发布后的盘面结果。phase=unknown不得承担核心催化，"
+        "不得把盘中或收盘后才发生的消息倒推为启动原因。name采用‘共同母题+当日交易焦点’的4至24字中性名称，"
         "不得使用引爆、狂欢、全面爆发、主升、掀起涨停潮等情绪化或趋势预测表达；core_event用一句话概括一项主要事件，其他事件只能作为辅助催化；"
         "narrative_logic用80至180字写清‘事件→预期变化→受益环节→盘面响应’，保持客观克制。"
         "不得使用候选之外的板块或股票，不得使用资讯之外的事件和数字，不得提供买卖、仓位、涨跌预测。"
@@ -989,14 +1109,16 @@ def call_daily_mainline_analysis(as_of: str, candidates: dict, news: dict) -> di
     )
     payload = {"trade_date": as_of, "qualified_block_count": candidates["qualified_count"], "block_candidates": block_payload, "stock_candidates": stock_payload, "news_evidence": news["items"]}
     last_error = "unknown"
+    thinking_mode = settings.get("thinking", "enabled")
+    fallback_thinking = settings.get("fallback_thinking", "disabled")
     for _ in range(int(settings["llm_max_retries"])):
         try:
             response = requests.post(
                 f"{base_url}/chat/completions", headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={"model": model, "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}], "temperature": 0.1, "max_tokens": int(settings["llm_max_tokens"]), "response_format": {"type": "json_object"}, "stream": False}, timeout=60,
+                json={"model": model, "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}], "thinking": {"type": thinking_mode}, "temperature": 0.1, "max_tokens": int(settings["llm_max_tokens"]), "response_format": {"type": "json_object"}, "stream": False}, timeout=int(settings.get("llm_timeout_seconds", 120)),
             )
             response.raise_for_status()
-            parsed = parse_llm_json_object(response.json()["choices"][0]["message"].get("content", ""))
+            parsed = parse_llm_json_object(completion_content(response.json()))
             if parsed.get("status") not in {"clear", "unclear"}:
                 raise ValueError("invalid status")
             block_map = {item["block_id"]: item for item in candidates["blocks"]}
@@ -1019,6 +1141,11 @@ def call_daily_mainline_analysis(as_of: str, candidates: dict, news: dict) -> di
             linked_stocks, uncovered_ids = link_mainline_stocks(block_ids, stock_codes, block_map, stock_map)
             if parsed["status"] == "clear" and uncovered_ids:
                 raise ValueError("selected blocks lack representative stocks: " + ", ".join(sorted(uncovered_ids)))
+            if parsed["status"] == "clear":
+                block_ids = expand_mainline_block_ids(block_ids, stock_codes, block_map, stock_map)
+                linked_stocks, uncovered_ids = link_mainline_stocks(block_ids, stock_codes, block_map, stock_map)
+                if uncovered_ids:
+                    raise ValueError("expanded blocks lack representative stocks: " + ", ".join(sorted(uncovered_ids)))
             name, core_event, logic = (str(parsed.get(key) or "").strip() for key in ("name", "core_event", "narrative_logic"))
             if not name or not core_event or not logic:
                 raise ValueError("mainline text fields are incomplete")
@@ -1028,11 +1155,13 @@ def call_daily_mainline_analysis(as_of: str, candidates: dict, news: dict) -> di
                 "status": parsed["status"], "name": name if parsed["status"] == "clear" else "当日无清晰主线",
                 "core_event": core_event, "narrative_logic": logic,
                 "strong_blocks": [{key: value for key, value in block_map[item].items() if key != "leaders"} for item in block_ids], "strong_stocks": linked_stocks,
-                "evidence": [{key: evidence_map[item][key] for key in ("title", "date", "source")} for item in titles],
-                "news_status": news["status"], "provider": "deepseek", "model": model,
+                "evidence": [{key: evidence_map[item][key] for key in ("title", "date", "source", "event_date", "core_timing_basis")} for item in titles],
+                "news_status": news["status"], "provider": "deepseek", "model": model, "thinking_mode": thinking_mode,
             }
         except Exception as exc:
             last_error = str(exc)[:300]
+            if thinking_mode != fallback_thinking and completion_requires_nonthinking_retry(exc):
+                thinking_mode = fallback_thinking
     print(f"[market_regime] 今日主线归纳失败（{model}）: {last_error}", file=sys.stderr)
     return daily_mainline_fallback(candidates, news, last_error)
 
@@ -1117,6 +1246,7 @@ def call_market_llm_analysis(report: dict) -> dict:
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": json.dumps(market_llm_context(report), ensure_ascii=False)},
                     ],
+                    "thinking": {"type": CONFIG.get("reporting", {}).get("thinking", "disabled")},
                     "temperature": 0.2,
                     "max_tokens": max_tokens,
                     "stream": False,
@@ -1124,7 +1254,7 @@ def call_market_llm_analysis(report: dict) -> dict:
                 timeout=60,
             )
             response.raise_for_status()
-            content = response.json()["choices"][0]["message"].get("content", "")
+            content = completion_content(response.json())
             analysis, tolerant_parse = extract_market_analysis(content)
             if not 30 <= len(analysis) <= 220:
                 raise ValueError("analysis length outside 30-220 characters")

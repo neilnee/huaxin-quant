@@ -76,3 +76,24 @@
 .leader-role.leader { color: #8be0ff; background: #193747; }
 .leader-role.core { color: #a8d18d; background: #253a28; }
 .leader-role.watch { color: #d2c18d; background: #3d3022; }
+
+.mainline-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.mainline-head h2 { margin-top: 4px; font-size: 24px; }
+.mainline-status { padding: 4px 9px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 11px; font-weight: 700; }
+.mainline-status.status-clear { border-color: #4d668c; background: #22334f; color: #bcd2f5; }
+.mainline-status.status-unclear { border-color: #7b6735; background: #493b1f; color: #f0d895; }
+.mainline-story { display: grid; grid-template-columns: minmax(280px, .8fr) minmax(420px, 1.2fr); gap: 18px; margin-top: 18px; }
+.mainline-story > div { padding: 13px 15px; border-left: 3px solid var(--accent); background: #141c29; }
+.mainline-story p:last-child { line-height: 1.75; }
+.mainline-evidence-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin-top: 18px; }
+.mainline-block, .mainline-stock { display: flex; align-items: baseline; gap: 8px; padding: 8px 0; border-top: 1px solid var(--line); }
+.mainline-stock { flex-wrap: wrap; }
+.mainline-block span, .mainline-stock small, .mainline-stock i { color: var(--muted); font-size: 11px; font-style: normal; }
+.mainline-block span { margin-left: auto; }
+.mainline-stock span { margin-left: auto; font-weight: 700; }
+.mainline-stock em { flex-basis: 100%; color: #8fa1b8; font-size: 11px; font-style: normal; }
+.mainline-news { margin-top: 16px; padding-top: 3px; }
+.mainline-news ul { margin: 4px 0 0; padding-left: 18px; color: #c8d2df; }
+.mainline-news li { padding: 3px 0; }
+.mainline-news li span { margin-right: 7px; color: var(--muted); font-size: 11px; }
+@media (max-width: 900px) { .mainline-story, .mainline-evidence-grid { grid-template-columns: 1fr; } .mainline-block { align-items: flex-start; flex-direction: column; } .mainline-block span { margin-left: 0; } }

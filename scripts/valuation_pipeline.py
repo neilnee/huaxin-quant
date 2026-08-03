@@ -534,7 +534,7 @@ def llm_stage(stage, task, inputs, evidence, include_full_evidence=True, max_tok
     )
     base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
     payload = json.dumps({
-        "model": os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
+        "model": os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash"),
         "response_format": {"type": "json_object"},
         "temperature": 0.1,
         "max_tokens": int(max_tokens or os.environ.get("VALUATION_LLM_MAX_TOKENS", "16000")),

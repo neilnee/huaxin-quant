@@ -180,7 +180,7 @@ function loadBacktestContext(date) {
 }
 async function loadBacktest(date) {
   try { backtestContext = await loadBacktestContext(date); if (!backtestContext) throw new Error(`缺少 ${date} 的回测数据`); renderBacktest(); }
-  catch (error) { $("backtest-meta").textContent = "当前日期尚未发布回测数据"; $("backtest-summary").innerHTML = ""; $("backtest-table").innerHTML = `<caption class="muted">${esc(error.message)}</caption>`; $("backtest-event-table").innerHTML = ""; $("backtest-market-table").innerHTML = ""; $("backtest-sector-table").innerHTML = ""; }
+  catch (error) { $("backtest-meta").textContent = "当前日期尚未发布回测数据"; $("backtest-summary").innerHTML = ""; $("backtest-table").innerHTML = `<caption class="muted">${esc(error.message)}</caption>`; ["backtest-event-table", "backtest-action-table", "backtest-grade-table", "backtest-maturity-table", "backtest-market-table", "backtest-sector-table"].forEach((id) => $(id).innerHTML = ""); }
 }
 function backtestReturn(value) {
   if (value == null) return `<span class="backtest-pending">—</span>`;
@@ -188,26 +188,37 @@ function backtestReturn(value) {
   return `<span class="backtest-return ${cls(number)}">${number > 0 ? "+" : ""}${number.toFixed(2)}%</span>`;
 }
 function backtestStat(value, suffix = "") { return value == null ? "—" : `${Number(value).toFixed(1)}${suffix}`; }
+function backtestShortDate(value) { return value ? esc(String(value).slice(5)) : "—"; }
+function backtestSetupLabel(value) { return ({ PULLBACK: "回踩", BREAKOUT: "突破", RETEST: "回踩确认" })[value] || esc(value || "—"); }
+function backtestBreakout(row) {
+  if (!row.breakout_time) return '<span class="backtest-pending">无</span>';
+  const [date, offset] = String(row.breakout_time).split(" · ");
+  return `<b>${backtestShortDate(date)}</b><small>${esc(offset || "")}${offset ? " · " : ""}${backtestReturn(row.breakout_return)}</small>`;
+}
 function renderBacktestGroupTable(id, groups) {
   const cells = (stats, horizon) => { const item = stats?.[String(horizon)] || {}; return `<td>${item.samples || 0}</td><td class="${cls(item.avg_return)}">${backtestStat(item.avg_return, "%")}</td><td>${backtestStat(item.win_rate, "%")}</td>`; };
   $(id).innerHTML = `<thead><tr><th rowspan="2">状态</th><th colspan="3">5日</th><th colspan="3">10日</th><th colspan="3">20日</th></tr><tr><th>样本</th><th>平均</th><th>胜率</th><th>样本</th><th>平均</th><th>胜率</th><th>样本</th><th>平均</th><th>胜率</th></tr></thead><tbody>${(groups || []).map((row) => `<tr><td>${esc(row.group)}</td>${cells(row.horizons, 5)}${cells(row.horizons, 10)}${cells(row.horizons, 20)}</tr>`).join("") || "<tr><td colspan='10' class='muted'>当前窗口暂无可分组事件</td></tr>"}</tbody>`;
 }
 function renderBacktest() {
   const summary = backtestContext.summary || {}, rows = backtestContext.events || [];
-  const filtered = backtestFilter === "ALL" ? rows : rows.filter((row) => row.event_type === backtestFilter);
+  const filtered = backtestFilter === "ALL" ? rows : rows.filter((row) => row.entry_action === backtestFilter);
   const horizon = summary.horizons || {};
-  $("backtest-meta").textContent = `报告日 ${backtestContext.meta.report_date} · 观察首次事件后 ${backtestContext.meta.window_min_days}–${backtestContext.meta.window_max_days} 个交易日`;
+  $("backtest-meta").textContent = `报告日 ${backtestContext.meta.report_date} · 观察买点成立后 ${backtestContext.meta.window_min_days}–${backtestContext.meta.window_max_days} 个交易日`;
   $("backtest-summary").innerHTML = [
     ["窗口事件", summary.events || 0],
-    ["成熟 / 买点", `${summary.mature_events || 0} / ${summary.trigger_events || 0}`],
+    ["NEW / FOLLOW", `${summary.new_events || 0} / ${summary.follow_events || 0}`],
+    ["A类 / 常规", `${summary.a_events || 0} / ${summary.regular_events || 0}`],
     ["5日胜率", horizon["5"]?.win_rate == null ? "—" : `${horizon["5"].win_rate.toFixed(1)}%`],
     ["20日胜率", horizon["20"]?.win_rate == null ? "—" : `${horizon["20"].win_rate.toFixed(1)}%`],
   ].map(([label, value]) => `<div><span>${label}</span><b>${value}</b></div>`).join("");
-  $("backtest-filters").innerHTML = [["ALL", "全部"], ["MATURE_ENTRY", "首次成熟"], ["SETUP_TRIGGER", "首次买点"]].map(([key, label]) => `<button class="${key === backtestFilter ? "active" : ""}" data-filter="${key}">${label}</button>`).join("");
+  $("backtest-filters").innerHTML = [["ALL", "全部"], ["NEW", "NEW"], ["FOLLOW", "FOLLOW"]].map(([key, label]) => `<button class="${key === backtestFilter ? "active" : ""}" data-filter="${key}">${label}</button>`).join("");
   $("backtest-filters").querySelectorAll("button").forEach((button) => button.onclick = () => { backtestFilter = button.dataset.filter; renderBacktest(); });
-  $("backtest-note").textContent = `显示 ${filtered.length}/${rows.length} 条唯一事件；未满周期留空`;
-  $("backtest-table").innerHTML = `<thead><tr><th>信号日</th><th>标的</th><th>首次事件</th><th>买点类型</th><th>年龄</th><th>突破时间</th><th>突破时涨幅</th><th>5日</th><th>10日</th><th>20日</th><th>信号时市场</th><th>信号时板块</th></tr></thead><tbody>${filtered.map((row) => `<tr><td>${esc(row.signal_date)}</td><td><b>${esc(row.name)}</b><br><span class="vcp-list-note">${esc(row.code)}</span></td><td>${row.event_type === "MATURE_ENTRY" ? "形态成熟" : "买点触发"}</td><td>${esc(row.setup_type || "—")}</td><td>${row.age_days}日</td><td>${esc(row.breakout_time || "无")}</td><td>${backtestReturn(row.breakout_return)}</td><td>${backtestReturn(row.return_5d)}</td><td>${backtestReturn(row.return_10d)}</td><td>${backtestReturn(row.return_20d)}</td><td class="backtest-context">${esc(row.market_state_label)}<small>${esc(row.market_state)}</small></td><td class="backtest-context">${esc(row.sector_state)}<small>${esc(row.sector_name)}</small></td></tr>`).join("") || "<tr><td colspan='12' class='muted'>当前窗口没有已满5个交易日的首次成熟或买点事件</td></tr>"}</tbody>`;
-  renderBacktestGroupTable("backtest-event-table", (backtestContext.event_groups || []).map((row) => ({ ...row, group: row.group === "MATURE_ENTRY" ? "首次成熟" : row.group === "SETUP_TRIGGER" ? "首次买点" : row.group })));
+  $("backtest-note").textContent = `显示 ${filtered.length}/${rows.length} 条唯一实际买点；未满周期留空`;
+  $("backtest-table").innerHTML = `<thead><tr><th>日期</th><th>标的</th><th>买点</th><th>形态</th><th>成立</th><th>突破</th><th>5日</th><th>10日</th><th>20日</th><th>成立时环境</th></tr></thead><tbody>${filtered.map((row) => `<tr><td class="backtest-stack"><b>${backtestShortDate(row.entry_date)}</b><small>Plan ${backtestShortDate(row.plan_date)}</small></td><td><b>${esc(row.name)}</b><br><span class="vcp-list-note">${esc(row.code)}</span></td><td class="backtest-stack"><b>${backtestSetupLabel(row.setup_family)}</b><small>${esc(row.entry_action)} · ${esc(row.entry_grade === "A" ? "A类" : "常规")}</small></td><td class="backtest-stack"><b>${esc(row.maturity_stage)}</b><small>${row.age_days == null ? "—" : `${Number(row.age_days)}日`}</small></td><td class="backtest-stack"><b>${row.signal_close == null ? "—" : Number(row.signal_close).toFixed(2)}</b><small>收盘价</small></td><td class="backtest-stack backtest-breakout">${backtestBreakout(row)}</td><td>${backtestReturn(row.return_5d)}</td><td>${backtestReturn(row.return_10d)}</td><td>${backtestReturn(row.return_20d)}</td><td class="backtest-context"><b>${esc(row.market_state_label || "—")}</b><small>${esc(row.sector_state || "—")} · ${esc(row.sector_name || "—")}</small></td></tr>`).join("") || "<tr><td colspan='10' class='muted'>当前窗口没有已满5个交易日的实际买点事件</td></tr>"}</tbody>`;
+  renderBacktestGroupTable("backtest-event-table", backtestContext.setup_groups);
+  renderBacktestGroupTable("backtest-action-table", backtestContext.action_groups);
+  renderBacktestGroupTable("backtest-grade-table", (backtestContext.grade_groups || []).map((row) => ({ ...row, group: row.group === "A" ? "A类" : row.group === "REGULAR" ? "常规" : row.group })));
+  renderBacktestGroupTable("backtest-maturity-table", backtestContext.maturity_groups);
   renderBacktestGroupTable("backtest-market-table", backtestContext.market_groups);
   renderBacktestGroupTable("backtest-sector-table", backtestContext.sector_groups);
 }

@@ -4,7 +4,7 @@
 - **最近更新**: 2026-07-10
 - **所属模型**: 模型四 Tracker
 - **策略配置**: `strategies/04-signal-plan.json`
-- **核心目标**: 基于模型二已经识别出的成熟 VCP 结构和当日买点事实，生成下一交易日可执行的量价触发计划，提前标出 A/B 类买点所需的收盘价区间、成交量区间和失效位。
+- **核心目标**: 基于模型二已经识别出的有效 VCP 结构和当日买点事实，生成下一交易日可执行的量价触发计划，提前标出 A/B 类买点所需的收盘价区间、成交量区间和失效位。
 
 ---
 
@@ -16,7 +16,7 @@ Signal Plan 负责：
 
 - 消费模型二结构化 JSON。
 - 优先消费模型二 `setup_plan_inputs` 中已经计算好的买点阈值。
-- 选择成熟 VCP 或当日已触发买点的标的。
+- 选择允许形成模型二买点的有效 VCP，或当日已触发买点的标的。
 - 计算下一交易日可能触发的买点计划。
 - 输出普通买点触发区、A 类买点量价区、最高潜在等级和失效价。
 - 按 PULLBACK / BREAKOUT / RETEST 三类买点统计和展示，区分首次触发计划和已触发后的延续计划。
@@ -111,15 +111,18 @@ chg_20
 run_date
 strategy_version
 post_breakout_state
+contraction_group
 ```
 
 若模型二 JSON 缺少 `volume` / `vol_ma20` 等量能字段，Signal Plan 不得输出抽象公式作为执行计划；对应标的必须降级为 `DATA_ISSUE` 或跳过，并在 summary 中记录原因。若缺少 `setup_plan_inputs`，Signal Plan 可以使用兼容回退逻辑，但新版本模型二应提供该字段。
+
+每条 Plan 必须保存同一轮 VCP 的 `structure_anchor`。优先取 `contraction_group` 第一段的 `start_date`；缺失时依次使用收缩段开始日、结构突破日和兼容占位。该字段只用于下一交易日事实匹配和历史去重，不改变模型二结构判断。
 
 ---
 
 ## 三、候选范围
 
-第一版只处理成熟结构和已触发结构，普通 `VCP_FORMING` 不进入计划。
+NEW Plan 以 `VCP_MATURE`、`VCP_TIGHT` 为常规候选。`VCP_FORMING` 只有达到近成熟高质量门槛时才允许提前生成 NEW Plan，避免两轮收缩刚形成就大范围预测；`VCP_EARLY` 不进入计划。
 
 纳入条件：
 
@@ -128,7 +131,7 @@ model2_include = true
 structure_type = VCP
 structure_valid = true
 且满足以下之一：
-  structure_stage in {VCP_MATURE, VCP_TIGHT}
+  structure_stage in {VCP_FORMING, VCP_MATURE, VCP_TIGHT}
   setup_signal in {PULLBACK_BUY, BREAKOUT_BUY, RETEST_BUY}
 ```
 
@@ -142,7 +145,7 @@ structure_risk_flags 命中 hard_risk_flags
 缺少 close / structure_pivot / volume / vol_ma20 等必要字段
 ```
 
-`VCP_FORMING` 仅在当日已经触发 `PULLBACK_BUY` / `BREAKOUT_BUY` / `RETEST_BUY` 时允许生成 `FOLLOW_SETUP_PLAN`，不得作为普通成熟结构生成首次买点计划。
+`VCP_FORMING` 生成 NEW Plan 必须同时满足：`structure_score ≥ 80`、`structure_risk_score ≤ 15`、`volume_pattern in {decreasing,drying}`、`pivot_distance ≥ -8%`、`post_breakout_state=PRE_BREAKOUT`。它只覆盖虽然仍为两轮收缩、但量能和位置已经接近成熟的少数结构。未达门槛的 FORMING 继续观察；当日已经触发买点时仍可按普通分支生成 FOLLOW Plan。风险硬阻断、结构有效性和生命周期门槛继续生效。
 
 成熟结构若价格已经超过突破计划上沿，不输出追高计划，需进入 `excluded` 并在 summary 中计数。
 

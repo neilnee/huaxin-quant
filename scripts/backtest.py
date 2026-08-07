@@ -21,6 +21,7 @@ from scripts.strategy_config import load_strategy_config
 
 ROOT = Path(PROJECT_ROOT)
 QUANT_DIR = ROOT / "cache" / "quant_runs"
+PLAN_DIR = ROOT / "signal_plan"
 MARKET_CONTEXT_DIR = ROOT / "market" / "data"
 MARKET_REPORT_DIR = ROOT / "market"
 MARKET_DB = ROOT / "cache" / "market_data" / "market_data.sqlite"
@@ -28,8 +29,8 @@ OUTPUT_DIR = ROOT / "backtest"
 DASHBOARD_DATA_DIR = ROOT / "dashboard" / "data"
 
 CONFIG, CONFIG_PATH = load_strategy_config("backtest.json")
-MATURE_STAGES = set(CONFIG["event_rules"]["mature_stages"])
-SETUP_SIGNALS = set(CONFIG["event_rules"]["setup_signals"])
+SETUP_FAMILIES = set(CONFIG["event_rules"]["setup_families"])
+FAILED_LIFECYCLE_STATES = set(CONFIG["event_rules"]["failed_lifecycle_states"])
 HORIZONS = [int(value) for value in CONFIG["evaluation"]["horizons"]]
 WINDOW_MIN = int(CONFIG["evaluation"]["window_min_days"])
 WINDOW_MAX = int(CONFIG["evaluation"]["window_max_days"])
@@ -70,46 +71,168 @@ def structure_anchor(row: dict) -> str:
     return str(row.get("structure_breakout_date") or "unanchored")
 
 
-def discover_events(report_date_yy: str) -> list[dict]:
-    """Return first mature and first setup events for each structure anchor."""
-    seen: set[tuple[str, str, str]] = set()
+def safe_float(value) -> float | None:
+    try:
+        return None if value in (None, "") else float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def normalize_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    return value in ("True", "true", "TRUE", "1", 1)
+
+
+def value_in_range(value: float, low, high) -> bool:
+    low_value = safe_float(low)
+    high_value = safe_float(high)
+    return (low_value is None or value >= low_value) and (high_value is None or value <= high_value)
+
+
+def plan_hit_grade(plan: dict, actual: dict) -> str | None:
+    """Classify a next-session close as one mutually exclusive Plan grade."""
+    family = str(plan.get("setup_family") or "").upper()
+    close = safe_float(actual.get("close"))
+    volume = safe_float(actual.get("volume"))
+    if family not in SETUP_FAMILIES or close is None or volume is None:
+        return None
+    invalid = safe_float(plan.get("invalid_price"))
+    if invalid is not None and close <= invalid:
+        return None
+    if not value_in_range(close, plan.get("trigger_price_low"), plan.get("trigger_price_high")):
+        return None
+    if family == "BREAKOUT":
+        ordinary_limit = safe_float(plan.get("volume_min"))
+        ordinary_volume_ok = ordinary_limit is not None and volume >= ordinary_limit
+        ideal_limit = safe_float(plan.get("ideal_volume_min"))
+        ideal_volume_ok = ideal_limit is not None and volume >= ideal_limit
+    else:
+        ordinary_limit = safe_float(plan.get("volume_max"))
+        ordinary_volume_ok = ordinary_limit is not None and volume <= ordinary_limit
+        ideal_limit = safe_float(plan.get("ideal_volume_max"))
+        ideal_volume_ok = ideal_limit is not None and volume <= ideal_limit
+    if not ordinary_volume_ok:
+        return None
+    ideal_price_ok = (
+        safe_float(plan.get("ideal_price_low")) is not None
+        and safe_float(plan.get("ideal_price_high")) is not None
+        and value_in_range(close, plan.get("ideal_price_low"), plan.get("ideal_price_high"))
+    )
+    if plan.get("target_quality") == "A" and ideal_price_ok and ideal_volume_ok:
+        return "A"
+    return "REGULAR"
+
+
+def quant_rows(date_value: str) -> tuple[dict, dict[str, dict]]:
+    path = QUANT_DIR / f"quant_{date_value}.json"
+    if not path.exists():
+        return {}, {}
+    payload = load_json(path)
+    rows = {
+        str(row.get("code") or "").zfill(6): row
+        for row in payload.get("results", [])
+        if str(row.get("code") or "").strip("0")
+    }
+    return payload, rows
+
+
+def same_structure(plan: dict, actual: dict, source: dict | None = None) -> tuple[bool, str]:
+    expected = str(plan.get("structure_anchor") or structure_anchor(source or {}))
+    actual_anchor = structure_anchor(actual)
+    return expected == actual_anchor, expected
+
+
+def realized_plan_event(plan: dict, actual: dict, source: dict | None, plan_date: str, entry_date: str, strategy_version: str) -> dict | None:
+    family = str(plan.get("setup_family") or "").upper()
+    action = str(plan.get("plan_action") or "").upper()
+    grade = plan_hit_grade(plan, actual)
+    structure_matches, anchor = same_structure(plan, actual, source)
+    if grade is None or not structure_matches or family not in SETUP_FAMILIES or action not in {"NEW", "FOLLOW"}:
+        return None
+    if not normalize_bool(actual.get("model2_include")):
+        return None
+    if not normalize_bool(actual.get("structure_valid")) or actual.get("structure_type") != "VCP":
+        return None
+    lifecycle = str(actual.get("post_breakout_state") or "PRE_BREAKOUT")
+    if lifecycle in FAILED_LIFECYCLE_STATES:
+        return None
+    if family == "PULLBACK" and lifecycle != "PRE_BREAKOUT":
+        return None
+    pivot = (
+        (plan.get("formula_ref") or {}).get("pivot")
+        or actual.get("structure_pivot")
+        or actual.get("pivot_price")
+    )
+    return {
+        "event_type": "BUY_POINT",
+        "plan_date": plan_date,
+        "plan_date_yy": date_yy(plan_date),
+        "entry_date": entry_date,
+        "entry_date_yy": date_yy(entry_date),
+        "signal_date": entry_date,
+        "signal_date_yy": date_yy(entry_date),
+        "code": str(actual.get("code") or plan.get("code") or "").zfill(6),
+        "name": actual.get("name") or plan.get("name") or plan.get("code"),
+        "structure_anchor": anchor,
+        "setup_family": family,
+        "setup_type": f"{family}_BUY",
+        "entry_action": action,
+        "entry_grade": grade,
+        "plan_target_quality": plan.get("target_quality") or "",
+        "maturity_stage": plan.get("model2_stage") or (source or {}).get("structure_stage") or "NONE",
+        "entry_structure_stage": actual.get("structure_stage") or "NONE",
+        "model2_setup_quality": actual.get("setup_quality") or "",
+        "entry_model2_setup_signal": actual.get("setup_signal") or "NONE",
+        "post_breakout_state": actual.get("post_breakout_state") or "PRE_BREAKOUT",
+        "signal_close_snapshot": actual.get("close"),
+        "entry_volume": actual.get("volume"),
+        "structure_pivot": pivot,
+        "structure_score": plan.get("structure_score"),
+        "structure_risk_score": plan.get("structure_risk_score"),
+        "plan_strategy_version": plan.get("strategy_version") or "",
+        "quant_strategy_version": strategy_version,
+    }
+
+
+def discover_events(report_date_yy: str, calendar: list[str]) -> list[dict]:
+    """Return first realized next-session entry for each structure/family/action."""
+    report_date = iso_date(report_date_yy)
+    valid_dates = [value for value in calendar if value <= report_date]
+    seen: set[tuple[str, str, str, str]] = set()
     events: list[dict] = []
-    for path in sorted(QUANT_DIR.glob("quant_*.json")):
-        match = re.fullmatch(r"quant_(\d{6})\.json", path.name)
-        if not match or match.group(1) > report_date_yy:
+    for index, plan_date in enumerate(valid_dates[:-1]):
+        entry_date = valid_dates[index + 1]
+        plan_stamp = date_yy(plan_date)
+        plan_path = PLAN_DIR / f"signal_plan_{plan_stamp}.json"
+        if not plan_path.exists():
             continue
-        payload = load_json(path)
-        run_date = str(payload.get("meta", {}).get("run_date") or iso_date(match.group(1)))[:10]
-        strategy_version = payload.get("meta", {}).get("strategy_version", "")
-        for row in payload.get("results", []):
-            code = str(row.get("code") or "").zfill(6)
-            if not code.strip("0"):
+        plan_payload = load_json(plan_path)
+        source_payload, source_rows = quant_rows(plan_stamp)
+        entry_payload, entry_rows = quant_rows(date_yy(entry_date))
+        if not entry_rows:
+            continue
+        strategy_version = entry_payload.get("meta", {}).get("strategy_version", "")
+        for plan in plan_payload.get("plans", []):
+            code = str(plan.get("code") or "").zfill(6)
+            actual = entry_rows.get(code)
+            if actual is None:
                 continue
-            anchor = structure_anchor(row)
-            common = {
-                "signal_date": run_date,
-                "signal_date_yy": date_yy(run_date),
-                "code": code,
-                "name": row.get("name") or code,
-                "structure_anchor": anchor,
-                "signal_close_snapshot": row.get("close"),
-                "structure_pivot": row.get("structure_pivot") or row.get("pivot_price"),
-                "structure_stage": row.get("structure_stage") or "NONE",
-                "setup_signal": row.get("setup_signal") or "NONE",
-                "structure_score": row.get("structure_score"),
-                "structure_risk_score": row.get("structure_risk_score"),
-                "quant_strategy_version": strategy_version or row.get("strategy_version", ""),
-            }
-            if common["structure_stage"] in MATURE_STAGES:
-                key = (code, anchor, "MATURE_ENTRY")
-                if key not in seen:
-                    seen.add(key)
-                    events.append({**common, "event_type": "MATURE_ENTRY", "setup_type": ""})
-            if common["setup_signal"] in SETUP_SIGNALS:
-                key = (code, anchor, "SETUP_TRIGGER")
-                if key not in seen:
-                    seen.add(key)
-                    events.append({**common, "event_type": "SETUP_TRIGGER", "setup_type": common["setup_signal"]})
+            event = realized_plan_event(
+                plan,
+                actual,
+                source_rows.get(code),
+                plan_date,
+                entry_date,
+                strategy_version,
+            )
+            if event is None:
+                continue
+            key = (code, event["structure_anchor"], event["setup_family"], event["entry_action"])
+            if key in seen:
+                continue
+            seen.add(key)
+            events.append(event)
     return events
 
 
@@ -177,6 +300,7 @@ def breakout_performance(
 
 
 def load_signal_environment(conn: sqlite3.Connection, event: dict) -> dict:
+    """Load the environment on the actual entry date (signal_date compatibility alias)."""
     date = event["signal_date"]
     yy = event["signal_date_yy"]
     context_path = MARKET_CONTEXT_DIR / f"market_context_{yy}.json"
@@ -287,7 +411,12 @@ def grouped_stats(rows: list[dict], field: str) -> list[dict]:
 
 
 def build_context(report_date_yy: str) -> dict:
-    events = add_performance(discover_events(report_date_yy), report_date_yy)
+    conn = sqlite3.connect(MARKET_DB)
+    try:
+        calendar = trading_calendar(conn, iso_date(report_date_yy))
+    finally:
+        conn.close()
+    events = add_performance(discover_events(report_date_yy, calendar), report_date_yy)
     return {
         "meta": {
             "report_date": iso_date(report_date_yy),
@@ -302,12 +431,17 @@ def build_context(report_date_yy: str) -> dict:
         },
         "summary": {
             "events": len(events),
-            "mature_events": sum(row["event_type"] == "MATURE_ENTRY" for row in events),
-            "trigger_events": sum(row["event_type"] == "SETUP_TRIGGER" for row in events),
+            "new_events": sum(row["entry_action"] == "NEW" for row in events),
+            "follow_events": sum(row["entry_action"] == "FOLLOW" for row in events),
+            "a_events": sum(row["entry_grade"] == "A" for row in events),
+            "regular_events": sum(row["entry_grade"] == "REGULAR" for row in events),
             "horizons": horizon_stats(events),
         },
         "events": events,
-        "event_groups": grouped_stats(events, "event_type"),
+        "setup_groups": grouped_stats(events, "setup_family"),
+        "action_groups": grouped_stats(events, "entry_action"),
+        "grade_groups": grouped_stats(events, "entry_grade"),
+        "maturity_groups": grouped_stats(events, "maturity_stage"),
         "market_groups": grouped_stats(events, "market_state_label"),
         "sector_groups": grouped_stats(events, "sector_state"),
     }
@@ -327,19 +461,19 @@ def update_dashboard_index() -> None:
 
 def render_markdown(context: dict) -> str:
     lines = [
-        f"# 策略回测｜{context['meta']['report_date']}", "",
-        f"窗口：首次事件后 {WINDOW_MIN}~{WINDOW_MAX} 个交易日｜事件 {context['summary']['events']} 条", "",
-        "| 信号日 | 股票 | 事件 | 买点 | 年龄 | 突破时间 | 突破时涨幅 | 5日 | 10日 | 20日 | 信号时市场 | 信号时板块 |", "|---|---|---|---|---:|---|---:|---:|---:|---:|---|---|",
+        f"# 实际买点回测｜{context['meta']['report_date']}", "",
+        f"窗口：买点成立后 {WINDOW_MIN}~{WINDOW_MAX} 个交易日｜事件 {context['summary']['events']} 条", "",
+        "| Plan日 | 成立日 | 股票 | 买点 | 进入 | 等级 | 形态 | 成立价 | 年龄 | 突破时间 | 突破时涨幅 | 5日 | 10日 | 20日 | 成立时市场 | 成立时板块 |", "|---|---|---|---|---|---|---|---:|---:|---|---:|---:|---:|---:|---|---|",
     ]
     for row in context["events"]:
         value = lambda horizon: "—" if row.get(f"return_{horizon}d") is None else f"{row[f'return_{horizon}d']:.2f}%"
         breakout_value = "—" if row.get("breakout_return") is None else f"{row['breakout_return']:.2f}%"
         lines.append(
-            f"| {row['signal_date']} | {row['name']}（{row['code']}） | {row['event_type']} | {row['setup_type'] or '—'} | {row['age_days']} | {row['breakout_time'] or '无'} | {breakout_value} | {value(5)} | {value(10)} | {value(20)} | {row['market_state_label']} | {row['sector_name']} · {row['sector_state']} |"
+            f"| {row['plan_date']} | {row['entry_date']} | {row['name']}（{row['code']}） | {row['setup_family']} | {row['entry_action']} | {row['entry_grade']} | {row['maturity_stage']} | {row['signal_close']:.2f} | {row['age_days']} | {row['breakout_time'] or '无'} | {breakout_value} | {value(5)} | {value(10)} | {value(20)} | {row['market_state_label']} | {row['sector_name']} · {row['sector_state']} |"
         )
     if not context["events"]:
-        lines.append("| — | 当前窗口没有已满5个交易日的首次成熟或买点事件 | — | — | — | — | — | — | — | — | — | — |")
-    lines.extend(["", "> 仅评价策略信号后的价格表现，不代表实际交易收益。", ""])
+        lines.append("| — | — | 当前窗口没有已满5个交易日的实际买点事件 | — | — | — | — | — | — | — | — | — | — | — | — | — |")
+    lines.extend(["", "> 以买点实际成立日收盘价评价后续价格表现，不代表真实交易收益。", ""])
     return "\n".join(lines)
 
 
@@ -364,7 +498,7 @@ def publish(context: dict) -> tuple[Path, Path, Path]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="策略首次成熟/买点的滚动价格表现")
+    parser = argparse.ArgumentParser(description="Signal Plan 次日实际买点的滚动价格表现")
     parser.add_argument("--date", help="报告日期 YYMMDD 或 YYYY-MM-DD")
     args = parser.parse_args()
     report_date = normalize_date(args.date)

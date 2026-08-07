@@ -1,8 +1,8 @@
 {
-  "strategy_version": "strategy_backtest_v1_1",
+  "strategy_version": "strategy_backtest_v2",
   "event_rules": {
-    "mature_stages": ["VCP_MATURE", "VCP_TIGHT"],
-    "setup_signals": ["PULLBACK_BUY", "BREAKOUT_BUY", "RETEST_BUY"]
+    "setup_families": ["PULLBACK", "BREAKOUT", "RETEST"],
+    "failed_lifecycle_states": ["POST_BREAKOUT_FAILED", "POST_BREAKOUT_EXPIRED"]
   },
   "evaluation": {
     "window_min_days": 5,

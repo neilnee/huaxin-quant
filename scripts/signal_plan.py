@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Signal Plan: next-session concrete setup plans for mature Model 2 VCP signals.
+Signal Plan: next-session concrete setup plans for valid Model 2 VCP structures.
 
 This model-4 signal layer consumes cache/quant_runs/quant_<YYMMDD>.json and
 writes signal_plan/signal_plan_<YYMMDD>.json plus Markdown. It does not update
@@ -232,6 +232,16 @@ def setup_plan_inputs(row, family):
     return value if isinstance(value, dict) else {}
 
 
+def structure_anchor(row):
+    group = row.get("contraction_group") or []
+    if group and isinstance(group[0], dict) and group[0].get("start_date"):
+        return str(group[0]["start_date"])
+    contractions = row.get("contractions") or []
+    if contractions and isinstance(contractions[-1], dict) and contractions[-1].get("start_date"):
+        return str(contractions[-1]["start_date"])
+    return str(row.get("structure_breakout_date") or "unanchored")
+
+
 def post_breakout_state(row):
     """Return the Model 2 lifecycle state, preserving compatibility with v9 runs."""
     return str(row.get("post_breakout_state") or "PRE_BREAKOUT").strip().upper()
@@ -259,11 +269,29 @@ def lifecycle_plan_permission(row):
     return set(), f"未知突破后状态 {state}，不生成计划"
 
 
+def new_plan_stage_allowed(row):
+    rules = CONFIG["candidate_rules"]
+    stage = row.get("structure_stage")
+    if stage not in rules["allowed_new_stages"]:
+        return False
+    if stage != "VCP_FORMING":
+        return True
+    gate = rules["forming_new_gate"]
+    return all([
+        safe_float(row.get("structure_score"), 0.0) >= gate["min_structure_score"],
+        safe_float(row.get("structure_risk_score"), 0.0) <= gate["max_risk_score"],
+        row.get("volume_pattern") in set(gate["allowed_volume_patterns"]),
+        safe_float(row.get("pivot_distance"), -999.0) >= gate["min_pivot_distance_pct"],
+        post_breakout_state(row) == gate["required_post_breakout_state"],
+    ])
+
+
 def base_plan(row, setup_family, plan_action, setup_type, quality):
     setup_signal = f"{setup_family}_BUY" if setup_family in {"PULLBACK", "BREAKOUT", "RETEST"} else setup_type
     return {
         "code": str(row.get("code", "")),
         "name": row.get("name", ""),
+        "structure_anchor": structure_anchor(row),
         "setup_family": setup_family,
         "plan_action": plan_action,
         "plan_type": f"{plan_action}_SETUP_PLAN",
@@ -469,9 +497,11 @@ def valid_candidate(row):
 
     stage = row.get("structure_stage")
     signal = row.get("setup_signal")
-    is_new_stage = stage in rules["allowed_new_stages"]
+    is_new_stage = new_plan_stage_allowed(row)
     is_follow_signal = signal in rules["allowed_follow_signals"]
     if not is_new_stage and not is_follow_signal:
+        if stage == "VCP_FORMING":
+            return False, "VCP_FORMING 未达到近成熟 NEW Plan 门槛"
         return False, "不是成熟结构，也不是当日买点触发"
 
     score = safe_float(row.get("structure_score"), 0.0)
@@ -512,7 +542,7 @@ def plans_for_row(row):
     if signal == "PULLBACK_BUY" and "PULLBACK" in allowed_families:
         plans.append(build_pullback_plan(row, follow=True))
         if (
-            stage in CONFIG["candidate_rules"]["allowed_new_stages"]
+            new_plan_stage_allowed(row)
             and pivot and close
             and close < pivot * CONFIG["breakout_buy"]["close_buffer_ratio"]
         ):
@@ -524,7 +554,7 @@ def plans_for_row(row):
         plans.append(build_breakout_plan(row, follow=True))
         return plans
 
-    if stage in CONFIG["candidate_rules"]["allowed_new_stages"] and allowed_families == {"PULLBACK", "BREAKOUT"}:
+    if new_plan_stage_allowed(row) and allowed_families == {"PULLBACK", "BREAKOUT"}:
         if pivot and close and close > pivot * CONFIG["breakout_buy"]["overextended_ratio"]:
             return plans
         plans.append(build_pullback_plan(row, follow=False))

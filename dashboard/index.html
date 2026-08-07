@@ -21,10 +21,13 @@
     </div>
     <div id="backtest-content" class="hidden">
       <section class="panel vcp-header"><div><p class="section-label">策略验证 · 滚动窗口</p><h2>回测表现</h2><p id="backtest-meta" class="data-status"></p></div><div id="backtest-summary" class="vcp-summary"></div></section>
-      <section class="panel"><div class="section-heading"><div><p class="section-label">首次事件后 5–20 个交易日</p><h2>事件表现</h2></div><p id="backtest-note">—</p></div><div id="backtest-filters" class="tabs"></div><div class="table-scroll"><table id="backtest-table"></table></div></section>
-      <section class="panel"><div class="section-heading"><div><p class="section-label">EVENT BASELINE</p><h2>成熟形态与买点表现</h2></div><p>分别以首次成熟日、首次买点日为价格起点</p></div><div class="table-scroll"><table id="backtest-event-table"></table></div></section>
-      <section class="panel"><div class="section-heading"><div><p class="section-label">SIGNAL-TIME CONTEXT</p><h2>市场状态分组</h2></div></div><div class="table-scroll"><table id="backtest-market-table"></table></div></section>
-      <section class="panel"><div class="section-heading"><div><p class="section-label">SIGNAL-TIME CONTEXT</p><h2>板块状态分组</h2></div></div><div class="table-scroll"><table id="backtest-sector-table"></table></div></section>
+      <section class="panel"><div class="section-heading"><div><p class="section-label">买点成立后 5–20 个交易日</p><h2>实际买点表现</h2></div><p id="backtest-note">—</p></div><div id="backtest-filters" class="tabs"></div><div class="table-scroll"><table id="backtest-table"></table></div></section>
+      <section class="panel"><div class="section-heading"><div><p class="section-label">SETUP FAMILY</p><h2>买点类型</h2></div></div><div class="table-scroll"><table id="backtest-event-table"></table></div></section>
+      <section class="panel"><div class="section-heading"><div><p class="section-label">ENTRY ACTION</p><h2>NEW / FOLLOW</h2></div></div><div class="table-scroll"><table id="backtest-action-table"></table></div></section>
+      <section class="panel"><div class="section-heading"><div><p class="section-label">ENTRY GRADE</p><h2>常规 / A类</h2></div></div><div class="table-scroll"><table id="backtest-grade-table"></table></div></section>
+      <section class="panel"><div class="section-heading"><div><p class="section-label">VCP MATURITY</p><h2>形态成熟度</h2></div></div><div class="table-scroll"><table id="backtest-maturity-table"></table></div></section>
+      <section class="panel"><div class="section-heading"><div><p class="section-label">ENTRY-TIME CONTEXT</p><h2>市场状态分组</h2></div></div><div class="table-scroll"><table id="backtest-market-table"></table></div></section>
+      <section class="panel"><div class="section-heading"><div><p class="section-label">ENTRY-TIME CONTEXT</p><h2>板块状态分组</h2></div></div><div class="table-scroll"><table id="backtest-sector-table"></table></div></section>
     </div>
     <div id="market-content">
       <section class="panel state-panel"><div class="state-summary"><p class="section-label">当前市场状态</p><div class="state-title-row"><h2 id="market-state">—</h2><button id="state-help-toggle" class="state-help-toggle" type="button" aria-expanded="false" aria-controls="state-rules">详情</button></div><p id="state-duration" class="state-duration">—</p><div id="risk-tags" class="tags"></div></div><div class="state-reading"><p class="section-label">市场解读</p><p id="state-analysis" class="state-analysis">—</p><p id="state-transition" class="state-transition hidden">—</p></div></section>

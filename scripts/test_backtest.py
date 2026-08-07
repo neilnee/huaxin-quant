@@ -15,32 +15,78 @@ def quant_payload(run_date, rows):
     return {"meta": {"run_date": run_date, "strategy_version": "test"}, "results": rows}
 
 
-def row(code="000001", anchor="2026-01-01", stage="NONE", setup="NONE", close=10):
+def row(code="000001", anchor="2026-01-01", stage="VCP_TIGHT", setup="NONE", close=10, volume=100):
     return {
         "code": code, "name": "测试", "structure_stage": stage, "setup_signal": setup,
-        "close": close, "contraction_group": [{"start_date": anchor}],
+        "close": close, "volume": volume, "contraction_group": [{"start_date": anchor}],
+        "structure_type": "VCP", "structure_valid": True, "post_breakout_state": "PRE_BREAKOUT",
     }
 
 
+def plan(action="NEW", family="BREAKOUT", anchor="2026-01-01", quality="A"):
+    result = {
+        "code": "000001", "name": "测试", "structure_anchor": anchor,
+        "setup_family": family, "plan_action": action, "target_quality": quality,
+        "model2_stage": "VCP_TIGHT", "structure_score": 85, "structure_risk_score": 5,
+        "trigger_price_low": 10, "trigger_price_high": 12,
+        "ideal_price_low": 10.5, "ideal_price_high": 11.5,
+        "invalid_price": 9, "strategy_version": "test-plan", "formula_ref": {"pivot": 10},
+    }
+    if family == "BREAKOUT":
+        result.update({"volume_min": 90, "ideal_volume_min": 120})
+    else:
+        result.update({"volume_max": 110, "ideal_volume_max": 80})
+    return result
+
+
 class BacktestEventTests(unittest.TestCase):
-    def test_first_event_only_and_new_structure_can_reenter(self):
+    def test_plan_grade_is_mutually_exclusive(self):
+        self.assertEqual(backtest.plan_hit_grade(plan(), row(close=11, volume=130)), "A")
+        self.assertEqual(backtest.plan_hit_grade(plan(), row(close=11, volume=100)), "REGULAR")
+        self.assertIsNone(backtest.plan_hit_grade(plan(), row(close=9.5, volume=130)))
+
+    def test_new_and_follow_use_realized_plan_conditions(self):
+        actual = row(setup="BREAKOUT_BUY", close=11, volume=130)
+        actual["model2_include"] = True
+        new_event = backtest.realized_plan_event(plan(), actual, None, "2026-07-01", "2026-07-02", "test")
+        self.assertEqual(new_event["entry_grade"], "A")
+        self.assertEqual(new_event["signal_date"], "2026-07-02")
+        no_repeat_signal = row(close=11, volume=130)
+        no_repeat_signal["model2_include"] = True
+        self.assertIsNotNone(backtest.realized_plan_event(plan(), no_repeat_signal, None, "2026-07-01", "2026-07-02", "test"))
+        follow_event = backtest.realized_plan_event(plan(action="FOLLOW"), no_repeat_signal, None, "2026-07-01", "2026-07-02", "test")
+        self.assertEqual(follow_event["entry_action"], "FOLLOW")
+
+    def test_pullback_plan_cannot_cross_into_post_breakout_lifecycle(self):
+        actual = row(close=11, volume=70)
+        actual.update({"model2_include": True, "post_breakout_state": "POST_BREAKOUT_HOT"})
+        self.assertIsNone(backtest.realized_plan_event(plan(family="PULLBACK"), actual, None, "2026-07-01", "2026-07-02", "test"))
+
+    def test_first_realized_event_only_and_new_structure_can_reenter(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            payloads = {
-                "260701": [row(stage="VCP_MATURE")],
-                "260702": [row(stage="VCP_TIGHT", setup="BREAKOUT_BUY")],
-                "260703": [row(stage="VCP_TIGHT", setup="BREAKOUT_BUY")],
-                "260706": [row(anchor="2026-06-20", stage="VCP_MATURE")],
-            }
-            for date, rows in payloads.items():
-                (root / f"quant_{date}.json").write_text(
-                    json.dumps(quant_payload(f"20{date[:2]}-{date[2:4]}-{date[4:]}", rows)), encoding="utf-8"
-                )
-            with patch.object(backtest, "QUANT_DIR", root):
-                events = backtest.discover_events("260706")
+            quant_dir = root / "quant"; plan_dir = root / "plan"
+            quant_dir.mkdir(); plan_dir.mkdir()
+            dates = ["260701", "260702", "260703", "260706"]
+            rows = [
+                row(),
+                row(setup="BREAKOUT_BUY", close=11, volume=130),
+                row(setup="BREAKOUT_BUY", close=11, volume=130),
+                row(anchor="2026-06-20", setup="BREAKOUT_BUY", close=11, volume=130),
+            ]
+            for actual in rows:
+                actual["model2_include"] = True
+            for date, actual in zip(dates, rows):
+                (quant_dir / f"quant_{date}.json").write_text(json.dumps(quant_payload(f"20{date[:2]}-{date[2:4]}-{date[4:]}", [actual])), encoding="utf-8")
+            for date, anchor in (("260701", "2026-01-01"), ("260702", "2026-01-01"), ("260703", "2026-06-20")):
+                (plan_dir / f"signal_plan_{date}.json").write_text(json.dumps({"plans": [plan(anchor=anchor)]}), encoding="utf-8")
+            calendar = ["2026-07-01", "2026-07-02", "2026-07-03", "2026-07-06"]
+            with patch.object(backtest, "QUANT_DIR", quant_dir), patch.object(backtest, "PLAN_DIR", plan_dir):
+                events = backtest.discover_events("260706", calendar)
 
-        self.assertEqual([event["event_type"] for event in events], ["MATURE_ENTRY", "SETUP_TRIGGER", "MATURE_ENTRY"])
-        self.assertEqual(events[1]["signal_date_yy"], "260702")
+        self.assertEqual(len(events), 2)
+        self.assertEqual([event["structure_anchor"] for event in events], ["2026-01-01", "2026-06-20"])
+        self.assertEqual([event["entry_date_yy"] for event in events], ["260702", "260706"])
 
     def test_unfinished_horizons_stay_empty(self):
         with tempfile.TemporaryDirectory() as tmp:

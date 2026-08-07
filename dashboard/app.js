@@ -1,7 +1,7 @@
-const MODULES = { market: "市场环境", vcp: "VCP结构", signals: "信号发现", valuation: "投研分析" };
+const MODULES = { market: "市场环境", vcp: "VCP结构", signals: "信号发现", backtest: "回测表现", valuation: "投研分析" };
 const LABELS = { industry_sw_l1: "申万一级", industry_sw_l2: "申万二级", gn: "概念题材", fg: "风格特征" };
 const INDEX_LABELS = { shanghai_composite: "上证综指", csi300: "沪深300", csi500: "中证500", csi1000: "中证1000", chinext: "创业板指", star50: "科创50" };
-let context, vcpContext, signalsContext, vcpFilter = "ALL", signalsFilter="ALL", vcpSelectedCode, signalsSelectedCode, calendarMonth, currentKind = "industry_sw_l2", rankWindow = "rank_20", selectedName, matrixSelectedName, activeModule = "market";
+let context, vcpContext, signalsContext, backtestContext, vcpFilter = "ALL", signalsFilter="ALL", backtestFilter="ALL", vcpSelectedCode, signalsSelectedCode, calendarMonth, currentKind = "industry_sw_l2", rankWindow = "rank_20", selectedName, matrixSelectedName, activeModule = "market";
 const $ = (id) => document.getElementById(id), pct = (v, d = 2) => v == null ? "—" : `${Number(v).toFixed(d)}%`, cls = (v) => v > 0 ? "positive" : v < 0 ? "negative" : "";
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
 const monthPath = (date) => `20${date.slice(0,4)}`;
@@ -9,7 +9,7 @@ function applyDate(date) { const s=$("date-select"); s.value=date; $("date-picke
 function renderCalendar() { const dates=[...$("date-select").options].map((option)=>option.value), selected=$("date-select").value; if(!calendarMonth)calendarMonth=`20${selected.slice(0,4)}`; const [year,month]=calendarMonth.match(/\d{4}/g)?[Number(calendarMonth.slice(0,4)),Number(calendarMonth.slice(4,6))]:[2026,1], first=new Date(year,month-1,1), days=new Date(year,month,0).getDate(), offset=(first.getDay()+6)%7, available=new Set(dates); const cells=["一","二","三","四","五","六","日"].map((v)=>`<span class="calendar-week">${v}</span>`); for(let i=0;i<offset;i++)cells.push("<span></span>"); for(let day=1;day<=days;day++){const date=`${String(year).slice(2)}${String(month).padStart(2,"0")}${String(day).padStart(2,"0")}`, enabled=available.has(date); cells.push(`<button class="calendar-day ${enabled?"available":""} ${date===selected?"selected":""}" data-date="${date}" ${enabled?"":"disabled"}>${day}</button>`);} $("date-picker-panel").innerHTML=`<div class="calendar-head"><button type="button" data-shift="-1">‹</button><b>${year}年${month}月</b><button type="button" data-shift="1">›</button></div><div class="calendar-grid">${cells.join("")}</div>`; $("date-picker-panel").querySelectorAll("[data-date]").forEach((button)=>button.onclick=()=>{applyDate(button.dataset.date);$("date-picker-panel").classList.add("hidden");$("date-picker-toggle").setAttribute("aria-expanded","false");}); $("date-picker-panel").querySelectorAll("[data-shift]").forEach((button)=>button.onclick=()=>{const d=new Date(year,month-1+Number(button.dataset.shift),1);calendarMonth=`${d.getFullYear()}${String(d.getMonth()+1).padStart(2,"0")}`;renderCalendar();}); }
 
 function renderModuleNav() { $("module-nav").innerHTML = Object.entries(MODULES).map(([key, label]) => `<button class="${key === activeModule ? "active" : ""}" data-module="${key}">${label}</button>`).join(""); $("module-nav").querySelectorAll("button").forEach((b) => b.onclick = () => { activeModule = b.dataset.module; renderModuleNav(); renderModule(); }); }
-function renderModule() { const market = $("market-content"), vcp = $("vcp-content"), signals=$("signals-content"), placeholder = $("module-placeholder"), date = $("date-control"); market.classList.add("hidden");vcp.classList.add("hidden");signals.classList.add("hidden"); placeholder.classList.add("hidden"); date.classList.add("hidden"); if (activeModule === "market") { market.classList.remove("hidden"); date.classList.remove("hidden"); return; } if (activeModule === "vcp") { vcp.classList.remove("hidden"); date.classList.remove("hidden"); loadVcp($("date-select").value); return; } if(activeModule==="signals"){signals.classList.remove("hidden");date.classList.remove("hidden");loadSignals($("date-select").value);return;} placeholder.innerHTML = `<p class="section-label">${MODULES[activeModule]}</p><h2>模块尚未发布展示数据</h2><p>后续该模块将通过 <code>dashboard/data/</code> 发布独立数据包，由本面板只读展示。</p>`; placeholder.classList.remove("hidden"); }
+function renderModule() { const market = $("market-content"), vcp = $("vcp-content"), signals=$("signals-content"), backtest=$("backtest-content"), placeholder = $("module-placeholder"), date = $("date-control"); market.classList.add("hidden");vcp.classList.add("hidden");signals.classList.add("hidden");backtest.classList.add("hidden"); placeholder.classList.add("hidden"); date.classList.add("hidden"); if (activeModule === "market") { market.classList.remove("hidden"); date.classList.remove("hidden"); return; } if (activeModule === "vcp") { vcp.classList.remove("hidden"); date.classList.remove("hidden"); loadVcp($("date-select").value); return; } if(activeModule==="signals"){signals.classList.remove("hidden");date.classList.remove("hidden");loadSignals($("date-select").value);return;} if(activeModule==="backtest"){backtest.classList.remove("hidden");date.classList.remove("hidden");loadBacktest($("date-select").value);return;} placeholder.innerHTML = `<p class="section-label">${MODULES[activeModule]}</p><h2>模块尚未发布展示数据</h2><p>后续该模块将通过 <code>dashboard/data/</code> 发布独立数据包，由本面板只读展示。</p>`; placeholder.classList.remove("hidden"); }
 function loadSignalsContext(date){const all=window.QUANT_DASHBOARD_SIGNALS_CONTEXTS||{};if(all[date])return Promise.resolve(all[date]);return new Promise((resolve,reject)=>{const script=document.createElement("script");script.src=`data/${monthPath(date)}/signals_context_${date}.js`;script.onload=()=>{const value=(window.QUANT_DASHBOARD_SIGNALS_CONTEXTS||{})[date];script.remove();resolve(value);};script.onerror=()=>reject(new Error(`未找到 ${date} 的模型二信号数据`));document.head.appendChild(script);});}
 async function loadSignals(date){try{signalsContext=await loadSignalsContext(date);renderSignals();}catch(error){$("signals-meta").textContent="当前日期尚未发布模型二信号数据";$("signals-summary").innerHTML="";$("signals-table").innerHTML="";$("signals-detail").innerHTML=`<p class="muted">${esc(error.message)}</p>`;}}
 function renderSignals(){const s=signalsContext.summary,rows=signalsContext.signals||[],filtered=signalsFilter==="ALL"?rows:rows.filter(r=>r.signal_kind===signalsFilter);$("signals-meta").textContent=`数据日期 ${signalsContext.meta.run_date} · ${signalsContext.meta.source}`;$("signals-summary").innerHTML=[["当日触发",s.triggered],["次日计划",s.planned],["信号总数",s.total]].map(([k,v])=>`<div><span>${k}</span><b>${v}</b></div>`).join("");$("signals-filters").innerHTML=[["ALL","全部"],["TRIGGERED","当日触发"],["PLAN","次日计划"]].map(([k,v])=>`<button class="${k===signalsFilter?"active":""}" data-kind="${k}">${v}</button>`).join("");$("signals-filters").querySelectorAll("button").forEach(b=>b.onclick=()=>{signalsFilter=b.dataset.kind;renderSignals();});$("signals-note").textContent=`显示 ${filtered.length}/${rows.length} 条`;if(!filtered.some(r=>r.code===signalsSelectedCode))signalsSelectedCode=filtered[0]?.code;$("signals-table").innerHTML=`<thead><tr><th>标的</th><th>类型</th><th>买点</th><th>质量</th><th>动作</th><th>买点分</th><th>风险</th></tr></thead><tbody>${filtered.map(r=>`<tr class="vcp-table-row ${r.code===signalsSelectedCode?"selected":""}" data-code="${esc(r.code)}"><td><b>${esc(r.name)}</b><br><span class="vcp-list-note">${esc(r.code)}</span></td><td>${r.signal_kind==="TRIGGERED"?"当日触发":"次日计划"}</td><td>${esc(r.setup_signal||"待触发")}</td><td>${esc(r.setup_quality||"—")}</td><td>${esc(r.action_hint||"—")}</td><td>${vcpNumber(r.setup_score,0)}</td><td>${esc((r.setup_risk_flags||[]).join(" · ")||"—")}</td></tr>`).join("")||"<tr><td colspan='7' class='muted'>当日没有触发或计划信号</td></tr>"}</tbody>`;$("signals-table").querySelectorAll("[data-code]").forEach(t=>t.onclick=()=>{signalsSelectedCode=t.dataset.code;renderSignals();});const r=filtered.find(x=>x.code===signalsSelectedCode);$("signals-detail").innerHTML=r?`<p class="section-label">信号详情</p><h3>${esc(r.name)} <span class="muted">${esc(r.code)}</span></h3><div class="vcp-metrics"><div class="vcp-metric"><span>结构阶段</span><b>${esc(r.structure_stage)}</b></div><div class="vcp-metric"><span>买点类型</span><b>${esc(r.setup_signal||"待触发")}</b></div><div class="vcp-metric"><span>Pivot</span><b>${vcpNumber(r.pivot_price,2)}</b></div><div class="vcp-metric"><span>失效价</span><b>${vcpNumber(r.invalid_price,2)}</b></div></div><h4>触发依据</h4><p>${esc((r.setup_reasons||[]).join("；")||r.reason||"等待计划条件满足")}</p><h4>尚缺条件 / 风险</h4><p>${esc((r.setup_misses||[]).join("；")||"—")}</p><div class="vcp-flags">${(r.setup_risk_flags||[]).concat(r.structure_risk_flags||[]).map(x=>`<span>${esc(x)}</span>`).join("")}</div>`:"<p class='muted'>请选择一条信号</p>";}
@@ -167,8 +167,53 @@ function renderDetail(row) {
   panel.querySelector(".detail-meta")?.remove();
 }
 
+function loadBacktestContext(date) {
+  const contexts = window.QUANT_DASHBOARD_BACKTEST_CONTEXTS || {};
+  if (contexts[date]) return Promise.resolve(contexts[date]);
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = `data/${monthPath(date)}/backtest_context_${date}.js`;
+    script.onload = () => { const value = (window.QUANT_DASHBOARD_BACKTEST_CONTEXTS || {})[date]; script.remove(); resolve(value); };
+    script.onerror = () => reject(new Error(`未找到 ${date} 的策略回测数据`));
+    document.head.appendChild(script);
+  });
+}
+async function loadBacktest(date) {
+  try { backtestContext = await loadBacktestContext(date); if (!backtestContext) throw new Error(`缺少 ${date} 的回测数据`); renderBacktest(); }
+  catch (error) { $("backtest-meta").textContent = "当前日期尚未发布回测数据"; $("backtest-summary").innerHTML = ""; $("backtest-table").innerHTML = `<caption class="muted">${esc(error.message)}</caption>`; $("backtest-event-table").innerHTML = ""; $("backtest-market-table").innerHTML = ""; $("backtest-sector-table").innerHTML = ""; }
+}
+function backtestReturn(value) {
+  if (value == null) return `<span class="backtest-pending">—</span>`;
+  const number = Number(value);
+  return `<span class="backtest-return ${cls(number)}">${number > 0 ? "+" : ""}${number.toFixed(2)}%</span>`;
+}
+function backtestStat(value, suffix = "") { return value == null ? "—" : `${Number(value).toFixed(1)}${suffix}`; }
+function renderBacktestGroupTable(id, groups) {
+  const cells = (stats, horizon) => { const item = stats?.[String(horizon)] || {}; return `<td>${item.samples || 0}</td><td class="${cls(item.avg_return)}">${backtestStat(item.avg_return, "%")}</td><td>${backtestStat(item.win_rate, "%")}</td>`; };
+  $(id).innerHTML = `<thead><tr><th rowspan="2">状态</th><th colspan="3">5日</th><th colspan="3">10日</th><th colspan="3">20日</th></tr><tr><th>样本</th><th>平均</th><th>胜率</th><th>样本</th><th>平均</th><th>胜率</th><th>样本</th><th>平均</th><th>胜率</th></tr></thead><tbody>${(groups || []).map((row) => `<tr><td>${esc(row.group)}</td>${cells(row.horizons, 5)}${cells(row.horizons, 10)}${cells(row.horizons, 20)}</tr>`).join("") || "<tr><td colspan='10' class='muted'>当前窗口暂无可分组事件</td></tr>"}</tbody>`;
+}
+function renderBacktest() {
+  const summary = backtestContext.summary || {}, rows = backtestContext.events || [];
+  const filtered = backtestFilter === "ALL" ? rows : rows.filter((row) => row.event_type === backtestFilter);
+  const horizon = summary.horizons || {};
+  $("backtest-meta").textContent = `报告日 ${backtestContext.meta.report_date} · 观察首次事件后 ${backtestContext.meta.window_min_days}–${backtestContext.meta.window_max_days} 个交易日`;
+  $("backtest-summary").innerHTML = [
+    ["窗口事件", summary.events || 0],
+    ["成熟 / 买点", `${summary.mature_events || 0} / ${summary.trigger_events || 0}`],
+    ["5日胜率", horizon["5"]?.win_rate == null ? "—" : `${horizon["5"].win_rate.toFixed(1)}%`],
+    ["20日胜率", horizon["20"]?.win_rate == null ? "—" : `${horizon["20"].win_rate.toFixed(1)}%`],
+  ].map(([label, value]) => `<div><span>${label}</span><b>${value}</b></div>`).join("");
+  $("backtest-filters").innerHTML = [["ALL", "全部"], ["MATURE_ENTRY", "首次成熟"], ["SETUP_TRIGGER", "首次买点"]].map(([key, label]) => `<button class="${key === backtestFilter ? "active" : ""}" data-filter="${key}">${label}</button>`).join("");
+  $("backtest-filters").querySelectorAll("button").forEach((button) => button.onclick = () => { backtestFilter = button.dataset.filter; renderBacktest(); });
+  $("backtest-note").textContent = `显示 ${filtered.length}/${rows.length} 条唯一事件；未满周期留空`;
+  $("backtest-table").innerHTML = `<thead><tr><th>信号日</th><th>标的</th><th>首次事件</th><th>买点类型</th><th>年龄</th><th>突破时间</th><th>突破时涨幅</th><th>5日</th><th>10日</th><th>20日</th><th>信号时市场</th><th>信号时板块</th></tr></thead><tbody>${filtered.map((row) => `<tr><td>${esc(row.signal_date)}</td><td><b>${esc(row.name)}</b><br><span class="vcp-list-note">${esc(row.code)}</span></td><td>${row.event_type === "MATURE_ENTRY" ? "形态成熟" : "买点触发"}</td><td>${esc(row.setup_type || "—")}</td><td>${row.age_days}日</td><td>${esc(row.breakout_time || "无")}</td><td>${backtestReturn(row.breakout_return)}</td><td>${backtestReturn(row.return_5d)}</td><td>${backtestReturn(row.return_10d)}</td><td>${backtestReturn(row.return_20d)}</td><td class="backtest-context">${esc(row.market_state_label)}<small>${esc(row.market_state)}</small></td><td class="backtest-context">${esc(row.sector_state)}<small>${esc(row.sector_name)}</small></td></tr>`).join("") || "<tr><td colspan='12' class='muted'>当前窗口没有已满5个交易日的首次成熟或买点事件</td></tr>"}</tbody>`;
+  renderBacktestGroupTable("backtest-event-table", (backtestContext.event_groups || []).map((row) => ({ ...row, group: row.group === "MATURE_ENTRY" ? "首次成熟" : row.group === "SETUP_TRIGGER" ? "首次买点" : row.group })));
+  renderBacktestGroupTable("backtest-market-table", backtestContext.market_groups);
+  renderBacktestGroupTable("backtest-sector-table", backtestContext.sector_groups);
+}
+
 function moduleDateData(module) {
-  const key = module === "signals" ? "signals" : module === "vcp" ? "vcp" : "market";
+  const key = ["signals", "vcp", "backtest"].includes(module) ? module : "market";
   return window.QUANT_DASHBOARD_INDEX?.[key] || window.QUANT_DASHBOARD_INDEX?.market || { latest: null, available: [] };
 }
 function setModuleDates(module) {
@@ -184,6 +229,7 @@ applyDate = function (date) {
   if (activeModule === "market") load(date);
   if (activeModule === "vcp") loadVcp(date);
   if (activeModule === "signals") loadSignals(date);
+  if (activeModule === "backtest") loadBacktest(date);
   renderCalendar();
 };
 const renderModuleBase = renderModule;
@@ -241,7 +287,7 @@ renderModule = function () {
     return renderModuleWithValuationBase();
   }
   setModuleDates("valuation");
-  ["market-content", "vcp-content", "signals-content", "module-placeholder"].forEach((id) => $(id).classList.add("hidden"));
+  ["market-content", "vcp-content", "signals-content", "backtest-content", "module-placeholder"].forEach((id) => $(id).classList.add("hidden"));
   $("valuation-content").classList.remove("hidden"); $("date-control").classList.remove("hidden");
   $("date-control").classList.add("hidden");
   loadValuation(window.QUANT_DASHBOARD_INDEX?.valuation?.latest);

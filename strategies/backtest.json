@@ -1,0 +1,14 @@
+{
+  "strategy_version": "strategy_backtest_v1_1",
+  "event_rules": {
+    "mature_stages": ["VCP_MATURE", "VCP_TIGHT"],
+    "setup_signals": ["PULLBACK_BUY", "BREAKOUT_BUY", "RETEST_BUY"]
+  },
+  "evaluation": {
+    "window_min_days": 5,
+    "window_max_days": 20,
+    "horizons": [5, 10, 20],
+    "breakout_pivot_ratio": 1.01,
+    "win_return_threshold_pct": 0.0
+  }
+}

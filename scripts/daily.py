@@ -118,6 +118,7 @@ def run_dashboard_publish(date_yy):
     iso = datetime.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
     commands = [
         ["python3", "scripts/market_regime.py", "run", "--date", iso],
+        ["python3", "scripts/backtest.py", "--date", date_yy],
         ["python3", "scripts/dashboard_vcp.py", "--date", date_yy],
         ["python3", "scripts/dashboard_signals.py", "--date", date_yy],
     ]
@@ -141,6 +142,7 @@ def verify_pipeline_outputs(date_yy):
         month_dir / f"market_context_{date_yy}.js",
         month_dir / f"vcp_context_{date_yy}.js",
         month_dir / f"signals_context_{date_yy}.js",
+        month_dir / f"backtest_context_{date_yy}.js",
     ]
     missing = [str(path.relative_to(root)) for path in required if not path.exists()]
     index_path = root / "dashboard" / "data" / "index.js"
@@ -152,13 +154,13 @@ def verify_pipeline_outputs(date_yy):
             missing.append("dashboard/data/index.js（格式无效）")
         else:
             index = json.loads(match.group(1))
-            for module in ("market", "vcp", "signals"):
+            for module in ("market", "vcp", "signals", "backtest"):
                 if date_yy not in index.get(module, {}).get("available", []):
                     missing.append(f"dashboard index {module}:{date_yy}")
     if missing:
         print("[daily] 页面/产物完整性核验失败：" + "；".join(missing))
         return False
-    print(f"[daily] ✓ 完整性核验通过：{date_yy} 三类页面数据均已发布")
+    print(f"[daily] ✓ 完整性核验通过：{date_yy} 四类日期页面数据均已发布")
     return True
 
 

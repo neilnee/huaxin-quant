@@ -311,6 +311,10 @@ dashboard/data/<YYYYMM>/vcp_context_<YYMMDD>.js
 
 `dashboard_vcp.py` 仅读取当日 `bloom_input` 与同日模型二 JSON，按月发布 VCP 结构页所需的独立数据包；`--all` 可重建全部已有 Bloom 日期。它不得改写 Bloom 状态、模型二输出或触发交易动作。
 
+VCP 页面补充申万二级行业与板块状态时，优先读取同日 `market/stock_strength_<YYMMDD>.csv` 和 `market/sector_heat_<YYMMDD>.csv`；同日文件缺失时才读取数据库中的同日快照。不得回退到其他日期。历史降级口径沿用 Market Regime 产物的 `history_basis`，不得把当前成分回填伪装成严格点时数据。
+
+VCP Dashboard 的历史起点与系统回放起点一致，为 `2026-05-06`。若历史 Quant 已存在但缺少早期 `bloom_input`，只允许按日期顺序做确定性轻量回放：生命周期状态必须写入临时隔离目录，跳过 LLM、事件账本和当前 `bloom_state.csv`，仅补充缺失的历史 `bloom_input` 后再由 `dashboard_vcp.py --all` 发布。不得为修复页面重复运行市场、Pool 或 Quant，也不得用当前 Bloom 状态倒灌历史日期。
+
 `bloom_state_before_<YYYYMMDD>.csv` 是当日首次写入前的状态快照，用于同日重复运行时保持 `consecutive_reject`、`days_tracked` 等生命周期字段的判断基准稳定。重复运行同一天时必须优先读取该快照，避免已写入的当日 state 覆盖昨日累计状态，导致 `EXIT` 判断被冲掉。
 
 报告分区：

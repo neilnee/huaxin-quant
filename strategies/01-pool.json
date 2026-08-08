@@ -1,6 +1,6 @@
 {
-  "strategy_version": "model1_pool_v2",
-  "description": "Model 1 pool screening parameters. This file contains query terms, thresholds, segments, industry classification settings, and soft-tag weights only.",
+  "strategy_version": "model1_pool_v3",
+  "description": "Model 1 dual-channel screening parameters for the core quality pool and relative-strength expansion pool.",
   "runtime": {
     "cache_max_age_days": 5,
     "fetch_delay_seconds": 1.5,
@@ -51,6 +51,25 @@
       "condition": "总市值大于500亿"
     }
   ],
+  "expansion_pool": {
+    "enabled": true,
+    "top_n_before_filters": 200,
+    "return_windows": {
+      "short": 20,
+      "long": 60
+    },
+    "weights": {
+      "rs_short_percentile": 0.6,
+      "rs_long_percentile": 0.4
+    },
+    "hard_filters": {
+      "require_universe_eligible": true,
+      "minimum_history_sessions": 240,
+      "minimum_active_sessions_20": 18,
+      "minimum_average_amount_20": 100000000
+    },
+    "unverified_fundamental_tag": "FUNDAMENTAL_UNVERIFIED"
+  },
   "hard_filters": {
     "min_market_cap": 5000000000,
     "min_listing_days": 365,

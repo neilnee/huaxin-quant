@@ -102,7 +102,7 @@ class BacktestEventTests(unittest.TestCase):
                 "structure_pivot": 12,
             }
             environment = {"market_state": "SELECTIVE", "market_state_label": "结构分化", "sector_name": "测试行业", "sector_state": "持续主线"}
-            with patch.object(backtest, "MARKET_DB", db_path), patch.object(backtest, "trading_calendar", return_value=calendar), patch.object(backtest, "load_signal_environment", return_value=environment):
+            with patch.object(backtest, "MARKET_DB", db_path), patch.object(backtest, "trading_calendar", return_value=calendar), patch.object(backtest, "load_signal_environment", return_value=environment), patch.object(backtest, "load_corporate_actions", return_value=[]):
                 result = backtest.add_performance([event], "260708")
 
         self.assertEqual(len(result), 1)
@@ -112,6 +112,16 @@ class BacktestEventTests(unittest.TestCase):
         self.assertIsNone(result[0]["return_20d"])
         self.assertEqual(result[0]["breakout_time"], "2026-07-04 · T+3")
         self.assertEqual(result[0]["breakout_return"], 8.333)
+
+    def test_holding_period_value_adjusts_dividend_bonus_and_rights(self):
+        value, applied = backtest.holding_period_value("2026-05-22", "2026-06-04", 10, [
+            {"date": "2026-05-22", "cash_dividend_per_10": 9, "bonus_shares_per_10": 9},
+            {"date": "2026-05-29", "cash_dividend_per_10": 2, "bonus_shares_per_10": 3},
+            {"date": "2026-06-04", "rights_shares_per_10": 2, "rights_price": 4},
+        ])
+
+        self.assertAlmostEqual(value, 14.76)
+        self.assertEqual([item["date"] for item in applied], ["2026-05-29", "2026-06-04"])
 
     def test_breakout_is_empty_when_frozen_pivot_is_not_crossed(self):
         result = backtest.breakout_performance(

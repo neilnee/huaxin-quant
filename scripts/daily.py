@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Daily pipeline: 数据更新 → Pool → Quant → Bloom → Signal Plan → 页面发布 → 打开面板 → 东方财富自选同步。
+Daily pipeline: 数据更新 → Pool → Quant → Bloom → Signal Plan → 信号财务提示 → 页面发布 → 打开面板 → 东方财富自选同步。
 
 Launches each stage via subprocess, writes step-level progress to a shared
 JSON file consumed by monitor.py. This script is non-interactive and designed
@@ -114,6 +114,13 @@ def run_signal_plan(date_yy, progress_path):
     )
 
 
+def run_signal_fundamentals(date_yy):
+    return subprocess.run(
+        ["python3", "scripts/signal_fundamentals.py", "--date", date_yy],
+        cwd=PROJECT_ROOT,
+    )
+
+
 def run_dashboard_publish(date_yy):
     iso = datetime.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
     commands = [
@@ -221,7 +228,7 @@ def main():
 
     progress_path = _progress_path(date_yy)
     tracker = ProgressTracker(progress_path)
-    tracker.init(["data_update", "pool", "quant", "bloom", "signal_plan", "dashboard", "verify", "open_dashboard", "zixuan"])
+    tracker.init(["data_update", "pool", "quant", "bloom", "signal_plan", "signal_fundamentals", "dashboard", "verify", "open_dashboard", "zixuan"])
     tracker.set_date(date_yy)
 
     print(f"[daily] 流水线启动 {date_yy}")
@@ -300,7 +307,18 @@ def main():
     tracker.step_done("signal_plan")
     print("[daily] ✓ signal plan done")
 
-    # ── Step 6: Dashboard packages ──
+    # ── Step 6: Signal financial hints (non-blocking sidecar) ──
+    tracker.step_start("signal_fundamentals")
+    print("[daily] → 信号财务提示")
+    result = run_signal_fundamentals(date_yy)
+    if result.returncode != 0:
+        tracker.step_done("signal_fundamentals", error=f"exit {result.returncode}")
+        print("[daily] ⚠ 信号财务补查失败，页面将使用已有缓存或降级提示")
+    else:
+        tracker.step_done("signal_fundamentals")
+        print("[daily] ✓ signal fundamentals done")
+
+    # ── Step 7: Dashboard packages ──
     tracker.step_start("dashboard")
     print("[daily] → 生成数据分析面板")
     result = run_dashboard_publish(date_yy)
@@ -311,7 +329,7 @@ def main():
     tracker.step_done("dashboard")
     print("[daily] ✓ dashboard done")
 
-    # ── Step 7: Verify all date-scoped outputs ──
+    # ── Step 8: Verify all date-scoped outputs ──
     tracker.step_start("verify")
     if not verify_pipeline_outputs(date_yy):
         errors.append("verify: missing date-scoped output")
@@ -319,7 +337,7 @@ def main():
         stop_after("完整性核验")
     tracker.step_done("verify")
 
-    # ── Step 8: Open dashboard ──
+    # ── Step 9: Open dashboard ──
     tracker.step_start("open_dashboard")
     print("[daily] → 打开数据分析面板")
     result = open_dashboard()
@@ -330,7 +348,7 @@ def main():
         tracker.step_done("open_dashboard")
         print("[daily] ✓ dashboard opened")
 
-    # ── Step 9: Eastmoney all-watchlist rebuild ──
+    # ── Step 10: Eastmoney all-watchlist rebuild ──
     if not _env_flag("ENABLE_ZIXUAN_SYNC"):
         tracker.step_done("zixuan")
         print("[daily] - zixuan disabled (set ENABLE_ZIXUAN_SYNC=true in .env to enable)")

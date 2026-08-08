@@ -1,0 +1,16 @@
+{
+  "strategy_version": "signal_fundamentals_v1",
+  "query": {
+    "recent_periods": 6,
+    "timeout_seconds": 30,
+    "max_retries": 3,
+    "success_delay_seconds": 2.0,
+    "retry_delay_seconds": 6.0
+  },
+  "risk_thresholds": {
+    "high_debt_pct": 70.0,
+    "revenue_decline_pct": -20.0,
+    "profit_decline_pct": -30.0,
+    "low_gross_margin_pct": 10.0
+  }
+}

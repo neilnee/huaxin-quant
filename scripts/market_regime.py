@@ -32,7 +32,7 @@ OUTPUT_DIR = ROOT / "market"
 DATA_OUTPUT_DIR = OUTPUT_DIR / "data"
 DASHBOARD_DIR = ROOT / "dashboard"
 DASHBOARD_DATA_DIR = DASHBOARD_DIR / "data"
-DASHBOARD_START_DATE = "260601"
+DASHBOARD_START_DATE = "260506"
 MX_SEARCH_URL = "https://mkapi2.dfcfs.com/finskillshub/api/claw/news-search"
 
 
@@ -1334,7 +1334,7 @@ def write_dashboard_index(market_latest: str | None, market_available: list[str]
     # Every publisher owns only its module.  Rebuild the other known module
     # indexes from their published packages so a market refresh cannot erase
     # an independently published valuation index.
-    for kind in ("signals", "vcp", "valuation"):
+    for kind in ("signals", "vcp", "backtest", "valuation"):
         dates = sorted(path.stem.rsplit("_", 1)[-1] for path in DASHBOARD_DATA_DIR.glob(f"*/{kind}_context_*.js"))
         if dates:
             index[kind] = {"latest": dates[-1], "available": dates}

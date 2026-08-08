@@ -7,6 +7,7 @@ from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.data.pool_data import PoolSegmentCache, find_key, parse_date, parse_num, parse_pct
+from scripts.data.pool_expansion import build_expansion_pool
 from scripts.shared import get_latest_annual_period, expected_trade_date
 from scripts.strategy_config import load_strategy_config
 
@@ -23,6 +24,7 @@ RUNTIME_CFG = POOL_STRATEGY["runtime"]
 HARD_FILTER_CFG = POOL_STRATEGY["hard_filters"]
 INDUSTRY_CFG = POOL_STRATEGY["industry"]
 SOFT_TAG_CFG = POOL_STRATEGY["soft_tags"]
+EXPANSION_CFG = POOL_STRATEGY["expansion_pool"]
 
 SEMICONDUCTOR_KW = INDUSTRY_CFG["semiconductor_keyword"]
 
@@ -397,6 +399,10 @@ fieldnames = [
     "经营现金流_净利比","毛利率_pct","研发费用占比_pct",
     "资产负债率_pct","每股收益_元",
     "质量评分","风险标签","数据周期","半导体现金流豁免",
+    "pool_channel","fundamental_status",
+    "扩展RS排名","扩展RS评分","20日RS百分位","60日RS百分位",
+    "20日涨幅_pct","60日涨幅_pct","20日平均成交额_元",
+    "历史交易日数","最近20日有效交易日数",
     "strategy_version",
 ]
 
@@ -467,8 +473,63 @@ for code in sorted(final):
         "风险标签": ";".join(tags),
         "数据周期": period,
         "半导体现金流豁免": "Y" if semi_relax else "N",
+        "pool_channel": "CORE_QUALITY",
+        "fundamental_status": "CORE_VERIFIED",
+        "扩展RS排名": "",
+        "扩展RS评分": "",
+        "20日RS百分位": "",
+        "60日RS百分位": "",
+        "20日涨幅_pct": "",
+        "60日涨幅_pct": "",
+        "20日平均成交额_元": "",
+        "历史交易日数": "",
+        "最近20日有效交易日数": "",
         "strategy_version": STRATEGY_VERSION,
     })
+
+expansion_rows, expansion_summary = build_expansion_pool(
+    TODAY.isoformat(),
+    EXPANSION_CFG,
+    core_codes=set(final),
+)
+rows_by_code = {
+    str(row["股票代码"]).replace('="', "").replace('"', ""): row
+    for row in rows_out
+}
+for expansion in expansion_rows:
+    code = expansion["code"]
+    row = rows_by_code.get(code)
+    if row is None:
+        row = {field: "" for field in fieldnames}
+        row.update({
+            "股票代码": f'="{code}"',
+            "股票名称": expansion["name"],
+            "所属行业": expansion["industry"],
+            "风险标签": EXPANSION_CFG["unverified_fundamental_tag"],
+            "数据周期": "unknown",
+            "半导体现金流豁免": "N",
+            "pool_channel": "EXPANSION_RS",
+            "fundamental_status": expansion["fundamental_status"],
+            "strategy_version": STRATEGY_VERSION,
+        })
+        rows_out.append(row)
+        rows_by_code[code] = row
+    else:
+        row["pool_channel"] = "BOTH"
+        row["fundamental_status"] = "CORE_VERIFIED"
+    row.update({
+        "扩展RS排名": str(expansion["rs_rank"]),
+        "扩展RS评分": fmt(expansion["expansion_score"]),
+        "20日RS百分位": fmt(expansion["rs_short_percentile"]),
+        "60日RS百分位": fmt(expansion["rs_long_percentile"]),
+        "20日涨幅_pct": fmt(expansion["return_short_pct"]),
+        "60日涨幅_pct": fmt(expansion["return_long_pct"]),
+        "20日平均成交额_元": fmt(expansion["average_amount_20"]),
+        "历史交易日数": str(expansion["history_sessions"]),
+        "最近20日有效交易日数": str(expansion["active_sessions_20"]),
+    })
+
+rows_out.sort(key=lambda row: str(row["股票代码"]))
 
 with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
     w = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
@@ -489,14 +550,17 @@ print(f"\n  阶段一: API 拉取 {len(all_stocks)} 只（理论总数合计 {to
 print(f"  阶段二: 通过 {len(passed)} 只")
 for reason, count in rejected.items():
     print(f"    - {reason}: {count} 只")
-print(f"  阶段三: 行业限制已放开 → 最终入池 {len(final)} 只")
+print(f"  阶段三: 核心质量池 {len(final)} 只")
+if expansion_summary.get("enabled"):
+    print(f"  扩展池: RS可计算 {expansion_summary['rankable_total']} 只 → 前{EXPANSION_CFG['top_n_before_filters']}初选 {expansion_summary['initial_top_total']} 只")
+    for reason, count in expansion_summary.get("rejected", {}).items():
+        print(f"    - {reason}: {count} 只")
+    print(f"    - 与核心池重合: {expansion_summary['core_overlap_total']} 只")
+    print(f"    - 扩展池新增: {expansion_summary['expansion_only_total']} 只")
+print(f"  合并后最终入池: {len(rows_out)} 只")
 
 # Industry distribution
-ind_dist = Counter()
-for code in final:
-    row = final[code]
-    ind = str(row.get(industry_key, "未知")) if industry_key else "未知"
-    ind_dist[ind] += 1
+ind_dist = Counter((row.get("所属行业") or "未知") for row in rows_out)
 
 print(f"\n  行业分布 (Top 10):")
 for ind, cnt in ind_dist.most_common(10):

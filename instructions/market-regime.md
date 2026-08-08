@@ -61,6 +61,8 @@ market/concept_strength_<YYMMDD>.csv
 
 页面位于本地运行目录 `dashboard/`，是全系统统一数据分析入口。市场模块通过 `dashboard/data/index.js` 发布可用日期，并按月将每日独立数据包写入 `dashboard/data/<YYYYMM>/market_context_<YYMMDD>.js`；页面按日历选择日期后才动态加载对应包，避免历史数据累积到单一大文件。`publish-dashboard` 可从已有 `market/data/` 归档重建面板包。页面不得重新计算指标、访问通达信或写入数据库。当前 Markdown 保留为简要归档。
 
+当前历史回放与 Dashboard 市场日期起点为 `2026-05-06`。市场模块重建自身日期索引时必须同时保留 signals、vcp、backtest、valuation 等其他模块已经发布的日期索引，不得覆盖独立模块。
+
 ### 今日盘面主线
 
 市场模块在现有市场状态和 20 日板块生命周期之外，独立输出一条“今日盘面主线”。该结果只描述当日资金共同交易的叙事链，不参与市场状态、轮动分、板块 5/20 日排名或模型二判断；当日证据不足时必须明确输出“当日无清晰主线”，不得为了每天有标题而强行归纳。

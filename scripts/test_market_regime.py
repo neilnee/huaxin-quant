@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """Focused tests for daily-mainline ranking and candidate contracts."""
 
+import json
 import sqlite3
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from scripts import market_regime
 
 from scripts.market_regime import (
     classify_news_phase,
@@ -40,6 +46,21 @@ def sector(name, rel1, rel5, rel20, breadth, volume, density, kind="gn"):
 
 
 class DailyMainlineTests(unittest.TestCase):
+    def test_market_index_preserves_other_published_modules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            month = root / "202605"
+            month.mkdir()
+            for kind in ("signals", "vcp", "backtest", "valuation"):
+                (month / f"{kind}_context_260506.js").write_text("", encoding="utf-8")
+            with patch.object(market_regime, "DASHBOARD_DATA_DIR", root):
+                market_regime.write_dashboard_index("260506", ["260506"])
+            text = (root / "index.js").read_text(encoding="utf-8")
+            payload = json.loads(text.split(" = ", 1)[1].rsplit(";", 1)[0])
+
+        self.assertEqual(payload["market"]["available"], ["260506"])
+        self.assertEqual(payload["backtest"]["available"], ["260506"])
+
     def test_market_state_confirmation_uses_two_of_three_not_consecutive_days(self):
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row

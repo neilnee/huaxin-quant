@@ -1,5 +1,5 @@
 {
-  "strategy_version": "strategy_backtest_v2",
+  "strategy_version": "strategy_backtest_v3",
   "event_rules": {
     "setup_families": ["PULLBACK", "BREAKOUT", "RETEST"],
     "failed_lifecycle_states": ["POST_BREAKOUT_FAILED", "POST_BREAKOUT_EXPIRED"]

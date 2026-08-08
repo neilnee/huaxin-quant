@@ -1,7 +1,7 @@
-const MODULES = { market: "市场环境", vcp: "VCP结构", signals: "信号发现", valuation: "投研分析" };
+const MODULES = { market: "市场环境", vcp: "VCP结构", signals: "信号发现", backtest: "回测表现", valuation: "投研分析" };
 const LABELS = { industry_sw_l1: "申万一级", industry_sw_l2: "申万二级", gn: "概念题材", fg: "风格特征" };
 const INDEX_LABELS = { shanghai_composite: "上证综指", csi300: "沪深300", csi500: "中证500", csi1000: "中证1000", chinext: "创业板指", star50: "科创50" };
-let context, vcpContext, signalsContext, vcpFilter = "ALL", signalsFilter="ALL", vcpSelectedCode, signalsSelectedCode, calendarMonth, currentKind = "industry_sw_l2", rankWindow = "rank_20", selectedName, matrixSelectedName, activeModule = "market";
+let context, vcpContext, signalsContext, backtestContext, vcpFilter = "ALL", signalsFilter="ALL", backtestFilter="ALL", vcpSelectedCode, signalsSelectedCode, calendarMonth, currentKind = "industry_sw_l2", rankWindow = "rank_20", selectedName, matrixSelectedName, activeModule = "market";
 const $ = (id) => document.getElementById(id), pct = (v, d = 2) => v == null ? "—" : `${Number(v).toFixed(d)}%`, cls = (v) => v > 0 ? "positive" : v < 0 ? "negative" : "";
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
 const monthPath = (date) => `20${date.slice(0,4)}`;
@@ -9,7 +9,7 @@ function applyDate(date) { const s=$("date-select"); s.value=date; $("date-picke
 function renderCalendar() { const dates=[...$("date-select").options].map((option)=>option.value), selected=$("date-select").value; if(!calendarMonth)calendarMonth=`20${selected.slice(0,4)}`; const [year,month]=calendarMonth.match(/\d{4}/g)?[Number(calendarMonth.slice(0,4)),Number(calendarMonth.slice(4,6))]:[2026,1], first=new Date(year,month-1,1), days=new Date(year,month,0).getDate(), offset=(first.getDay()+6)%7, available=new Set(dates); const cells=["一","二","三","四","五","六","日"].map((v)=>`<span class="calendar-week">${v}</span>`); for(let i=0;i<offset;i++)cells.push("<span></span>"); for(let day=1;day<=days;day++){const date=`${String(year).slice(2)}${String(month).padStart(2,"0")}${String(day).padStart(2,"0")}`, enabled=available.has(date); cells.push(`<button class="calendar-day ${enabled?"available":""} ${date===selected?"selected":""}" data-date="${date}" ${enabled?"":"disabled"}>${day}</button>`);} $("date-picker-panel").innerHTML=`<div class="calendar-head"><button type="button" data-shift="-1">‹</button><b>${year}年${month}月</b><button type="button" data-shift="1">›</button></div><div class="calendar-grid">${cells.join("")}</div>`; $("date-picker-panel").querySelectorAll("[data-date]").forEach((button)=>button.onclick=()=>{applyDate(button.dataset.date);$("date-picker-panel").classList.add("hidden");$("date-picker-toggle").setAttribute("aria-expanded","false");}); $("date-picker-panel").querySelectorAll("[data-shift]").forEach((button)=>button.onclick=()=>{const d=new Date(year,month-1+Number(button.dataset.shift),1);calendarMonth=`${d.getFullYear()}${String(d.getMonth()+1).padStart(2,"0")}`;renderCalendar();}); }
 
 function renderModuleNav() { $("module-nav").innerHTML = Object.entries(MODULES).map(([key, label]) => `<button class="${key === activeModule ? "active" : ""}" data-module="${key}">${label}</button>`).join(""); $("module-nav").querySelectorAll("button").forEach((b) => b.onclick = () => { activeModule = b.dataset.module; renderModuleNav(); renderModule(); }); }
-function renderModule() { const market = $("market-content"), vcp = $("vcp-content"), signals=$("signals-content"), placeholder = $("module-placeholder"), date = $("date-control"); market.classList.add("hidden");vcp.classList.add("hidden");signals.classList.add("hidden"); placeholder.classList.add("hidden"); date.classList.add("hidden"); if (activeModule === "market") { market.classList.remove("hidden"); date.classList.remove("hidden"); return; } if (activeModule === "vcp") { vcp.classList.remove("hidden"); date.classList.remove("hidden"); loadVcp($("date-select").value); return; } if(activeModule==="signals"){signals.classList.remove("hidden");date.classList.remove("hidden");loadSignals($("date-select").value);return;} placeholder.innerHTML = `<p class="section-label">${MODULES[activeModule]}</p><h2>模块尚未发布展示数据</h2><p>后续该模块将通过 <code>dashboard/data/</code> 发布独立数据包，由本面板只读展示。</p>`; placeholder.classList.remove("hidden"); }
+function renderModule() { const market = $("market-content"), vcp = $("vcp-content"), signals=$("signals-content"), backtest=$("backtest-content"), placeholder = $("module-placeholder"), date = $("date-control"); market.classList.add("hidden");vcp.classList.add("hidden");signals.classList.add("hidden");backtest.classList.add("hidden"); placeholder.classList.add("hidden"); date.classList.add("hidden"); if (activeModule === "market") { market.classList.remove("hidden"); date.classList.remove("hidden"); return; } if (activeModule === "vcp") { vcp.classList.remove("hidden"); date.classList.remove("hidden"); loadVcp($("date-select").value); return; } if(activeModule==="signals"){signals.classList.remove("hidden");date.classList.remove("hidden");loadSignals($("date-select").value);return;} if(activeModule==="backtest"){backtest.classList.remove("hidden");date.classList.remove("hidden");loadBacktest($("date-select").value);return;} placeholder.innerHTML = `<p class="section-label">${MODULES[activeModule]}</p><h2>模块尚未发布展示数据</h2><p>后续该模块将通过 <code>dashboard/data/</code> 发布独立数据包，由本面板只读展示。</p>`; placeholder.classList.remove("hidden"); }
 function loadSignalsContext(date){const all=window.QUANT_DASHBOARD_SIGNALS_CONTEXTS||{};if(all[date])return Promise.resolve(all[date]);return new Promise((resolve,reject)=>{const script=document.createElement("script");script.src=`data/${monthPath(date)}/signals_context_${date}.js`;script.onload=()=>{const value=(window.QUANT_DASHBOARD_SIGNALS_CONTEXTS||{})[date];script.remove();resolve(value);};script.onerror=()=>reject(new Error(`未找到 ${date} 的模型二信号数据`));document.head.appendChild(script);});}
 async function loadSignals(date){try{signalsContext=await loadSignalsContext(date);renderSignals();}catch(error){$("signals-meta").textContent="当前日期尚未发布模型二信号数据";$("signals-summary").innerHTML="";$("signals-table").innerHTML="";$("signals-detail").innerHTML=`<p class="muted">${esc(error.message)}</p>`;}}
 function renderSignals(){const s=signalsContext.summary,rows=signalsContext.signals||[],filtered=signalsFilter==="ALL"?rows:rows.filter(r=>r.signal_kind===signalsFilter);$("signals-meta").textContent=`数据日期 ${signalsContext.meta.run_date} · ${signalsContext.meta.source}`;$("signals-summary").innerHTML=[["当日触发",s.triggered],["次日计划",s.planned],["信号总数",s.total]].map(([k,v])=>`<div><span>${k}</span><b>${v}</b></div>`).join("");$("signals-filters").innerHTML=[["ALL","全部"],["TRIGGERED","当日触发"],["PLAN","次日计划"]].map(([k,v])=>`<button class="${k===signalsFilter?"active":""}" data-kind="${k}">${v}</button>`).join("");$("signals-filters").querySelectorAll("button").forEach(b=>b.onclick=()=>{signalsFilter=b.dataset.kind;renderSignals();});$("signals-note").textContent=`显示 ${filtered.length}/${rows.length} 条`;if(!filtered.some(r=>r.code===signalsSelectedCode))signalsSelectedCode=filtered[0]?.code;$("signals-table").innerHTML=`<thead><tr><th>标的</th><th>类型</th><th>买点</th><th>质量</th><th>动作</th><th>买点分</th><th>风险</th></tr></thead><tbody>${filtered.map(r=>`<tr class="vcp-table-row ${r.code===signalsSelectedCode?"selected":""}" data-code="${esc(r.code)}"><td><b>${esc(r.name)}</b><br><span class="vcp-list-note">${esc(r.code)}</span></td><td>${r.signal_kind==="TRIGGERED"?"当日触发":"次日计划"}</td><td>${esc(r.setup_signal||"待触发")}</td><td>${esc(r.setup_quality||"—")}</td><td>${esc(r.action_hint||"—")}</td><td>${vcpNumber(r.setup_score,0)}</td><td>${esc((r.setup_risk_flags||[]).join(" · ")||"—")}</td></tr>`).join("")||"<tr><td colspan='7' class='muted'>当日没有触发或计划信号</td></tr>"}</tbody>`;$("signals-table").querySelectorAll("[data-code]").forEach(t=>t.onclick=()=>{signalsSelectedCode=t.dataset.code;renderSignals();});const r=filtered.find(x=>x.code===signalsSelectedCode);$("signals-detail").innerHTML=r?`<p class="section-label">信号详情</p><h3>${esc(r.name)} <span class="muted">${esc(r.code)}</span></h3><div class="vcp-metrics"><div class="vcp-metric"><span>结构阶段</span><b>${esc(r.structure_stage)}</b></div><div class="vcp-metric"><span>买点类型</span><b>${esc(r.setup_signal||"待触发")}</b></div><div class="vcp-metric"><span>Pivot</span><b>${vcpNumber(r.pivot_price,2)}</b></div><div class="vcp-metric"><span>失效价</span><b>${vcpNumber(r.invalid_price,2)}</b></div></div><h4>触发依据</h4><p>${esc((r.setup_reasons||[]).join("；")||r.reason||"等待计划条件满足")}</p><h4>尚缺条件 / 风险</h4><p>${esc((r.setup_misses||[]).join("；")||"—")}</p><div class="vcp-flags">${(r.setup_risk_flags||[]).concat(r.structure_risk_flags||[]).map(x=>`<span>${esc(x)}</span>`).join("")}</div>`:"<p class='muted'>请选择一条信号</p>";}
@@ -110,7 +110,7 @@ function renderSignals(){
   $("signals-filters").querySelectorAll("button").forEach(button=>button.onclick=()=>{signalsFilter=button.dataset.kind;renderSignals();});
   $("signals-note").textContent=`显示 ${filtered.length}/${rows.length} 条买点记录`;
   if(!filtered.some(row=>signalRowKey(row)===signalsSelectedCode))signalsSelectedCode=filtered[0]&&signalRowKey(filtered[0]);
-  $("signals-table").innerHTML=`<thead><tr><th>标的</th><th>类型</th><th>买点</th><th>等级</th><th>建议仓位</th><th>评分</th><th>风险</th></tr></thead><tbody>${filtered.map(row=>`<tr class="vcp-table-row ${signalRowKey(row)===signalsSelectedCode?"selected":""}" data-key="${esc(signalRowKey(row))}"><td><b>${esc(row.name)}</b><br><span class="vcp-list-note">${esc(row.code)}</span></td><td>${esc(row.signal_kind)}</td><td>${esc(signalTypeLabel(row.setup_signal))}</td><td>${esc(row.setup_quality||"—")}</td><td>${esc(row.suggested_position||"—")}</td><td>${signalScoreCell(row)}</td><td>${esc((row.setup_risk_flags||[]).concat(row.structure_risk_flags||[]).map(signalRiskLabel).join(" · ")||"—")}</td></tr>`).join("")||"<tr><td colspan='7' class='muted'>该筛选条件下没有买点记录</td></tr>"}</tbody>`;
+  $("signals-table").innerHTML=`<thead><tr><th>标的</th><th>类型</th><th>买点</th><th>等级</th><th>建议仓位</th><th>评分</th><th>风险</th></tr></thead><tbody>${filtered.map(row=>`<tr class="vcp-table-row ${signalRowKey(row)===signalsSelectedCode?"selected":""}" data-key="${esc(signalRowKey(row))}"><td><b>${esc(row.name)}</b><br><span class="vcp-list-note">${esc(row.code)}</span></td><td>${esc(row.signal_kind)}</td><td>${esc(signalTypeLabel(row.setup_signal))}</td><td>${esc(row.setup_quality||"—")}</td><td>${esc(row.position_advice||row.suggested_position||"—")}</td><td>${signalScoreCell(row)}</td><td>${esc((row.setup_risk_flags||[]).concat(row.structure_risk_flags||[]).map(signalRiskLabel).join(" · ")||"—")}</td></tr>`).join("")||"<tr><td colspan='7' class='muted'>该筛选条件下没有买点记录</td></tr>"}</tbody>`;
   $("signals-table").querySelectorAll("[data-key]").forEach(row=>row.onclick=()=>{signalsSelectedCode=row.dataset.key;renderSignals();});
   renderSignalDetail(filtered.find(row=>signalRowKey(row)===signalsSelectedCode));
 }
@@ -120,7 +120,7 @@ function renderSignalDetail(row){
   const status=actual?"当日触发":row.plan_action==="FOLLOW"?"次日延续计划":"次日新计划";
   const scoreHtml=actual?`<div class="signal-score-grid"><div><span>结构基础</span><b>${base}</b></div><div><span>类型基础分</span><b>${typeScore}</b></div><div><span>动作质量分</span><b>${quality}</b></div><div><span>风险修正</span><b>${risk>=0?`+${risk}`:risk}</b></div></div><p class="detail-meta">买点分 ${vcpNumber(row.setup_score,0)} = 结构基础 ${base} + 动作分 ${pattern} + 风险修正 ${risk>=0?`+${risk}`:risk}</p>`:`<div class="signal-score-grid"><div><span>结构分</span><b>${vcpNumber(row.structure_score,0)}</b></div><div><span>最高潜在等级</span><b>${esc(row.setup_quality||"—")}</b></div><div><span>计划优先级</span><b>${esc(row.plan_priority||"—")}</b></div><div><span>计划动作</span><b>${esc(row.plan_action||"—")}</b></div></div>`;
   const conditionHtml=actual?`<p>${signalPlanText(row)}</p>`:`<div class="signal-plan-grid"><div><span>普通触发价</span><b>${vcpNumber(row.trigger_price_low,2)} – ${vcpNumber(row.trigger_price_high,2)}</b></div><div><span>普通触发量</span><b>${esc(row.plan_volume_text||"—")}</b></div><div><span>A级价格区</span><b>${vcpNumber(row.ideal_price_low,2)} – ${vcpNumber(row.ideal_price_high,2)}</b></div><div><span>A级量能</span><b>${esc(row.ideal_volume_text||"—")}</b></div><div><span>失效价</span><b>${vcpNumber(row.invalid_price,2)}</b></div><div><span>计划类型</span><b>${esc(row.plan_action==="FOLLOW"?"延续参与":"首次触发")}</b></div></div>`;
-  $("signals-detail").innerHTML=`<p class="section-label">买点详情</p><h3>${esc(row.name)} <span class="muted">${esc(row.code)}</span></h3><span class="status-pill ${actual?"status-triggered":"status-early"}">${status}</span><div class="vcp-metrics">${metric("买点类型",esc(signalTypeLabel(row.setup_signal)))}${metric(actual?"质量等级":"最高潜在等级",esc(row.setup_quality||"—"))}${metric(actual?"买点分":"结构分",vcpNumber(actual?row.setup_score:row.structure_score,0))}${metric("建议仓位",esc(row.suggested_position||"—"))}${metric("动作提示",esc(row.action_hint||"—"))}${metric("结构阶段",esc(row.structure_stage||row.model2_stage||"—"))}</div><h4>量价参考</h4><div class="signal-reference-grid">${metric("当前价格",vcpNumber(row.close,2))}${metric("MA20 / MA60",`${vcpNumber(row.MA20,2)} / ${vcpNumber(row.MA60,2)}`)}${metric("Pivot",vcpNumber(row.pivot_price,2))}${metric("支撑 / 失效",`${vcpNumber(row.support_price,2)} / ${vcpNumber(row.invalid_price,2)}`)}${metric("距 Pivot",`${vcpNumber(row.pivot_distance)}%`)}${metric("距 MA20",`${vcpNumber(row.distance_ma20)}%`)}${metric("当日 / 20日均量",`${vcpVolume(row.volume)} / ${vcpVolume(row.vol_ma20)}`)}${metric("量比 / 缩量系数",`${vcpNumber(row.vol_ratio,2)}x / ${vcpNumber(row.volume_dry_up,2)}x`)}</div><h4>${actual?"参考触发条件":"次日触发条件"}</h4>${conditionHtml}<h4>${actual?"买点评分组成":"计划质量"}</h4>${scoreHtml}<h4>买点说明</h4><p><b>满足条件：</b>${esc(reasons.join("；")||"等待计划条件满足")}</p><p class="muted"><b>待确认 / 风险：</b>${esc(misses.map(signalRiskLabel).join("；")||"无")}</p>${row.llm_note?`<p class="detail-meta">计划说明：${esc(row.llm_note)}</p>`:""}${flags.length?`<div class="vcp-flags">${flags.map(flag=>`<span title="${esc(flag)}">${esc(signalRiskLabel(flag))}</span>`).join("")}</div>`:""}`;
+  $("signals-detail").innerHTML=`<p class="section-label">买点详情</p><h3>${esc(row.name)} <span class="muted">${esc(row.code)}</span></h3><span class="status-pill ${actual?"status-triggered":"status-early"}">${status}</span><div class="vcp-metrics">${metric("买点类型",esc(signalTypeLabel(row.setup_signal)))}${metric(actual?"买点等级":"最高潜在等级",esc(row.setup_quality||"—"))}${metric(actual?"买点分":"结构分",vcpNumber(actual?row.setup_score:row.structure_score,0))}${metric("所属板块",esc(row.sector_name||"板块待确认"))}${metric("板块状态",esc(row.sector_state||"状态待确认"))}${metric("结构阶段",esc(row.structure_stage||row.model2_stage||"—"))}</div><h4>量价参考</h4><div class="signal-reference-grid">${metric("当前价格",vcpNumber(row.close,2))}${metric("MA20 / MA60",`${vcpNumber(row.MA20,2)} / ${vcpNumber(row.MA60,2)}`)}${metric("Pivot",vcpNumber(row.pivot_price,2))}${metric("支撑 / 失效",`${vcpNumber(row.support_price,2)} / ${vcpNumber(row.invalid_price,2)}`)}${metric("距 Pivot",`${vcpNumber(row.pivot_distance)}%`)}${metric("距 MA20",`${vcpNumber(row.distance_ma20)}%`)}${metric("当日 / 20日均量",`${vcpVolume(row.volume)} / ${vcpVolume(row.vol_ma20)}`)}${metric("量比 / 缩量系数",`${vcpNumber(row.vol_ratio,2)}x / ${vcpNumber(row.volume_dry_up,2)}x`)}</div><h4>${actual?"参考触发条件":"次日触发条件"}</h4>${conditionHtml}<h4>${actual?"买点评分组成":"计划质量"}</h4>${scoreHtml}<h4>买点说明</h4><p><b>满足条件：</b>${esc(reasons.join("；")||"等待计划条件满足")}</p><p class="muted"><b>待确认 / 风险：</b>${esc(misses.map(signalRiskLabel).join("；")||"无")}</p>${row.llm_note?`<p class="detail-meta">计划说明：${esc(row.llm_note)}</p>`:""}${flags.length?`<div class="vcp-flags">${flags.map(flag=>`<span title="${esc(flag)}">${esc(signalRiskLabel(flag))}</span>`).join("")}</div>`:""}`;
 }
 
 const renderSignalDetailBase = renderSignalDetail;
@@ -133,14 +133,26 @@ renderSignalDetail = function (row) {
   const flags = (row.setup_risk_flags || []).concat(row.structure_risk_flags || []);
   const status = detail.querySelector(".status-pill");
   if (status) {
-    status.insertAdjacentHTML("afterend", `<span class="market-status-pill market-${marketTone}" title="${esc((market.risk_tags || []).join(" · ") || "同日市场环境")}">${esc(market.label || "市场状态待确认")} · ${esc(market.tag || "环境待确认")}</span>`);
-  }
-  if (status && flags.length) {
-    status.insertAdjacentHTML("afterend", `<span class="signal-inline-risks">${flags.map((flag) => `<span>${esc(signalRiskLabel(flag))}</span>`).join("")}</span>`);
+    const sourceTone = ["core", "expansion", "both", "unknown"].includes(row.source_tone) ? row.source_tone : "unknown";
+    const financialTone = ["verified", "risk", "unverified"].includes(row.financial_tone) ? row.financial_tone : "unverified";
+    const financialTags = Array.isArray(row.financial_tags) && row.financial_tags.length ? row.financial_tags : ["财务未查询"];
+    const financialTitle = [row.financial_report_period, row.financial_source].filter(Boolean).join(" · ") || "尚无可用财务快照";
+    const group = (label, content, className="") => `<div class="signal-tag-group ${className}"><span class="signal-tag-label">${label}</span><div class="signal-tag-values">${content}</div></div>`;
+    const marketHtml = `<span class="market-status-pill market-${marketTone}" title="${esc((market.risk_tags || []).join(" · ") || "同日市场环境")}">${esc(market.label || "市场状态待确认")} · ${esc(market.tag || "环境待确认")}</span>`;
+    const sourceHtml = `<span class="signal-source-pill source-${sourceTone}">${esc(row.source_label || "来源待确认")}</span>`;
+    const financialHtml = financialTags.map((tag) => `<span class="signal-financial-pill financial-${financialTone}" title="${esc(financialTitle)}">${esc(tag)}</span>`).join("");
+    const technicalHtml = flags.map((flag) => `<span class="signal-technical-pill">${esc(signalRiskLabel(flag))}</span>`).join("");
+    status.insertAdjacentHTML("afterend", `<div class="signal-detail-tags">${group("市场环境",marketHtml)}${group("发现来源",sourceHtml)}${group("财务提示",financialHtml)}${technicalHtml?group("技术风险",technicalHtml,"signal-tag-technical"):""}</div>`);
   }
   const metrics = detail.querySelector(".vcp-metrics");
   if (metrics) {
     metrics.insertAdjacentHTML("beforebegin", `<div class="signal-market-advice market-${marketTone}"><span>市场环境提示</span><p>${esc(market.advice || "未找到有效的同日市场状态，信号仅按量价事实展示，执行前请先核对市场环境。")}</p></div>`);
+    const factor = `${Math.round(Number(row.environment_factor || 0) * 100)}%`;
+    const rangeText = (values) => Array.isArray(values) && values.length === 2 ? (Number(values[1]) <= 0 ? "观察" : Number(values[0]) <= 0 ? `≤${vcpNumber(values[1],0)}%` : `${vcpNumber(values[0],0)}%-${vcpNumber(values[1],0)}%`) : "—";
+    const breakdown = row.signal_kind === "PLAN"
+      ? `若A级触发 ${rangeText(row.plan_position_a)} · 若B级触发 ${rangeText(row.plan_position_b)} · 当前环境系数 ${factor}`
+      : `${row.base_position ? `买点基础 ${rangeText(row.base_position)} · ` : ""}当前环境系数 ${factor}`;
+    metrics.insertAdjacentHTML("afterend", `<div class="signal-position-advice ${row.position_status === "ACTIONABLE" || row.position_status === "PLAN_CONDITIONAL" ? "position-active" : "position-observe"}"><span>${row.signal_kind === "PLAN" ? "条件仓位预案" : "仓位建议"}</span><b>${esc(row.position_advice || "观察")}</b><p>${esc(breakdown)}</p><small>${esc(row.position_reason || "")}</small></div>`);
   }
   detail.querySelector(".vcp-flags")?.remove();
   const heading = [...detail.querySelectorAll("h4")].find((item) => item.textContent === "买点说明");
@@ -167,8 +179,64 @@ function renderDetail(row) {
   panel.querySelector(".detail-meta")?.remove();
 }
 
+function loadBacktestContext(date) {
+  const contexts = window.QUANT_DASHBOARD_BACKTEST_CONTEXTS || {};
+  if (contexts[date]) return Promise.resolve(contexts[date]);
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = `data/${monthPath(date)}/backtest_context_${date}.js`;
+    script.onload = () => { const value = (window.QUANT_DASHBOARD_BACKTEST_CONTEXTS || {})[date]; script.remove(); resolve(value); };
+    script.onerror = () => reject(new Error(`未找到 ${date} 的策略回测数据`));
+    document.head.appendChild(script);
+  });
+}
+async function loadBacktest(date) {
+  try { backtestContext = await loadBacktestContext(date); if (!backtestContext) throw new Error(`缺少 ${date} 的回测数据`); renderBacktest(); }
+  catch (error) { $("backtest-meta").textContent = "当前日期尚未发布回测数据"; $("backtest-summary").innerHTML = ""; $("backtest-table").innerHTML = `<caption class="muted">${esc(error.message)}</caption>`; ["backtest-event-table", "backtest-action-table", "backtest-grade-table", "backtest-maturity-table", "backtest-market-table", "backtest-sector-table"].forEach((id) => $(id).innerHTML = ""); }
+}
+function backtestReturn(value) {
+  if (value == null) return `<span class="backtest-pending">—</span>`;
+  const number = Number(value);
+  return `<span class="backtest-return ${cls(number)}">${number > 0 ? "+" : ""}${number.toFixed(2)}%</span>`;
+}
+function backtestStat(value, suffix = "") { return value == null ? "—" : `${Number(value).toFixed(1)}${suffix}`; }
+function backtestShortDate(value) { return value ? esc(String(value).slice(5)) : "—"; }
+function backtestSetupLabel(value) { return ({ PULLBACK: "回踩", BREAKOUT: "突破", RETEST: "回踩确认" })[value] || esc(value || "—"); }
+function backtestBreakout(row) {
+  if (!row.breakout_time) return '<span class="backtest-pending">无</span>';
+  const [date, offset] = String(row.breakout_time).split(" · ");
+  return `<b>${backtestShortDate(date)}</b><small>${esc(offset || "")}${offset ? " · " : ""}${backtestReturn(row.breakout_return)}</small>`;
+}
+function renderBacktestGroupTable(id, groups) {
+  const cells = (stats, horizon) => { const item = stats?.[String(horizon)] || {}; return `<td>${item.samples || 0}</td><td class="${cls(item.avg_return)}">${backtestStat(item.avg_return, "%")}</td><td>${backtestStat(item.win_rate, "%")}</td>`; };
+  $(id).innerHTML = `<thead><tr><th rowspan="2">状态</th><th colspan="3">5日</th><th colspan="3">10日</th><th colspan="3">20日</th></tr><tr><th>样本</th><th>平均</th><th>胜率</th><th>样本</th><th>平均</th><th>胜率</th><th>样本</th><th>平均</th><th>胜率</th></tr></thead><tbody>${(groups || []).map((row) => `<tr><td>${esc(row.group)}</td>${cells(row.horizons, 5)}${cells(row.horizons, 10)}${cells(row.horizons, 20)}</tr>`).join("") || "<tr><td colspan='10' class='muted'>当前窗口暂无可分组事件</td></tr>"}</tbody>`;
+}
+function renderBacktest() {
+  const summary = backtestContext.summary || {}, rows = backtestContext.events || [];
+  const filtered = backtestFilter === "ALL" ? rows : rows.filter((row) => row.entry_action === backtestFilter);
+  const horizon = summary.horizons || {};
+  $("backtest-meta").textContent = `报告日 ${backtestContext.meta.report_date} · 观察买点成立后 ${backtestContext.meta.window_min_days}–${backtestContext.meta.window_max_days} 个交易日`;
+  $("backtest-summary").innerHTML = [
+    ["窗口事件", summary.events || 0],
+    ["NEW / FOLLOW", `${summary.new_events || 0} / ${summary.follow_events || 0}`],
+    ["A类 / 常规", `${summary.a_events || 0} / ${summary.regular_events || 0}`],
+    ["5日胜率", horizon["5"]?.win_rate == null ? "—" : `${horizon["5"].win_rate.toFixed(1)}%`],
+    ["20日胜率", horizon["20"]?.win_rate == null ? "—" : `${horizon["20"].win_rate.toFixed(1)}%`],
+  ].map(([label, value]) => `<div><span>${label}</span><b>${value}</b></div>`).join("");
+  $("backtest-filters").innerHTML = [["ALL", "全部"], ["NEW", "NEW"], ["FOLLOW", "FOLLOW"]].map(([key, label]) => `<button class="${key === backtestFilter ? "active" : ""}" data-filter="${key}">${label}</button>`).join("");
+  $("backtest-filters").querySelectorAll("button").forEach((button) => button.onclick = () => { backtestFilter = button.dataset.filter; renderBacktest(); });
+  $("backtest-note").textContent = `显示 ${filtered.length}/${rows.length} 条唯一实际买点；未满周期留空`;
+  $("backtest-table").innerHTML = `<thead><tr><th>日期</th><th>标的</th><th>买点</th><th>形态</th><th>成立</th><th>突破</th><th>5日</th><th>10日</th><th>20日</th><th>成立时环境</th></tr></thead><tbody>${filtered.map((row) => `<tr><td class="backtest-stack"><b>${backtestShortDate(row.entry_date)}</b><small>Plan ${backtestShortDate(row.plan_date)}</small></td><td><b>${esc(row.name)}</b><br><span class="vcp-list-note">${esc(row.code)}</span></td><td class="backtest-stack"><b>${backtestSetupLabel(row.setup_family)}</b><small>${esc(row.entry_action)} · ${esc(row.entry_grade === "A" ? "A类" : "常规")}</small></td><td class="backtest-stack"><b>${esc(row.maturity_stage)}</b><small>${row.age_days == null ? "—" : `${Number(row.age_days)}日`}</small></td><td class="backtest-stack"><b>${row.signal_close == null ? "—" : Number(row.signal_close).toFixed(2)}</b><small>收盘价</small></td><td class="backtest-stack backtest-breakout">${backtestBreakout(row)}</td><td>${backtestReturn(row.return_5d)}</td><td>${backtestReturn(row.return_10d)}</td><td>${backtestReturn(row.return_20d)}</td><td class="backtest-context"><b>${esc(row.market_state_label || "—")}</b><small>${esc(row.sector_state || "—")} · ${esc(row.sector_name || "—")}</small></td></tr>`).join("") || "<tr><td colspan='10' class='muted'>当前窗口没有已满5个交易日的实际买点事件</td></tr>"}</tbody>`;
+  renderBacktestGroupTable("backtest-event-table", backtestContext.setup_groups);
+  renderBacktestGroupTable("backtest-action-table", backtestContext.action_groups);
+  renderBacktestGroupTable("backtest-grade-table", (backtestContext.grade_groups || []).map((row) => ({ ...row, group: row.group === "A" ? "A类" : row.group === "REGULAR" ? "常规" : row.group })));
+  renderBacktestGroupTable("backtest-maturity-table", backtestContext.maturity_groups);
+  renderBacktestGroupTable("backtest-market-table", backtestContext.market_groups);
+  renderBacktestGroupTable("backtest-sector-table", backtestContext.sector_groups);
+}
+
 function moduleDateData(module) {
-  const key = module === "signals" ? "signals" : module === "vcp" ? "vcp" : "market";
+  const key = ["signals", "vcp", "backtest"].includes(module) ? module : "market";
   return window.QUANT_DASHBOARD_INDEX?.[key] || window.QUANT_DASHBOARD_INDEX?.market || { latest: null, available: [] };
 }
 function setModuleDates(module) {
@@ -184,6 +252,7 @@ applyDate = function (date) {
   if (activeModule === "market") load(date);
   if (activeModule === "vcp") loadVcp(date);
   if (activeModule === "signals") loadSignals(date);
+  if (activeModule === "backtest") loadBacktest(date);
   renderCalendar();
 };
 const renderModuleBase = renderModule;
@@ -241,7 +310,7 @@ renderModule = function () {
     return renderModuleWithValuationBase();
   }
   setModuleDates("valuation");
-  ["market-content", "vcp-content", "signals-content", "module-placeholder"].forEach((id) => $(id).classList.add("hidden"));
+  ["market-content", "vcp-content", "signals-content", "backtest-content", "module-placeholder"].forEach((id) => $(id).classList.add("hidden"));
   $("valuation-content").classList.remove("hidden"); $("date-control").classList.remove("hidden");
   $("date-control").classList.add("hidden");
   loadValuation(window.QUANT_DASHBOARD_INDEX?.valuation?.latest);

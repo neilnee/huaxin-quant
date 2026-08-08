@@ -43,6 +43,32 @@ class SignalPlanLifecycleTests(unittest.TestCase):
     def test_pre_breakout_keeps_pullback_and_breakout_plans(self):
         plans = plans_for_row(sample_row())
         self.assertEqual([p["setup_family"] for p in plans], ["PULLBACK", "BREAKOUT"])
+        self.assertEqual(plans[0]["structure_anchor"], "unanchored")
+
+    def test_forming_structure_is_eligible_for_new_plan(self):
+        candidate = sample_row()
+        candidate.update({
+            "structure_stage": "VCP_FORMING",
+            "structure_score": 82.0,
+            "structure_risk_score": 10.0,
+            "volume_pattern": "decreasing",
+            "pivot_distance": -6.0,
+        })
+        plans = plans_for_row(candidate)
+        self.assertEqual([(p["setup_family"], p["plan_action"]) for p in plans], [("PULLBACK", "NEW"), ("BREAKOUT", "NEW")])
+
+    def test_forming_structure_must_pass_strict_new_gate(self):
+        base = sample_row()
+        base.update({"structure_stage": "VCP_FORMING", "structure_score": 82.0,
+                     "structure_risk_score": 10.0, "volume_pattern": "decreasing", "pivot_distance": -6.0,
+                     "model2_include": True, "structure_type": "VCP", "structure_valid": True})
+        from scripts.signal_plan import valid_candidate
+        self.assertTrue(valid_candidate(base)[0])
+        for field, value in (("structure_score", 79), ("structure_risk_score", 20),
+                             ("volume_pattern", "mixed"), ("pivot_distance", -9)):
+            candidate = dict(base)
+            candidate[field] = value
+            self.assertFalse(valid_candidate(candidate)[0], field)
 
     def test_unconfirmed_retest_state_generates_no_plan(self):
         plans = plans_for_row(sample_row("POST_BREAKOUT_RETEST"))

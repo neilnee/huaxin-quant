@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import re
@@ -20,8 +21,9 @@ BLOOM_INPUT_DIR = ROOT / "bloom" / "state"
 QUANT_RUN_DIR = ROOT / "cache" / "quant_runs"
 MARKET_DATA_DB = ROOT / "cache" / "market_data" / "market_data.sqlite"
 MARKET_REGIME_DB = ROOT / "cache" / "market_regime" / "market_regime.sqlite"
+MARKET_OUTPUT_DIR = ROOT / "market"
 DASHBOARD_DATA_DIR = ROOT / "dashboard" / "data"
-DASHBOARD_START_DATE = "260709"
+DASHBOARD_START_DATE = "260506"
 VOLUME_PATTERN_LABELS = {
     "decreasing": "量能持续递减",
     "drying": "量能逐步萎缩",
@@ -80,7 +82,33 @@ def display_vcp_text(value):
 
 
 def load_industry_context(codes: list[str], run_date: str) -> dict[str, dict]:
-    if not codes or not MARKET_DATA_DB.exists() or not MARKET_REGIME_DB.exists():
+    if not codes:
+        return {}
+    date_yy = run_date.replace("-", "")[2:] if len(run_date.replace("-", "")) == 8 else run_date.replace("-", "")
+    stock_path = MARKET_OUTPUT_DIR / f"stock_strength_{date_yy}.csv"
+    sector_path = MARKET_OUTPUT_DIR / f"sector_heat_{date_yy}.csv"
+    if stock_path.exists() and sector_path.exists():
+        with sector_path.open(encoding="utf-8-sig", newline="") as handle:
+            sector_by_name = {
+                row.get("block_name", ""): row
+                for row in csv.DictReader(handle)
+                if row.get("block_type") == "industry_sw_l2"
+            }
+        wanted = set(codes)
+        with stock_path.open(encoding="utf-8-sig", newline="") as handle:
+            rows = {
+                str(row.get("code", "")).zfill(6): row
+                for row in csv.DictReader(handle)
+                if str(row.get("code", "")).zfill(6) in wanted
+            }
+        return {
+            code: {
+                "sw_l2_name": row.get("sw_l2_name", ""),
+                "sector": sector_by_name.get(row.get("sw_l2_name", ""), {}),
+            }
+            for code, row in rows.items()
+        }
+    if not MARKET_DATA_DB.exists() or not MARKET_REGIME_DB.exists():
         return {}
     placeholders = ",".join("?" for _ in codes)
     try:

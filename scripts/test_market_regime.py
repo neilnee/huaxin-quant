@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """Focused tests for daily-mainline ranking and candidate contracts."""
 
+import json
+import sqlite3
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from scripts import market_regime
 
 from scripts.market_regime import (
     classify_news_phase,
@@ -15,8 +22,10 @@ from scripts.market_regime import (
     daily_mainline_fallback,
     expand_mainline_block_ids,
     finalize_sector_rankings,
+    confirm_market_state,
     link_mainline_stocks,
     reported_prior_catalyst_date,
+    resolve_market_snapshot,
     select_daily_mainline_news,
 )
 
@@ -37,6 +46,61 @@ def sector(name, rel1, rel5, rel20, breadth, volume, density, kind="gn"):
 
 
 class DailyMainlineTests(unittest.TestCase):
+    def test_market_index_preserves_other_published_modules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            month = root / "202605"
+            month.mkdir()
+            for kind in ("signals", "vcp", "backtest", "valuation"):
+                (month / f"{kind}_context_260506.js").write_text("", encoding="utf-8")
+            with patch.object(market_regime, "DASHBOARD_DATA_DIR", root):
+                market_regime.write_dashboard_index("260506", ["260506"])
+            text = (root / "index.js").read_text(encoding="utf-8")
+            payload = json.loads(text.split(" = ", 1)[1].rsplit(";", 1)[0])
+
+        self.assertEqual(payload["market"]["available"], ["260506"])
+        self.assertEqual(payload["backtest"]["available"], ["260506"])
+
+    def test_market_state_confirmation_uses_two_of_three_not_consecutive_days(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("""CREATE TABLE market_state_history(
+            trade_date TEXT PRIMARY KEY, raw_state TEXT, confirmed_state TEXT,
+            candidate_days INTEGER, confirmation_days INTEGER
+        )""")
+        sequence = [
+            ("2026-06-30", "DEFENSIVE"),
+            ("2026-07-01", "SELECTIVE"),
+            ("2026-07-02", "DEFENSIVE"),
+            ("2026-07-03", "SELECTIVE"),
+        ]
+        reports = []
+        for trade_date, raw_state in sequence:
+            report = {"state": {"raw_state": raw_state}}
+            confirm_market_state(conn, trade_date, report)
+            reports.append(report)
+        self.assertEqual(reports[1]["state"]["confirmed_state"], "DEFENSIVE")
+        self.assertEqual(reports[3]["state"]["candidate_days"], 2)
+        self.assertEqual(reports[3]["state"]["confirmed_state"], "SELECTIVE")
+        conn.close()
+
+    def test_historical_snapshot_fallback_is_explicit_and_labeled(self):
+        conn = sqlite3.connect(":memory:")
+        conn.executescript("""
+            CREATE TABLE universe_members(trade_date TEXT);
+            CREATE TABLE block_members(snapshot_date TEXT);
+            CREATE TABLE stock_industries(snapshot_date TEXT);
+        """)
+        for table, field in (("universe_members", "trade_date"), ("block_members", "snapshot_date"), ("stock_industries", "snapshot_date")):
+            conn.execute(f"INSERT INTO {table}({field}) VALUES('2026-07-01')")
+        with self.assertRaisesRegex(RuntimeError, "成分快照缺失"):
+            resolve_market_snapshot(conn, "2026-06-30")
+        self.assertEqual(
+            resolve_market_snapshot(conn, "2026-06-30", allow_fallback=True),
+            ("2026-07-01", "current_snapshot_backfill"),
+        )
+        conn.close()
+
     def test_completion_rejects_reasoning_budget_exhaustion(self):
         payload = {
             "choices": [{"finish_reason": "length", "message": {"content": ""}}],

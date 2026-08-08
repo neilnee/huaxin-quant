@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Publish Model 2 setup triggers and next-day plans for the dashboard."""
 from __future__ import annotations
-import argparse, json, os, re, sys
+import argparse, csv, json, math, os, re, sys
+from datetime import datetime
 from pathlib import Path
 sys.path.insert(0, str(Path(os.path.abspath(__file__)).parents[1]))
 from scripts.shared import PROJECT_ROOT
+from scripts.strategy_config import load_strategy_config
 
-ROOT=Path(PROJECT_ROOT); RUNS=ROOT/"cache"/"quant_runs"; PLAN_RUNS=ROOT/"signal_plan"; MARKET_CONTEXT_DIR=ROOT/"market"/"data"; OUT=ROOT/"dashboard"/"data"; START="260709"
+ROOT=Path(PROJECT_ROOT); RUNS=ROOT/"cache"/"quant_runs"; PLAN_RUNS=ROOT/"signal_plan"; POOL_DIR=ROOT/"pool"; SIGNAL_FIN_DIR=ROOT/"cache"/"signal_fundamentals"; MARKET_DIR=ROOT/"market"; MARKET_CONTEXT_DIR=MARKET_DIR/"data"; OUT=ROOT/"dashboard"/"data"; START="260506"
+PLAN_CONFIG,_=load_strategy_config("04-signal-plan.json"); POSITION_CFG=PLAN_CONFIG["position_guidance"]
 FIELDS=("code","name","structure_stage","setup_signal","action_hint","suggested_position","setup_pattern_score","setup_score","setup_quality","setup_reasons","setup_misses","setup_risk_flags","structure_score","structure_risk_score","structure_risk_flags","close","MA20","MA60","pivot_price","structure_pivot","support_price","invalid_price","breakout_level","last_contraction_low","pivot_distance","distance_ma20","volume","vol_ma5","vol_ma20","volume_dry_up","vol_ratio","volume_pattern","chg_5","chg_20","setup_plan_inputs","reason")
 MARKET_ADVICE={
  "OFFENSIVE":("环境支持","supportive","市场趋势与广度支持信号验证，但仍须等待个股量价条件成立并遵守失效位。"),
@@ -14,6 +17,19 @@ MARKET_ADVICE={
  "RECOVERY_WATCH":("谨慎试错","caution","市场处于修复观察期，信号可跟踪但确认度有限，等待趋势、广度与个股量价继续改善。"),
  "CONSOLIDATING":("等待趋势确认","caution","市场方向尚未明确，VCP 主要用于建立观察顺序，等待指数趋势与个股触发条件共同确认。"),
  "DEFENSIVE":("市场仅观察","blocked","市场处于弱势环境，VCP 以结构发现和观察为主；即使量价触发，也优先等待波动、广度和趋势修复确认。"),
+}
+SOURCE_LABELS={
+ "CORE_QUALITY":("核心质量池","core"),
+ "EXPANSION_RS":("RS扩展池","expansion"),
+ "BOTH":("双通道","both"),
+}
+POOL_RISK_LABELS={
+ "LOW_ROE":"低 ROE",
+ "WEAK_ROE":"ROE 偏弱",
+ "WEAK_CASHFLOW":"现金流偏弱",
+ "SEMI_CASHFLOW_RELAX":"现金流门槛放宽",
+ "HIGH_DEBT_EDGE":"负债率偏高",
+ "HIGH_VALUATION":"估值偏高",
 }
 def stamp(v):
  d=re.sub(r"\D","",v); return d[2:] if len(d)==8 else d
@@ -45,6 +61,118 @@ def market_notice(date):
  if raw not in MARKET_ADVICE: return {**fallback,"source":path.name}
  tag,tone,advice=MARKET_ADVICE[raw]
  return {"state":raw,"label":state.get("label") or raw,"tag":tag,"tone":tone,"advice":advice,"risk_tags":state.get("risk_tags") or [],"source":path.name}
+def sector_group(state):
+ for group,states in POSITION_CFG["sector_groups"].items():
+  if state in states: return group
+ return POSITION_CFG["unknown_sector_group"]
+def sector_notices(date):
+ stock_path=MARKET_DIR/f"stock_strength_{date}.csv"; sector_path=MARKET_DIR/f"sector_heat_{date}.csv"
+ if not stock_path.exists() or not sector_path.exists(): return {}
+ sectors={}
+ with sector_path.open(encoding="utf-8-sig",newline="") as handle:
+  for row in csv.DictReader(handle):
+   if row.get("block_type")=="industry_sw_l2": sectors[row.get("block_name","")]=row
+ notices={}
+ with stock_path.open(encoding="utf-8-sig",newline="") as handle:
+  for row in csv.DictReader(handle):
+   code=pool_code(row.get("code")); name=str(row.get("sw_l2_name") or "").strip(); sector=sectors.get(name,{})
+   if not code: continue
+   state=str(sector.get("sector_state") or "").strip()
+   notices[code]={"sector_name":name or "板块待确认","sector_state":state or "状态待确认","sector_group":sector_group(state),"sector_rank_20":pool_number(sector.get("rank_20")),"sector_history_basis":sector.get("history_basis") or None}
+ return notices
+def default_sector_notice():
+ return {"sector_name":"板块待确认","sector_state":"状态待确认","sector_group":POSITION_CFG["unknown_sector_group"],"sector_rank_20":None,"sector_history_basis":None}
+def position_range(setup_signal,quality,factor):
+ base=(POSITION_CFG["base_position_pct"].get(setup_signal) or {}).get(quality)
+ if not base: return None,None,None
+ step=float(POSITION_CFG["rounding_step_pct"])
+ adjusted=[math.floor(float(value)*float(factor)/step+1e-9)*step for value in base]
+ if adjusted[1]<step: adjusted=[0.0,0.0]
+ return list(base),adjusted,float(factor)
+def position_range_text(values):
+ if not values or values[1]<=0: return "观察"
+ low,high=(int(value) if float(value).is_integer() else value for value in values)
+ if low<=0: return f"≤{high}%"
+ if low==high: return f"{high}%"
+ return f"{low}%-{high}%"
+def position_guidance(row,market,sector):
+ state=market.get("state") or "UNKNOWN"; group=sector.get("sector_group") or POSITION_CFG["unknown_sector_group"]
+ factor=float((POSITION_CFG["environment_factors"].get(state) or {}).get(group,POSITION_CFG["unknown_environment_factor"]))
+ common={"market_state":state,"environment_factor":factor,"position_strategy_version":PLAN_CONFIG["strategy_version"]}
+ signal=row.get("setup_signal")
+ if row.get("signal_kind")=="PLAN":
+  base_a,adjusted_a,_=position_range(signal,"A",factor); base_b,adjusted_b,_=position_range(signal,"B",factor)
+  if state in {"CONSOLIDATING","DEFENSIVE"}: status,advice,reason="OBSERVE_MARKET","观察（市场弱势）","弱势收敛或弱势下行不配置仓位"
+  elif state not in POSITION_CFG["environment_factors"]: status,advice,reason="OBSERVE_MARKET","观察（市场待确认）","缺少同日有效市场状态"
+  elif group=="BLOCKED": status,advice,reason="OBSERVE_SECTOR",f"观察（{sector.get('sector_state') or '板块待确认'}）","板块状态不具备仓位条件"
+  else: status,advice,reason="PLAN_CONDITIONAL",f"A {position_range_text(adjusted_a)} / B {position_range_text(adjusted_b)}","实际触发后按触发日买点等级与环境重算"
+  return {**common,"position_status":status,"position_advice":advice,"position_reason":reason,"base_position_a":base_a,"base_position_b":base_b,"plan_position_a":adjusted_a,"plan_position_b":adjusted_b,"base_position":None,"adjusted_position":None}
+ quality=str(row.get("setup_quality") or "")
+ base,adjusted,_=position_range(signal,quality,factor)
+ if quality not in POSITION_CFG["eligible_setup_qualities"]: status,advice,reason="OBSERVE_QUALITY",f"观察（{quality or '未评级'}级）","仅 A/B 级买点进入仓位计算"
+ elif state in {"CONSOLIDATING","DEFENSIVE"}: status,advice,reason="OBSERVE_MARKET","观察（市场弱势）","弱势收敛或弱势下行不配置仓位"
+ elif state not in POSITION_CFG["environment_factors"]: status,advice,reason="OBSERVE_MARKET","观察（市场待确认）","缺少同日有效市场状态"
+ elif group=="BLOCKED": status,advice,reason="OBSERVE_SECTOR",f"观察（{sector.get('sector_state') or '板块待确认'}）","板块状态不具备仓位条件"
+ elif not base: status,advice,reason="OBSERVE_QUALITY","观察（仓位规则缺失）","买点类型与等级未匹配基础仓位"
+ else: status,advice,reason="ACTIONABLE",position_range_text(adjusted),f"基础{position_range_text(base)} × 环境{int(round(factor*100))}%"
+ return {**common,"position_status":status,"position_advice":advice,"position_reason":reason,"base_position":base,"adjusted_position":adjusted,"base_position_a":None,"base_position_b":None,"plan_position_a":None,"plan_position_b":None}
+def pool_code(value):
+ match=re.search(r"\d{6}",str(value or ""))
+ return match.group(0) if match else ""
+def pool_number(value):
+ try:
+  number=float(str(value).replace(",","").strip())
+  return number if number==number else None
+ except (TypeError,ValueError): return None
+def financial_notice(row):
+ status=str(row.get("fundamental_status") or "").strip()
+ if status!="CORE_VERIFIED":
+  return {"financial_status":"FUNDAMENTAL_UNVERIFIED","financial_tone":"unverified","financial_tags":["财务未查询"],"financial_report_period":None,"financial_source":None}
+ tags=[]
+ checks=(
+  ("归母净利润_元",lambda v:v<0,"净利润为负"),
+  ("资产负债率_pct",lambda v:v>=70,"高负债"),
+  ("经营现金流_元",lambda v:v<0,"经营现金流为负"),
+  ("营收同比增速_pct",lambda v:v<=-20,"营收明显下滑"),
+  ("净利润同比增速_pct",lambda v:v<=-30,"利润明显下滑"),
+  ("毛利率_pct",lambda v:v<=0,"毛利率为负"),
+  ("毛利率_pct",lambda v:0<v<10,"毛利率偏低"),
+ )
+ for field,predicate,label in checks:
+  value=pool_number(row.get(field))
+  if value is not None and predicate(value) and label not in tags: tags.append(label)
+ for raw_tag in str(row.get("风险标签") or "").split(";"):
+  label=POOL_RISK_LABELS.get(raw_tag.strip())
+  if label and label not in tags: tags.append(label)
+ return {"financial_status":"CORE_VERIFIED","financial_tone":"risk" if tags else "verified","financial_tags":tags or ["财务硬筛通过"],"financial_report_period":row.get("数据周期") or None,"financial_source":"模型一同日财务筛选"}
+def pool_notices(date):
+ path=POOL_DIR/f"pool_{date}.csv"; notices={}
+ if not path.exists(): return notices
+ with path.open(encoding="utf-8-sig",newline="") as handle:
+  for row in csv.DictReader(handle):
+   code=pool_code(row.get("股票代码"))
+   if not code: continue
+   channel=str(row.get("pool_channel") or "").strip()
+   label,tone=SOURCE_LABELS.get(channel,("来源待确认","unknown"))
+   notices[code]={"pool_channel":channel or "UNKNOWN","source_label":label,"source_tone":tone,**financial_notice(row)}
+ return notices
+def missing_pool_notice():
+ return {"pool_channel":"UNKNOWN","source_label":"来源待确认","source_tone":"unknown","financial_status":"FUNDAMENTAL_UNVERIFIED","financial_tone":"unverified","financial_tags":["财务未查询"],"financial_report_period":None,"financial_source":None}
+def signal_financial_notice(date,code):
+ path=SIGNAL_FIN_DIR/f"{code}.json"
+ if not path.exists(): return None
+ try: payload=json.loads(path.read_text(encoding="utf-8"))
+ except (OSError,json.JSONDecodeError): return None
+ iso=datetime.strptime(date,"%y%m%d").strftime("%Y-%m-%d")
+ snapshots=[item for item in payload.get("snapshots",[]) if item.get("available_from","9999")<=iso]
+ if snapshots:
+  item=max(snapshots,key=lambda value:value.get("report_end","")); tags=item.get("risk_tags") or []
+  return {"financial_status":"SIGNAL_VERIFIED","financial_tone":"risk" if tags else "verified","financial_tags":tags or ["暂无明显财务风险"],"financial_report_period":item.get("label"),"financial_source":item.get("source") or "信号财务缓存"}
+ attempt=payload.get("last_attempt") or {}
+ if attempt.get("as_of_date")!=iso: return None
+ status=attempt.get("status")
+ label={"failed":"财务查询失败","insufficient":"财务数据不足"}.get(status)
+ return {"financial_status":str(status or "FUNDAMENTAL_UNVERIFIED").upper(),"financial_tone":"unverified","financial_tags":[label],"financial_report_period":None,"financial_source":"信号财务缓存"} if label else None
 def plan_row(plan, quant):
  row={key:quant.get(key) for key in FIELDS}
  row.update({"signal_kind":"PLAN","setup_signal":plan.get("setup_signal"),"action_hint":"次日计划","suggested_position":"触发后按模型二质量判定","setup_pattern_score":None,"setup_score":None,"setup_quality":plan.get("target_quality","—"),"setup_reasons":[plan.get("plan_reason","")],"setup_misses":[plan.get("risk_note","")],"setup_risk_flags":plan.get("structure_risk_flags",[]),"plan_action":plan.get("plan_action"),"plan_type":plan.get("plan_type"),"plan_priority":plan.get("plan_priority"),"plan_reason":plan.get("plan_reason"),"llm_note":plan.get("llm_note"),"trigger_price_low":plan.get("trigger_price_low"),"trigger_price_high":plan.get("trigger_price_high"),"ideal_price_low":plan.get("ideal_price_low"),"ideal_price_high":plan.get("ideal_price_high"),"plan_volume_text":format_plan_volume(plan.get("volume_max"),"max") if plan.get("volume_max") is not None else format_plan_volume(plan.get("volume_min"),"min"),"ideal_volume_text":format_plan_volume(plan.get("ideal_volume_max"),"max") if plan.get("ideal_volume_max") is not None else format_plan_volume(plan.get("ideal_volume_min"),"min"),"invalid_price":plan.get("invalid_price"),"plan_inputs":plan})
@@ -64,8 +192,13 @@ def build(date):
  for plan in plan_payload.get("plans",[]):
   code=str(plan.get("code","")).zfill(6)
   if code in quant_by_code: rows.append(plan_row(plan,quant_by_code[code]))
+ notices=pool_notices(date); market=market_notice(date); sectors=sector_notices(date)
+ for row in rows:
+  code=str(row.get("code","")).zfill(6); notice=dict(notices.get(code,missing_pool_notice()))
+  if notice.get("financial_status")!="CORE_VERIFIED": notice.update(signal_financial_notice(date,code) or {})
+  sector=dict(sectors.get(code,default_sector_notice())); row.update(notice); row.update(sector); row.update(position_guidance(row,market,sector))
  rows.sort(key=lambda r:(r["signal_kind"]!="TRIGGERED", -(r.get("setup_score") or 0), -(r.get("structure_score") or 0), r["code"], r["setup_signal"]))
- return {"meta":{"run_date":raw.get("meta",{}).get("run_date",f"20{date[:2]}-{date[2:4]}-{date[4:]}") ,"source":path.name,"plan_source":plan_path.name if plan_path.exists() else None},"market_notice":market_notice(date),"summary":{"triggered":sum(r["signal_kind"]=="TRIGGERED" for r in rows),"planned":sum(r["signal_kind"]=="PLAN" for r in rows),"total":len(rows)},"signals":rows}
+ return {"meta":{"run_date":raw.get("meta",{}).get("run_date",f"20{date[:2]}-{date[2:4]}-{date[4:]}") ,"source":path.name,"plan_source":plan_path.name if plan_path.exists() else None,"position_strategy_version":PLAN_CONFIG["strategy_version"]},"market_notice":market,"summary":{"triggered":sum(r["signal_kind"]=="TRIGGERED" for r in rows),"planned":sum(r["signal_kind"]=="PLAN" for r in rows),"total":len(rows)},"signals":rows}
 def publish(date):
  data=build(date); folder=OUT/f"20{date[:4]}"; folder.mkdir(parents=True,exist_ok=True); target=folder/f"signals_context_{date}.js"
  target.write_text("window.QUANT_DASHBOARD_SIGNALS_CONTEXTS = window.QUANT_DASHBOARD_SIGNALS_CONTEXTS || {};\n"+f"window.QUANT_DASHBOARD_SIGNALS_CONTEXTS[{json.dumps(date)}] = "+json.dumps(data,ensure_ascii=False)+";\n",encoding="utf-8"); write_dashboard_index(); return target

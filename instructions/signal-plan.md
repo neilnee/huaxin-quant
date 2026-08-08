@@ -1,10 +1,10 @@
 # Signal Plan: 次日信号计划层指令卡
 
 - **版本管理**: 由 Git 分支与提交历史管理
-- **最近更新**: 2026-07-10
+- **最近更新**: 2026-08-08
 - **所属模型**: 模型四 Tracker
 - **策略配置**: `strategies/04-signal-plan.json`
-- **核心目标**: 基于模型二已经识别出的成熟 VCP 结构和当日买点事实，生成下一交易日可执行的量价触发计划，提前标出 A/B 类买点所需的收盘价区间、成交量区间和失效位。
+- **核心目标**: 基于模型二已经识别出的有效 VCP 结构和当日买点事实，生成下一交易日可执行的量价触发计划，提前标出 A/B 类买点所需的收盘价区间、成交量区间和失效位。
 
 ---
 
@@ -16,7 +16,7 @@ Signal Plan 负责：
 
 - 消费模型二结构化 JSON。
 - 优先消费模型二 `setup_plan_inputs` 中已经计算好的买点阈值。
-- 选择成熟 VCP 或当日已触发买点的标的。
+- 选择允许形成模型二买点的有效 VCP，或当日已触发买点的标的。
 - 计算下一交易日可能触发的买点计划。
 - 输出普通买点触发区、A 类买点量价区、最高潜在等级和失效价。
 - 按 PULLBACK / BREAKOUT / RETEST 三类买点统计和展示，区分首次触发计划和已触发后的延续计划。
@@ -44,6 +44,64 @@ Signal Plan 不负责：
 | `DEFENSIVE` | 市场仅观察 | 市场处于弱势环境，VCP 以结构发现和观察为主；即使量价触发，也优先等待波动、广度和趋势修复确认。 |
 
 页面适配器只能读取 `market/data/market_context_<YYMMDD>.json` 的同日数据，不得回退到其他日期。文件缺失、状态缺失或状态未知时，必须显示“市场状态待确认 / 环境待确认”，并提示执行前先核对市场环境，不得静默省略。
+
+### Dashboard 来源与财务提示
+
+信号发现页的详情标题区域同时展示同日模型一来源和基础财务提示，不增加信号列表列，不改变模型一、模型二、Bloom、Signal Plan、回测或自选结果，也不调用 LLM。
+
+- 来源只读取同日 `pool/pool_<YYMMDD>.csv` 的 `pool_channel`：`CORE_QUALITY` 显示“核心质量池”，`EXPANSION_RS` 显示“RS扩展池”，`BOTH` 显示“双通道”。
+- `CORE_VERIFIED` 标的按模型一已有字段生成确定性提示，包括净利润为负、高负债、经营现金流为负、营收明显下滑、利润明显下滑、毛利率偏低，以及模型一已有的低 ROE、现金流偏弱、负债率偏高和估值偏高标签；没有风险时显示“财务硬筛通过”。
+- `FUNDAMENTAL_UNVERIFIED` 标的优先读取 `cache/signal_fundamentals/<code>.json` 中同日可用的成功快照，并展示规则生成的基础风险；缓存缺失、查询失败或字段不足时分别显示“财务未查询”“财务查询失败”或“财务数据不足”，不得把这些状态解释为基本面差。
+- 同日 Pool 文件或股票记录缺失时显示“来源待确认 / 财务待验证”，不得回退到其他日期，避免历史页面使用未来信息。
+- 市场环境、发现来源、财务提示和技术风险分为四组换行展示；标签较多时组内自动换行，不得混成一条长标签流。
+- 这些标签只做风险提醒，不参与信号评分、计划等级、候选排序或交易判断。财务补查规则见 `instructions/signal-fundamentals.md`。
+
+### Dashboard 板块环境与仓位建议
+
+信号发现页在不改写模型二买点和 Signal Plan 结果的前提下，生成一层确定性的环境仓位建议。该建议不调用 LLM，不读取持仓或估值，只使用同日已经存在的数据：
+
+```text
+模型二 setup_signal / setup_quality
+market/data/market_context_<YYMMDD>.json
+market/stock_strength_<YYMMDD>.csv
+market/sector_heat_<YYMMDD>.csv
+```
+
+所属板块统一采用 `stock_strength` 的申万二级行业 `sw_l2_name`；板块状态按同名 `industry_sw_l2` 行读取。任何输入缺失都不得回退到其他日期，未知市场或未知板块按 0 仓位处理。
+
+仓位计算只允许实际买点等级 A/B；C/D 一律显示“观察”，但仍保留原始信号和回测记录。三类买点的基础仓位为：
+
+| setup_signal | B 级 | A 级 |
+|---|---:|---:|
+| `PULLBACK_BUY` | 10%-20% | 20%-30% |
+| `BREAKOUT_BUY` | 20%-30% | 40%-50% |
+| `RETEST_BUY` | 40%-50% | 60%-80% |
+
+板块状态归组：
+
+- `STRONG`：持续主线、新晋强化、强势初现。
+- `NEUTRAL`：轮动脉冲、高位分歧。
+- `BLOCKED`：观察中、历史积累中、弱势退潮；直接 0 仓位。
+
+市场与板块联合环境系数：
+
+| market_state.raw_label | STRONG | NEUTRAL | BLOCKED |
+|---|---:|---:|---:|
+| `OFFENSIVE` | 100% | 70% | 0% |
+| `SELECTIVE` | 100% | 50% | 0% |
+| `RECOVERY_WATCH` | 70% | 30% | 0% |
+| `CONSOLIDATING` | 0% | 0% | 0% |
+| `DEFENSIVE` | 0% | 0% | 0% |
+
+```text
+最终建议仓位 = 买点基础仓位 × 市场板块联合环境系数
+```
+
+结果按 5% 档位保守向下取整。上界不足 5% 时显示“观察”；下界为 0、上界至少 5% 时显示“≤上界%”。页面必须同时展示买点基础仓位、环境系数和折算结果，不能只展示一个无法复盘的仓位文本。
+
+次日 Plan 尚未形成实际 `setup_quality`，不得把 `target_quality` 当成实际买点等级。页面分别展示“若 A 级触发”和“若 B 级触发”的当日环境预案；下一交易日真正触发后，再使用触发日的市场、板块和实际买点等级重算正式建议。
+
+仓位建议只影响 Dashboard 交易计划提示，不改变模型二 `suggested_position`、Signal Plan JSON、Bloom 生命周期、回测样本或自选同步。
 
 模型四当前信号层结构：
 
@@ -111,15 +169,18 @@ chg_20
 run_date
 strategy_version
 post_breakout_state
+contraction_group
 ```
 
 若模型二 JSON 缺少 `volume` / `vol_ma20` 等量能字段，Signal Plan 不得输出抽象公式作为执行计划；对应标的必须降级为 `DATA_ISSUE` 或跳过，并在 summary 中记录原因。若缺少 `setup_plan_inputs`，Signal Plan 可以使用兼容回退逻辑，但新版本模型二应提供该字段。
+
+每条 Plan 必须保存同一轮 VCP 的 `structure_anchor`。优先取 `contraction_group` 第一段的 `start_date`；缺失时依次使用收缩段开始日、结构突破日和兼容占位。该字段只用于下一交易日事实匹配和历史去重，不改变模型二结构判断。
 
 ---
 
 ## 三、候选范围
 
-第一版只处理成熟结构和已触发结构，普通 `VCP_FORMING` 不进入计划。
+NEW Plan 以 `VCP_MATURE`、`VCP_TIGHT` 为常规候选。`VCP_FORMING` 只有达到近成熟高质量门槛时才允许提前生成 NEW Plan，避免两轮收缩刚形成就大范围预测；`VCP_EARLY` 不进入计划。
 
 纳入条件：
 
@@ -128,7 +189,7 @@ model2_include = true
 structure_type = VCP
 structure_valid = true
 且满足以下之一：
-  structure_stage in {VCP_MATURE, VCP_TIGHT}
+  structure_stage in {VCP_FORMING, VCP_MATURE, VCP_TIGHT}
   setup_signal in {PULLBACK_BUY, BREAKOUT_BUY, RETEST_BUY}
 ```
 
@@ -142,7 +203,7 @@ structure_risk_flags 命中 hard_risk_flags
 缺少 close / structure_pivot / volume / vol_ma20 等必要字段
 ```
 
-`VCP_FORMING` 仅在当日已经触发 `PULLBACK_BUY` / `BREAKOUT_BUY` / `RETEST_BUY` 时允许生成 `FOLLOW_SETUP_PLAN`，不得作为普通成熟结构生成首次买点计划。
+`VCP_FORMING` 生成 NEW Plan 必须同时满足：`structure_score ≥ 80`、`structure_risk_score ≤ 15`、`volume_pattern in {decreasing,drying}`、`pivot_distance ≥ -8%`、`post_breakout_state=PRE_BREAKOUT`。它只覆盖虽然仍为两轮收缩、但量能和位置已经接近成熟的少数结构。未达门槛的 FORMING 继续观察；当日已经触发买点时仍可按普通分支生成 FOLLOW Plan。风险硬阻断、结构有效性和生命周期门槛继续生效。
 
 成熟结构若价格已经超过突破计划上沿，不输出追高计划，需进入 `excluded` 并在 summary 中计数。
 

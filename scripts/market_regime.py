@@ -32,7 +32,7 @@ OUTPUT_DIR = ROOT / "market"
 DATA_OUTPUT_DIR = OUTPUT_DIR / "data"
 DASHBOARD_DIR = ROOT / "dashboard"
 DASHBOARD_DATA_DIR = DASHBOARD_DIR / "data"
-DASHBOARD_START_DATE = "260701"
+DASHBOARD_START_DATE = "260506"
 MX_SEARCH_URL = "https://mkapi2.dfcfs.com/finskillshub/api/claw/news-search"
 
 
@@ -95,6 +95,22 @@ def connect_state_db() -> sqlite3.Connection:
     )""")
     conn.commit()
     return conn
+
+
+def resolve_market_snapshot(conn: sqlite3.Connection, as_of: str, allow_fallback: bool = False) -> tuple[str, str]:
+    """Resolve a complete reference snapshot and label any historical fallback."""
+    universe_dates = {row[0] for row in conn.execute("SELECT DISTINCT trade_date FROM universe_members")}
+    block_dates = {row[0] for row in conn.execute("SELECT DISTINCT snapshot_date FROM block_members")}
+    industry_dates = {row[0] for row in conn.execute("SELECT DISTINCT snapshot_date FROM stock_industries")}
+    available = sorted(universe_dates & block_dates & industry_dates)
+    if as_of in available:
+        return as_of, "point_in_time"
+    if not allow_fallback:
+        raise RuntimeError(f"目标日成分快照缺失: {as_of}")
+    if not available:
+        raise RuntimeError("没有可用于历史回填的完整成分快照")
+    snapshot = min(available, key=lambda value: (abs((pd.Timestamp(value) - pd.Timestamp(as_of)).days), value))
+    return snapshot, "current_snapshot_backfill"
 
 
 def percentile_score(value: float, values: pd.Series) -> float:
@@ -297,12 +313,19 @@ def classify_market_state(
     return "SELECTIVE"
 
 
-def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as_of: str) -> tuple[dict, list[dict], list[dict], list[dict]]:
-    total, valid, ratio = MarketDataService.coverage(conn, as_of)
+def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as_of: str, allow_snapshot_fallback: bool = False) -> tuple[dict, list[dict], list[dict], list[dict]]:
+    snapshot_date, history_basis = resolve_market_snapshot(conn, as_of, allow_snapshot_fallback)
+    total = conn.execute("SELECT count(*) FROM universe_members WHERE trade_date=? AND eligible=1", (snapshot_date,)).fetchone()[0]
+    valid = conn.execute(
+        """SELECT count(*) FROM universe_members u JOIN daily_bars b ON u.code=b.code
+           WHERE u.trade_date=? AND u.eligible=1 AND b.trade_date=?""",
+        (snapshot_date, as_of),
+    ).fetchone()[0]
+    ratio = valid / total if total else 0.0
     if ratio < CONFIG["data"]["minimum_coverage_ratio"]:
         raise RuntimeError(f"全 A 覆盖率不足: {ratio:.2%} ({valid}/{total})")
     universe = pd.read_sql_query("""SELECT b.* FROM daily_bars b JOIN universe_members u ON b.code=u.code
-        WHERE u.trade_date=? AND u.eligible=1 AND b.trade_date<=?""", conn, params=(as_of, as_of))
+        WHERE u.trade_date=? AND u.eligible=1 AND b.trade_date<=?""", conn, params=(snapshot_date, as_of))
     universe = indicators(universe)
     current = universe[universe.trade_date == as_of].copy()
     current = current[current.ma60.notna()].copy()
@@ -350,7 +373,7 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
         trend_scores.append(trend); vol_scores.append(volatility)
 
     blocks = pd.read_sql_query("""SELECT m.block_kind,m.block_name,m.code FROM block_members m
-        JOIN universe_members u ON m.code=u.code WHERE m.snapshot_date=? AND u.trade_date=? AND u.eligible=1""", conn, params=(as_of, as_of))
+        JOIN universe_members u ON m.code=u.code WHERE m.snapshot_date=? AND u.trade_date=? AND u.eligible=1""", conn, params=(snapshot_date, snapshot_date))
     merged = blocks.merge(current, on="code", how="inner")
     market_median = {window: float(current[f"ret{window}"].median()) for window in (1, 5, 10, 20)}
     records = []
@@ -370,7 +393,7 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
             "daily_strong_density": round(float((group.rps1_market >= 90).mean() * 100), 2),
             "median_return_1": round(float(group.ret1.median() * 100), 3), "above_ma20_ratio": round(float((group.close > group.ma20).mean() * 100), 2),
             "above_ma60_ratio": round(float((group.close > group.ma60).mean() * 100), 2), "new_high_ratio": round(float(group.new_high60.mean() * 100), 2),
-            "strong_stock_density": round(float(strong * 100), 2), "sector_state": "历史积累中", "history_basis": "point_in_time"})
+            "strong_stock_density": round(float(strong * 100), 2), "sector_state": "历史积累中", "history_basis": history_basis})
     sector_rows = finalize_sector_rankings(records)
     top_sets = {kind: {row["block_name"] for row in sector_rows if row["block_type"] == kind and row["rank"] <= 10} for kind in {row["block_type"] for row in sector_rows}}
     previous = pd.read_sql_query("SELECT block_kind,block_name,rank_20 AS rank FROM sector_daily_metrics WHERE trade_date=(SELECT max(trade_date) FROM sector_daily_metrics WHERE trade_date<?)", state_conn, params=(as_of,))
@@ -399,11 +422,11 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
         breadth["advance_ratio"],
     )
     security_context = pd.read_sql_query("""SELECT s.code,s.name,si.sw_industry_code
-        FROM securities s LEFT JOIN stock_industries si ON s.code=si.code AND si.snapshot_date=?""", conn, params=(as_of,))
+        FROM securities s LEFT JOIN stock_industries si ON s.code=si.code AND si.snapshot_date=?""", conn, params=(snapshot_date,))
     stock_frame = current.merge(security_context, on="code", how="left")
     stock_frame["sw_l2_code"] = stock_frame.sw_industry_code.fillna("").str.slice(0, 5)
     sw_l2_names = pd.read_sql_query("""SELECT industry_code,industry_name FROM industry_definitions
-        WHERE snapshot_date=? AND industry_system='sw'""", conn, params=(as_of,))
+        WHERE snapshot_date=? AND industry_system='sw'""", conn, params=(snapshot_date,))
     stock_frame = stock_frame.merge(sw_l2_names, left_on="sw_l2_code", right_on="industry_code", how="left")
     stock_frame["rps20_industry"] = stock_frame.groupby("sw_l2_code")["ret20"].rank(pct=True, method="average") * 100
     stock_frame["rps60_industry"] = stock_frame.groupby("sw_l2_code")["ret60"].rank(pct=True, method="average") * 100
@@ -441,7 +464,7 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
         within = float((same_concept.ret20 <= row.ret20).mean() * 100)
         heat = concept_heat.get(name, {})
         concept_rows.append({"date": as_of, "code": code, "name": row.get("name", ""), "concept_name": name, "concept_relative_strength_20": heat.get("relative_strength_20"), "concept_rank": heat.get("rank_20"), "stock_return_20": round(float(row.ret20 * 100), 3), "rps20_within_concept": round(within, 2), "stock_vs_concept_return_20": round(float((row.ret20 - same_concept.ret20.mean()) * 100), 3)})
-    report = {"meta": {"run_date": as_of, "strategy_version": CONFIG["strategy_version"], "data_status": "VALID", "config": str(CONFIG_PATH)}, "state": {"current": state, "raw_state": state, "trend_score": round(trend_score, 2), "volatility_score": round(volatility_score, 2), "breadth_score": round(float(breadth_score), 2), "rotation_score": rotation, "persistent_mainline_count": len(persistent_mainlines), "persistent_mainlines": persistent_mainlines}, "benchmarks": benchmark_metrics, "breadth": breadth, "rotation": {"top10_sets": {k: sorted(v) for k, v in top_sets.items()}}, "sector_leaders": sector_leaders, "daily_sector_leaders": daily_sector_leaders}
+    report = {"meta": {"run_date": as_of, "strategy_version": CONFIG["strategy_version"], "data_status": "VALID", "config": str(CONFIG_PATH), "reference_snapshot_date": snapshot_date, "history_basis": history_basis}, "state": {"current": state, "raw_state": state, "trend_score": round(trend_score, 2), "volatility_score": round(volatility_score, 2), "breadth_score": round(float(breadth_score), 2), "rotation_score": rotation, "persistent_mainline_count": len(persistent_mainlines), "persistent_mainlines": persistent_mainlines}, "benchmarks": benchmark_metrics, "breadth": breadth, "rotation": {"top10_sets": {k: sorted(v) for k, v in top_sets.items()}}, "sector_leaders": sector_leaders, "daily_sector_leaders": daily_sector_leaders}
     return report, sector_rows, stock_rows, concept_rows
 
 
@@ -541,13 +564,7 @@ def confirm_market_state(state_conn: sqlite3.Connection, as_of: str, report: dic
     elif raw == last_confirmed:
         confirmed, candidate_days = raw, required
     else:
-        consecutive = 1
-        for row in previous:
-            if row["raw_state"] == raw:
-                consecutive += 1
-            else:
-                break
-        candidate_days = consecutive
+        candidate_days = 1 + sum(row["raw_state"] == raw for row in previous)
         confirmed = raw if candidate_days >= required else last_confirmed
     state_conn.execute("""INSERT INTO market_state_history(trade_date,raw_state,confirmed_state,candidate_days,confirmation_days)
         VALUES(?,?,?,?,?) ON CONFLICT(trade_date) DO UPDATE SET raw_state=excluded.raw_state,
@@ -1317,7 +1334,7 @@ def write_dashboard_index(market_latest: str | None, market_available: list[str]
     # Every publisher owns only its module.  Rebuild the other known module
     # indexes from their published packages so a market refresh cannot erase
     # an independently published valuation index.
-    for kind in ("signals", "vcp", "valuation"):
+    for kind in ("signals", "vcp", "backtest", "valuation"):
         dates = sorted(path.stem.rsplit("_", 1)[-1] for path in DASHBOARD_DATA_DIR.glob(f"*/{kind}_context_*.js"))
         if dates:
             index[kind] = {"latest": dates[-1], "available": dates}
@@ -1412,7 +1429,7 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("init", "update"):
         cmd = sub.add_parser(name); cmd.add_argument("--date"); cmd.add_argument("--lookback", type=int, default=CONFIG["data"]["initial_lookback_days"]); cmd.add_argument("--max-codes", type=int); cmd.add_argument("--resume", action="store_true")
-    run = sub.add_parser("run"); run.add_argument("--date"); run.add_argument("--no-llm", action="store_true")
+    run = sub.add_parser("run"); run.add_argument("--date"); run.add_argument("--no-llm", action="store_true"); run.add_argument("--allow-snapshot-fallback", action="store_true"); run.add_argument("--reuse-existing-mainline", action="store_true")
     sub.add_parser("status"); sub.add_parser("publish-dashboard")
     args = parser.parse_args()
     if args.command in {"init", "update"}:
@@ -1436,8 +1453,10 @@ def main() -> int:
     state_conn = connect_state_db()
     try:
         as_of = resolve_as_of(args.date)
+        existing_report_path = OUTPUT_DIR / f"market_regime_{today_stamp(as_of)}.json"
+        existing_report = json.loads(existing_report_path.read_text(encoding="utf-8")) if args.reuse_existing_mainline and existing_report_path.exists() else {}
         try:
-            report, sectors, stocks, concepts = compute_metrics(conn, state_conn, as_of)
+            report, sectors, stocks, concepts = compute_metrics(conn, state_conn, as_of, args.allow_snapshot_fallback)
         except RuntimeError as exc:
             print(f"数据未就绪：{exc}", file=sys.stderr)
             return 2
@@ -1447,7 +1466,7 @@ def main() -> int:
         }
         candidates = daily_mainline_candidates(report, sectors)
         if args.no_llm:
-            report["daily_mainline"] = daily_mainline_fallback(candidates, {"status": "skipped"}, "disabled_by_flag")
+            report["daily_mainline"] = existing_report.get("daily_mainline") or daily_mainline_fallback(candidates, {"status": "skipped"}, "disabled_by_flag")
         else:
             news = fetch_daily_mainline_news(as_of, candidates)
             report["daily_mainline"] = call_daily_mainline_analysis(as_of, candidates, news)

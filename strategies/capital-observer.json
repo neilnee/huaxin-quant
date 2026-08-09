@@ -1,0 +1,48 @@
+{
+  "strategy_version": "capital_observer_v1",
+  "description": "SW L2 turnover migration and quota-bounded capital confirmation.",
+  "turnover": {
+    "history_days": 35,
+    "baseline_days": 10,
+    "recent_days": 3,
+    "acceleration_recent_days": 2,
+    "stock_baseline_days": 20,
+    "stock_active_ratio": 1.20,
+    "minimum_share_lift": 0.15,
+    "minimum_share_percentile": 70.0,
+    "minimum_persistence_days": 2,
+    "minimum_breadth": 0.30,
+    "minimum_effective_members": 3,
+    "minimum_data_coverage": 0.90,
+    "minimum_market_share": 0.0005,
+    "top1_concentration_limit": 0.45,
+    "concentrated_breadth_limit": 0.20,
+    "concentration_penalty": 15.0,
+    "maximum_candidates": 8,
+    "score_weights": {
+      "share_lift_3d": 0.40,
+      "share_history_percentile": 0.20,
+      "acceleration": 0.15,
+      "breadth": 0.15,
+      "persistence_days": 0.10
+    }
+  },
+  "main_order": {
+    "lookback_days": 5,
+    "inflow_ratio": 0.005,
+    "outflow_ratio": -0.005,
+    "acceleration_delta": 0.003
+  },
+  "stock": {
+    "maximum_per_sector": 5,
+    "turnover_enhanced_ratio": 1.50,
+    "turnover_weakened_ratio": 0.70,
+    "main_inflow_ratio": 0.005,
+    "main_outflow_ratio": -0.005,
+    "margin_balance_change": 0.01
+  },
+  "miaoxiang": {
+    "default_maximum_requests_per_run": 20,
+    "hard_maximum_requests_per_run": 20
+  }
+}

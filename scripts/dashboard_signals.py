@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Publish Model 2 setup triggers and next-day plans for the dashboard."""
 from __future__ import annotations
-import argparse, csv, json, math, os, re, sys
+import argparse, csv, json, math, os, re, sqlite3, sys
 from datetime import datetime
 from pathlib import Path
 sys.path.insert(0, str(Path(os.path.abspath(__file__)).parents[1]))
 from scripts.shared import PROJECT_ROOT
 from scripts.strategy_config import load_strategy_config
+from scripts.capital_observer import classify_stock_capital
+from scripts.data.capital_data_service import CapitalDataService
+from scripts.data.capital_data_sources import MiaoxiangCapitalSource, RequestBudget
 
 ROOT=Path(PROJECT_ROOT); RUNS=ROOT/"cache"/"quant_runs"; PLAN_RUNS=ROOT/"signal_plan"; POOL_DIR=ROOT/"pool"; SIGNAL_FIN_DIR=ROOT/"cache"/"signal_fundamentals"; MARKET_DIR=ROOT/"market"; MARKET_CONTEXT_DIR=MARKET_DIR/"data"; OUT=ROOT/"dashboard"/"data"; START="260506"
 PLAN_CONFIG,_=load_strategy_config("04-signal-plan.json"); POSITION_CFG=PLAN_CONFIG["position_guidance"]
@@ -158,6 +161,43 @@ def pool_notices(date):
  return notices
 def missing_pool_notice():
  return {"pool_channel":"UNKNOWN","source_label":"来源待确认","source_tone":"unknown","financial_status":"FUNDAMENTAL_UNVERIFIED","financial_tone":"unverified","financial_tags":["财务未查询"],"financial_report_period":None,"financial_source":None}
+def capital_notice(rows):
+ result=classify_stock_capital({"amount":None,"amount_ratio_20d":None},rows)
+ valid_main=[item for item in rows if item.get("main_net_inflow") is not None]
+ main_available=result["main_order_state"]!="INSUFFICIENT"; margin_available=result["margin_state"]!="INSUFFICIENT"
+ return {
+  "status":"complete" if main_available and margin_available else "partial" if main_available else "unavailable",
+  "main_order_state":result["main_order_state"],
+  "main_net_inflow_ratio":result["main_net_inflow_ratio"],
+  "main_positive_days_3d":sum(float(item["main_net_inflow"])>0 for item in valid_main[-3:]),
+  "main_observation_days_3d":len(valid_main[-3:]),
+  "main_data_date":result["main_data_date"],
+  "margin_state":result["margin_state"],
+  "financing_balance_change":result["financing_balance_change"],
+  "financing_net_buy":result["financing_net_buy"],
+  "margin_data_date":result["margin_data_date"],
+  "source":"capital_data.sqlite",
+ }
+def missing_capital_notice():
+ return capital_notice([])
+def capital_notices(date,codes,fetch=False,maximum_requests=None):
+ cfg=PLAN_CONFIG["capital_support"]
+ requested=int(maximum_requests if maximum_requests is not None else cfg["default_maximum_requests_per_publish"])
+ hard=int(cfg["hard_maximum_requests_per_publish"])
+ if requested<0 or requested>hard: raise ValueError(f"max-mx-requests 必须在 0 到 {hard} 之间")
+ budget=RequestBudget(requested if fetch else 0)
+ service=CapitalDataService(capital_source=MiaoxiangCapitalSource(request_budget=budget))
+ target=datetime.strptime(date,"%y%m%d").strftime("%Y-%m-%d")
+ with sqlite3.connect(str(service.market_db_path)) as conn:
+  dates=[row[0] for row in conn.execute(
+   "SELECT DISTINCT trade_date FROM daily_bars WHERE trade_date<=? ORDER BY trade_date DESC LIMIT ?",
+   (target,int(cfg["lookback_trade_days"])),
+  )][::-1]
+ if not dates:
+  return ({code:missing_capital_notice() for code in dict.fromkeys(codes)},budget.used,[{"error":"缺少交易日行情"}])
+ result=service.fetch_stock_capital(list(dict.fromkeys(codes)),dates[0],dates[-1])
+ notices={code:capital_notice(item.get("rows",[])) for code,item in result.get("stocks",{}).items()}
+ return notices,budget.used,result.get("errors",[])
 def signal_financial_notice(date,code):
  path=SIGNAL_FIN_DIR/f"{code}.json"
  if not path.exists(): return None
@@ -177,7 +217,7 @@ def plan_row(plan, quant):
  row={key:quant.get(key) for key in FIELDS}
  row.update({"signal_kind":"PLAN","setup_signal":plan.get("setup_signal"),"action_hint":"次日计划","suggested_position":"触发后按模型二质量判定","setup_pattern_score":None,"setup_score":None,"setup_quality":plan.get("target_quality","—"),"setup_reasons":[plan.get("plan_reason","")],"setup_misses":[plan.get("risk_note","")],"setup_risk_flags":plan.get("structure_risk_flags",[]),"plan_action":plan.get("plan_action"),"plan_type":plan.get("plan_type"),"plan_priority":plan.get("plan_priority"),"plan_reason":plan.get("plan_reason"),"llm_note":plan.get("llm_note"),"trigger_price_low":plan.get("trigger_price_low"),"trigger_price_high":plan.get("trigger_price_high"),"ideal_price_low":plan.get("ideal_price_low"),"ideal_price_high":plan.get("ideal_price_high"),"plan_volume_text":format_plan_volume(plan.get("volume_max"),"max") if plan.get("volume_max") is not None else format_plan_volume(plan.get("volume_min"),"min"),"ideal_volume_text":format_plan_volume(plan.get("ideal_volume_max"),"max") if plan.get("ideal_volume_max") is not None else format_plan_volume(plan.get("ideal_volume_min"),"min"),"invalid_price":plan.get("invalid_price"),"plan_inputs":plan})
  return row
-def build(date):
+def build(date,fetch_capital=False,max_mx_requests=None):
  path=RUNS/f"quant_{date}.json"
  if not path.exists(): raise FileNotFoundError(path.name)
  raw=json.loads(path.read_text(encoding="utf-8")); rows=[]; quant_by_code={str(item.get("code","")).zfill(6):item for item in raw.get("results",[])}
@@ -193,17 +233,18 @@ def build(date):
   code=str(plan.get("code","")).zfill(6)
   if code in quant_by_code: rows.append(plan_row(plan,quant_by_code[code]))
  notices=pool_notices(date); market=market_notice(date); sectors=sector_notices(date)
+ capital,capital_requests,capital_errors=capital_notices(date,[str(row.get("code","")).zfill(6) for row in rows],fetch_capital,max_mx_requests)
  for row in rows:
   code=str(row.get("code","")).zfill(6); notice=dict(notices.get(code,missing_pool_notice()))
   if notice.get("financial_status")!="CORE_VERIFIED": notice.update(signal_financial_notice(date,code) or {})
-  sector=dict(sectors.get(code,default_sector_notice())); row.update(notice); row.update(sector); row.update(position_guidance(row,market,sector))
+  sector=dict(sectors.get(code,default_sector_notice())); row.update(notice); row.update(sector); row["capital_support"]=capital.get(code,missing_capital_notice()); row.update(position_guidance(row,market,sector))
  rows.sort(key=lambda r:(r["signal_kind"]!="TRIGGERED", -(r.get("setup_score") or 0), -(r.get("structure_score") or 0), r["code"], r["setup_signal"]))
- return {"meta":{"run_date":raw.get("meta",{}).get("run_date",f"20{date[:2]}-{date[2:4]}-{date[4:]}") ,"source":path.name,"plan_source":plan_path.name if plan_path.exists() else None,"position_strategy_version":PLAN_CONFIG["strategy_version"]},"market_notice":market,"summary":{"triggered":sum(r["signal_kind"]=="TRIGGERED" for r in rows),"planned":sum(r["signal_kind"]=="PLAN" for r in rows),"total":len(rows)},"signals":rows}
-def publish(date):
- data=build(date); folder=OUT/f"20{date[:4]}"; folder.mkdir(parents=True,exist_ok=True); target=folder/f"signals_context_{date}.js"
+ return {"meta":{"run_date":raw.get("meta",{}).get("run_date",f"20{date[:2]}-{date[2:4]}-{date[4:]}") ,"source":path.name,"plan_source":plan_path.name if plan_path.exists() else None,"position_strategy_version":PLAN_CONFIG["strategy_version"],"capital_fetch_enabled":fetch_capital,"capital_requests_used":capital_requests,"capital_errors":capital_errors},"market_notice":market,"summary":{"triggered":sum(r["signal_kind"]=="TRIGGERED" for r in rows),"planned":sum(r["signal_kind"]=="PLAN" for r in rows),"total":len(rows)},"signals":rows}
+def publish(date,fetch_capital=False,max_mx_requests=None):
+ data=build(date,fetch_capital,max_mx_requests); folder=OUT/f"20{date[:4]}"; folder.mkdir(parents=True,exist_ok=True); target=folder/f"signals_context_{date}.js"
  target.write_text("window.QUANT_DASHBOARD_SIGNALS_CONTEXTS = window.QUANT_DASHBOARD_SIGNALS_CONTEXTS || {};\n"+f"window.QUANT_DASHBOARD_SIGNALS_CONTEXTS[{json.dumps(date)}] = "+json.dumps(data,ensure_ascii=False)+";\n",encoding="utf-8"); write_dashboard_index(); return target
 def main():
- p=argparse.ArgumentParser();p.add_argument("--date");p.add_argument("--all",action="store_true");a=p.parse_args()
+ p=argparse.ArgumentParser();p.add_argument("--date");p.add_argument("--all",action="store_true");p.add_argument("--fetch-capital",action="store_true");p.add_argument("--max-mx-requests",type=int);a=p.parse_args()
  dates=sorted(x.stem.rsplit("_",1)[-1] for x in RUNS.glob("quant_*.json") if x.stem.rsplit("_",1)[-1]>=START) if a.all else [stamp(a.date) if a.date else sorted(RUNS.glob("quant_*.json"))[-1].stem.rsplit("_",1)[-1]]
- print(json.dumps({"outputs":[str(publish(d)) for d in dates]},ensure_ascii=False))
+ print(json.dumps({"outputs":[str(publish(d,a.fetch_capital,a.max_mx_requests)) for d in dates]},ensure_ascii=False))
 if __name__=="__main__": main()

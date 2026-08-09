@@ -1,0 +1,40 @@
+.capital-state.tier-strong {
+  border-color: #a34a56;
+  background: #4a202b;
+  color: #ffadb2;
+  font-weight: 700;
+}
+
+.capital-state.tier-positive {
+  border-color: #80603a;
+  background: #402f20;
+  color: #ffc27a;
+}
+
+.capital-state.tier-neutral {
+  border-color: #3d667b;
+  background: #203442;
+  color: #9ccbe3;
+}
+
+.capital-state.tier-negative {
+  border-color: #376955;
+  background: #203a31;
+  color: #8de0ba;
+}
+
+.capital-state.tier-pending {
+  border-color: #465366;
+  background: #252e3b;
+  color: #9aa8ba;
+}
+
+.capital-state.tier-unreliable {
+  border-color: #66527f;
+  background: #30263d;
+  color: #c9afe8;
+}
+
+.capital-state-rule-table td:first-child {
+  white-space: nowrap;
+}

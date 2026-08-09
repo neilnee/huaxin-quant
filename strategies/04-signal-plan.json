@@ -71,6 +71,11 @@
     "unknown_environment_factor": 0.0,
     "rounding_step_pct": 5
   },
+  "capital_support": {
+    "lookback_trade_days": 5,
+    "default_maximum_requests_per_publish": 5,
+    "hard_maximum_requests_per_publish": 10
+  },
   "breakout_buy": {
     "close_buffer_ratio": 1.01,
     "max_close_extension_ratio": 1.08,

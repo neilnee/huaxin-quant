@@ -87,6 +87,15 @@ class MiaoxiangSource(DataSource):
 
     # ── 公共接口 ──
 
+    def query_tool(self, query: str) -> Tuple[Optional[dict], Optional[str]]:
+        """执行通用妙想查数请求，供其他数据适配器复用。"""
+        api_key = os.environ.get("MX_APIKEY")
+        if not api_key:
+            return None, "MX_APIKEY 未设置"
+        headers = {"Content-Type": "application/json", "apikey": api_key}
+        payload = {"toolQuery": query, "toolType": "query_tool"}
+        return self._do_request(headers, payload)
+
     def fetch_bars(self, code: str, name: str) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
         """通过妙想 API 获取日线数据。返回 (DataFrame, None) 或 (None, error_msg)。
 

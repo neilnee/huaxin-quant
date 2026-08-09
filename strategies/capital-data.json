@@ -1,0 +1,38 @@
+{
+  "strategy_version": "capital_data_v1",
+  "description": "Capital observation data acquisition, SW-to-Eastmoney industry mapping and cache contracts.",
+  "mapping": {
+    "levels": {
+      "1": {"fortune_level": 1},
+      "2": {"fortune_level": 2}
+    },
+    "amount_window": 20,
+    "core_stock_count": 10,
+    "maximum_mapped_blocks": 3,
+    "minimum_board_purity": 0.35,
+    "minimum_incremental_coverage": 0.10,
+    "target_combined_coverage": 0.80,
+    "quality": {
+      "high_coverage": 0.70,
+      "high_core_coverage": 0.80,
+      "usable_coverage": 0.50,
+      "weak_coverage": 0.35
+    },
+    "score_weights": {
+      "coverage": 0.50,
+      "purity": 0.30,
+      "core_coverage": 0.20
+    }
+  },
+  "eastmoney": {
+    "page_size": 100,
+    "timeout_seconds": 20,
+    "maximum_retries": 3
+  },
+  "miaoxiang": {
+    "maximum_entities_per_query": 5,
+    "maximum_missing_retries": 1,
+    "default_maximum_requests_per_run": 8,
+    "hard_maximum_requests_per_run": 20
+  }
+}

@@ -1334,7 +1334,7 @@ def write_dashboard_index(market_latest: str | None, market_available: list[str]
     # Every publisher owns only its module.  Rebuild the other known module
     # indexes from their published packages so a market refresh cannot erase
     # an independently published valuation index.
-    for kind in ("signals", "vcp", "backtest", "valuation"):
+    for kind in ("capital", "signals", "vcp", "backtest", "valuation"):
         dates = sorted(path.stem.rsplit("_", 1)[-1] for path in DASHBOARD_DATA_DIR.glob(f"*/{kind}_context_*.js"))
         if dates:
             index[kind] = {"latest": dates[-1], "available": dates}

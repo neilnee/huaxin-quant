@@ -12,6 +12,19 @@ from scripts import dashboard_signals
 
 
 class DashboardSignalsMarketNoticeTests(unittest.TestCase):
+    def test_capital_notice_keeps_main_and_margin_independent(self):
+        rows = [
+            {"trade_date": "2026-08-05", "main_net_inflow": -10.0, "amount": 1000.0, "financing_balance": 100.0},
+            {"trade_date": "2026-08-06", "main_net_inflow": 20.0, "amount": 1000.0, "financing_balance": 101.0},
+            {"trade_date": "2026-08-07", "main_net_inflow": 30.0, "amount": 1000.0, "financing_buy": 12.0, "financing_repay": 7.0, "financing_balance": 103.0},
+        ]
+        notice = dashboard_signals.capital_notice(rows)
+        self.assertEqual(notice["status"], "complete")
+        self.assertEqual(notice["main_order_state"], "INFLOW")
+        self.assertEqual(notice["main_positive_days_3d"], 2)
+        self.assertEqual(notice["margin_state"], "LEVERAGING")
+        self.assertEqual(notice["financing_net_buy"], 5.0)
+
     def test_sector_states_are_grouped_by_position_policy(self):
         self.assertEqual(dashboard_signals.sector_group("持续主线"), "STRONG")
         self.assertEqual(dashboard_signals.sector_group("高位分歧"), "NEUTRAL")

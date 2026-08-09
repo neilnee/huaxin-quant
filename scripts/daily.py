@@ -127,7 +127,7 @@ def run_dashboard_publish(date_yy):
         ["python3", "scripts/market_regime.py", "run", "--date", iso],
         ["python3", "scripts/backtest.py", "--date", date_yy],
         ["python3", "scripts/dashboard_vcp.py", "--date", date_yy],
-        ["python3", "scripts/dashboard_signals.py", "--date", date_yy],
+        ["python3", "scripts/dashboard_signals.py", "--date", date_yy, "--fetch-capital", "--max-mx-requests", "5"],
     ]
     for command in commands:
         result = subprocess.run(command, cwd=PROJECT_ROOT)

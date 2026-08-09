@@ -139,58 +139,43 @@ function renderSignals(){
 }
 function renderSignalDetail(row){
   if(!row){$("signals-detail").innerHTML="<p class='muted'>请选择一条买点记录</p>";return;}
-  const metric=(label,value)=>`<div class="vcp-metric"><span>${label}</span><b>${value}</b></div>`,reasons=(row.setup_reasons||[]).filter(Boolean),misses=(row.setup_misses||[]).filter(Boolean),flags=(row.setup_risk_flags||[]).concat(row.structure_risk_flags||[]),actual=row.signal_kind==="TRIGGERED",base=Number((reasons.join("；").match(/结构基础(-?\d+)/)||[])[1])||0,typeScore={PULLBACK_BUY:6,BREAKOUT_BUY:10,RETEST_BUY:15}[row.setup_signal]||0,pattern=Number(row.setup_pattern_score)||0,quality=Math.max(0,pattern-typeScore),risk=actual?(Number(row.setup_score)||0)-base-pattern:0;
+  const metric=(label,value)=>`<div class="vcp-metric"><span>${label}</span><b>${value}</b></div>`,reasons=(row.setup_reasons||[]).filter(Boolean),flags=(row.setup_risk_flags||[]).concat(row.structure_risk_flags||[]),actual=row.signal_kind==="TRIGGERED",base=Number((reasons.join("；").match(/结构基础(-?\d+)/)||[])[1])||0,typeScore={PULLBACK_BUY:6,BREAKOUT_BUY:10,RETEST_BUY:15}[row.setup_signal]||0,pattern=Number(row.setup_pattern_score)||0,quality=Math.max(0,pattern-typeScore),risk=actual?(Number(row.setup_score)||0)-base-pattern:0;
   const status=actual?"当日触发":row.plan_action==="FOLLOW"?"次日延续计划":"次日新计划";
   const scoreHtml=actual?`<div class="signal-score-grid"><div><span>结构基础</span><b>${base}</b></div><div><span>类型基础分</span><b>${typeScore}</b></div><div><span>动作质量分</span><b>${quality}</b></div><div><span>风险修正</span><b>${risk>=0?`+${risk}`:risk}</b></div></div><p class="detail-meta">买点分 ${vcpNumber(row.setup_score,0)} = 结构基础 ${base} + 动作分 ${pattern} + 风险修正 ${risk>=0?`+${risk}`:risk}</p>`:`<div class="signal-score-grid"><div><span>结构分</span><b>${vcpNumber(row.structure_score,0)}</b></div><div><span>最高潜在等级</span><b>${esc(row.setup_quality||"—")}</b></div><div><span>计划优先级</span><b>${esc(row.plan_priority||"—")}</b></div><div><span>计划动作</span><b>${esc(row.plan_action||"—")}</b></div></div>`;
   const conditionHtml=actual?`<p>${signalPlanText(row)}</p>`:`<div class="signal-plan-grid"><div><span>普通触发价</span><b>${vcpNumber(row.trigger_price_low,2)} – ${vcpNumber(row.trigger_price_high,2)}</b></div><div><span>普通触发量</span><b>${esc(row.plan_volume_text||"—")}</b></div><div><span>A级价格区</span><b>${vcpNumber(row.ideal_price_low,2)} – ${vcpNumber(row.ideal_price_high,2)}</b></div><div><span>A级量能</span><b>${esc(row.ideal_volume_text||"—")}</b></div><div><span>失效价</span><b>${vcpNumber(row.invalid_price,2)}</b></div><div><span>计划类型</span><b>${esc(row.plan_action==="FOLLOW"?"延续参与":"首次触发")}</b></div></div>`;
-  $("signals-detail").innerHTML=`<p class="section-label">买点详情</p><h3>${esc(row.name)} <span class="muted">${esc(row.code)}</span></h3><span class="status-pill ${actual?"status-triggered":"status-early"}">${status}</span><div class="vcp-metrics">${metric("买点类型",esc(signalTypeLabel(row.setup_signal)))}${metric(actual?"买点等级":"最高潜在等级",esc(row.setup_quality||"—"))}${metric(actual?"买点分":"结构分",vcpNumber(actual?row.setup_score:row.structure_score,0))}${metric("所属板块",esc(row.sector_name||"板块待确认"))}${metric("板块状态",esc(row.sector_state||"状态待确认"))}${metric("结构阶段",esc(row.structure_stage||row.model2_stage||"—"))}</div><h4>量价参考</h4><div class="signal-reference-grid">${metric("当前价格",vcpNumber(row.close,2))}${metric("MA20 / MA60",`${vcpNumber(row.MA20,2)} / ${vcpNumber(row.MA60,2)}`)}${metric("Pivot",vcpNumber(row.pivot_price,2))}${metric("支撑 / 失效",`${vcpNumber(row.support_price,2)} / ${vcpNumber(row.invalid_price,2)}`)}${metric("距 Pivot",`${vcpNumber(row.pivot_distance)}%`)}${metric("距 MA20",`${vcpNumber(row.distance_ma20)}%`)}${metric("当日 / 20日均量",`${vcpVolume(row.volume)} / ${vcpVolume(row.vol_ma20)}`)}${metric("量比 / 缩量系数",`${vcpNumber(row.vol_ratio,2)}x / ${vcpNumber(row.volume_dry_up,2)}x`)}</div><h4>${actual?"参考触发条件":"次日触发条件"}</h4>${conditionHtml}<h4>${actual?"买点评分组成":"计划质量"}</h4>${scoreHtml}<h4>买点说明</h4><p><b>满足条件：</b>${esc(reasons.join("；")||"等待计划条件满足")}</p><p class="muted"><b>待确认 / 风险：</b>${esc(misses.map(signalRiskLabel).join("；")||"无")}</p>${row.llm_note?`<p class="detail-meta">计划说明：${esc(row.llm_note)}</p>`:""}${flags.length?`<div class="vcp-flags">${flags.map(flag=>`<span title="${esc(flag)}">${esc(signalRiskLabel(flag))}</span>`).join("")}</div>`:""}`;
-}
-
-const renderSignalDetailBase = renderSignalDetail;
-renderSignalDetail = function (row) {
-  renderSignalDetailBase(row);
-  if (!row) return;
-  const detail = $("signals-detail");
   const market = signalsContext.market_notice || {};
   const marketTone = ["supportive", "selective", "caution", "blocked"].includes(market.tone) ? market.tone : "caution";
-  const flags = (row.setup_risk_flags || []).concat(row.structure_risk_flags || []);
-  const status = detail.querySelector(".status-pill");
-  if (status) {
-    const sourceTone = ["core", "expansion", "both", "unknown"].includes(row.source_tone) ? row.source_tone : "unknown";
-    const financialTone = ["verified", "risk", "unverified"].includes(row.financial_tone) ? row.financial_tone : "unverified";
-    const financialTags = Array.isArray(row.financial_tags) && row.financial_tags.length ? row.financial_tags : ["财务未查询"];
-    const financialTitle = [row.financial_report_period, row.financial_source].filter(Boolean).join(" · ") || "尚无可用财务快照";
-    const group = (label, content, className="") => `<div class="signal-tag-group ${className}"><span class="signal-tag-label">${label}</span><div class="signal-tag-values">${content}</div></div>`;
-    const marketHtml = `<span class="market-status-pill market-${marketTone}" title="${esc((market.risk_tags || []).join(" · ") || "同日市场环境")}">${esc(market.label || "市场状态待确认")} · ${esc(market.tag || "环境待确认")}</span>`;
-    const sourceHtml = `<span class="signal-source-pill source-${sourceTone}">${esc(row.source_label || "来源待确认")}</span>`;
-    const financialHtml = financialTags.map((tag) => `<span class="signal-financial-pill financial-${financialTone}" title="${esc(financialTitle)}">${esc(tag)}</span>`).join("");
-    const technicalHtml = flags.map((flag) => `<span class="signal-technical-pill">${esc(signalRiskLabel(flag))}</span>`).join("");
-    status.insertAdjacentHTML("afterend", `<div class="signal-detail-tags">${group("市场环境",marketHtml)}${group("发现来源",sourceHtml)}${group("财务提示",financialHtml)}${technicalHtml?group("技术风险",technicalHtml,"signal-tag-technical"):""}</div>`);
-  }
-  const metrics = detail.querySelector(".vcp-metrics");
-  if (metrics) {
-    metrics.insertAdjacentHTML("beforebegin", `<div class="signal-market-advice market-${marketTone}"><span>市场环境提示</span><p>${esc(market.advice || "未找到有效的同日市场状态，信号仅按量价事实展示，执行前请先核对市场环境。")}</p></div>`);
-    const factor = `${Math.round(Number(row.environment_factor || 0) * 100)}%`;
-    const rangeText = (values) => Array.isArray(values) && values.length === 2 ? (Number(values[1]) <= 0 ? "观察" : Number(values[0]) <= 0 ? `≤${vcpNumber(values[1],0)}%` : `${vcpNumber(values[0],0)}%-${vcpNumber(values[1],0)}%`) : "—";
-    const breakdown = row.signal_kind === "PLAN"
-      ? `若A级触发 ${rangeText(row.plan_position_a)} · 若B级触发 ${rangeText(row.plan_position_b)} · 当前环境系数 ${factor}`
-      : `${row.base_position ? `买点基础 ${rangeText(row.base_position)} · ` : ""}当前环境系数 ${factor}`;
-    metrics.insertAdjacentHTML("afterend", `<div class="signal-position-advice ${row.position_status === "ACTIONABLE" || row.position_status === "PLAN_CONDITIONAL" ? "position-active" : "position-observe"}"><span>${row.signal_kind === "PLAN" ? "条件仓位预案" : "仓位建议"}</span><b>${esc(row.position_advice || "观察")}</b><p>${esc(breakdown)}</p><small>${esc(row.position_reason || "")}</small></div>`);
-  }
-  detail.querySelector(".vcp-flags")?.remove();
-  const heading = [...detail.querySelectorAll("h4")].find((item) => item.textContent === "买点说明");
-  if (!heading) return;
-  let next = heading.nextElementSibling;
-  while (next && next.tagName !== "H4") {
-    const following = next.nextElementSibling;
-    next.remove();
-    next = following;
-  }
-  heading.textContent = "买点概述";
+  const sourceTone=["core","expansion","both","unknown"].includes(row.source_tone)?row.source_tone:"unknown";
+  const financialTone=["verified","risk","unverified"].includes(row.financial_tone)?row.financial_tone:"unverified";
+  const financialTags=Array.isArray(row.financial_tags)&&row.financial_tags.length?row.financial_tags:["财务未查询"];
+  const financialTitle=[row.financial_report_period,row.financial_source].filter(Boolean).join(" · ")||"尚无可用财务快照";
+  const group=(label,content,className="")=>`<div class="signal-tag-group ${className}"><span class="signal-tag-label">${label}</span><div class="signal-tag-values">${content}</div></div>`;
+  const marketHtml=`<span class="market-status-pill market-${marketTone}" title="${esc((market.risk_tags||[]).join(" · ")||"同日市场环境")}">${esc(market.label||"市场状态待确认")} · ${esc(market.tag||"环境待确认")}</span>`;
+  const sectorTone={STRONG:"strong",NEUTRAL:"neutral",BLOCKED:"blocked"}[row.sector_group]||"unknown";
+  const sectorHtml=`<span class="sector-status-pill sector-${sectorTone}">${esc(row.sector_name||"板块待确认")} · ${esc(row.sector_state||"状态待确认")}</span>`;
+  const financialHtml=financialTags.map(tag=>`<span class="signal-financial-pill financial-${financialTone}" title="${esc(financialTitle)}">${esc(tag)}</span>`).join("");
+  const technicalHtml=flags.map(flag=>`<span class="signal-technical-pill">${esc(signalRiskLabel(flag))}</span>`).join("");
+  const factor=`${Math.round(Number(row.environment_factor||0)*100)}%`;
+  const rangeText=values=>Array.isArray(values)&&values.length===2?(Number(values[1])<=0?"观察":Number(values[0])<=0?`≤${vcpNumber(values[1],0)}%`:`${vcpNumber(values[0],0)}%-${vcpNumber(values[1],0)}%`):"—";
+  const breakdown=row.signal_kind==="PLAN"?`若A级触发 ${rangeText(row.plan_position_a)} · 若B级触发 ${rangeText(row.plan_position_b)} · 当前环境系数 ${factor}`:`${row.base_position?`买点基础 ${rangeText(row.base_position)} · `:""}当前环境系数 ${factor}`;
+  const capital=row.capital_support||{};
+  const capitalHtml=`<div class="signal-capital-grid"><article><div class="signal-capital-head"><span>主力资金动向</span>${capitalState(capital.main_order_state,"main")}</div><div class="signal-capital-values"><div><span>最新主力净流入率</span><b>${capitalPct(capital.main_net_inflow_ratio)}</b></div><div><span>近3日主力流入天数</span><b>${capital.main_observation_days_3d?`${capital.main_positive_days_3d}/${capital.main_observation_days_3d}日`:"—"}</b></div></div></article><article><div class="signal-capital-head"><span>融资杠杆动向</span>${capitalState(capital.margin_state,"margin")}</div><div class="signal-capital-values"><div><span>近5日融资余额变化</span><b>${capitalPct(capital.financing_balance_change)}</b></div><div><span>最新融资净买入额</span><b>${capitalAmount(capital.financing_net_buy)}</b></div></div></article></div>`;
   const summary = row.signal_kind === "PLAN"
     ? `${row.plan_reason || "次日买点计划"}，最高潜在${row.setup_quality || "—"}级；仅当上方量价条件同时满足时才转为实际买点。`
     : `${signalTypeLabel(row.setup_signal)}已在当日触发，${row.reason || "请结合上方量价参考与失效位跟踪。"}`;
-  heading.insertAdjacentHTML("afterend", `<p class="signal-summary">${esc(summary)}</p>`);
+  $("signals-detail").innerHTML=`<p class="section-label">买点详情</p><h3>${esc(row.name)} <span class="muted">${esc(row.code)}</span></h3><div class="signal-primary-tags"><span class="status-pill ${actual?"status-triggered":"status-early"}">${status}</span><span class="signal-source-pill source-${sourceTone}">${esc(row.source_label||"来源待确认")}</span></div><div class="signal-detail-tags">${group("市场板块",marketHtml+sectorHtml)}${group("财务提示",financialHtml)}${technicalHtml?group("技术风险",technicalHtml,"signal-tag-technical"):""}</div><div class="signal-market-advice market-${marketTone}"><span>市场板块提示</span><p>${esc(market.advice||"未找到有效的同日市场状态，信号仅按量价事实展示，执行前请先核对市场与板块。")}</p></div><div class="vcp-metrics">${metric("买点类型",esc(signalTypeLabel(row.setup_signal)))}${metric("结构阶段",esc(row.structure_stage||row.model2_stage||"—"))}</div><div class="signal-position-advice ${row.position_status==="ACTIONABLE"||row.position_status==="PLAN_CONDITIONAL"?"position-active":"position-observe"}"><span>${row.signal_kind==="PLAN"?"条件仓位预案":"仓位建议"}</span><b>${esc(row.position_advice||"观察")}</b><p>${esc(breakdown)}</p><small>${esc(row.position_reason||"")}</small></div><h4>${actual?"参考触发条件":"次日触发条件"}</h4>${conditionHtml}<h4>资金验证</h4>${capitalHtml}<h4>量价参考</h4><div class="signal-reference-grid">${metric("当前价格",vcpNumber(row.close,2))}${metric("MA20 / MA60",`${vcpNumber(row.MA20,2)} / ${vcpNumber(row.MA60,2)}`)}${metric("Pivot",vcpNumber(row.pivot_price,2))}${metric("支撑 / 失效",`${vcpNumber(row.support_price,2)} / ${vcpNumber(row.invalid_price,2)}`)}${metric("距 Pivot",`${vcpNumber(row.pivot_distance)}%`)}${metric("距 MA20",`${vcpNumber(row.distance_ma20)}%`)}${metric("当日 / 20日均量",`${vcpVolume(row.volume)} / ${vcpVolume(row.vol_ma20)}`)}${metric("量比 / 缩量系数",`${vcpNumber(row.vol_ratio,2)}x / ${vcpNumber(row.volume_dry_up,2)}x`)}</div><h4>${actual?"买点评分组成":"计划质量"}</h4>${scoreHtml}<h4>买点概述</h4><p class="signal-summary">${esc(summary)}</p>`;
+}
+
+const renderSignalDetailContent = renderSignalDetail;
+renderSignalDetail = function (row) {
+  renderSignalDetailContent(row);
+  if (!row) return;
+  const detail = $("signals-detail"), label = detail.querySelector(".section-label"), tags = detail.querySelector(".signal-primary-tags");
+  if (!label || !tags) return;
+  const topline = document.createElement("div");
+  topline.className = "signal-detail-topline";
+  label.before(topline);
+  topline.append(label, tags);
 };
 
 function renderDetail(row) {

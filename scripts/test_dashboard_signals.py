@@ -12,6 +12,77 @@ from scripts import dashboard_signals
 
 
 class DashboardSignalsMarketNoticeTests(unittest.TestCase):
+    def test_previous_plan_hit_does_not_create_an_independent_trigger(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"; plans = root / "plans"
+            runs.mkdir(); plans.mkdir()
+            quant = {
+                "meta": {"run_date": "2026-08-10", "strategy_version": "test-quant"},
+                "results": [{
+                    "code": "603882", "name": "金域医学", "structure_stage": "VCP_FORMING",
+                    "structure_type": "VCP", "structure_valid": True, "model2_include": True,
+                    "setup_signal": "NONE", "setup_quality": "D", "setup_score": 0,
+                    "post_breakout_state": "POST_BREAKOUT_HOT", "close": 30.95, "volume": 285020,
+                    "structure_risk_flags": ["EXTENDED_FROM_MA20"],
+                }],
+            }
+            (runs / "quant_260810.json").write_text(json.dumps(quant, ensure_ascii=False), encoding="utf-8")
+            event = {
+                "code": "603882", "name": "金域医学", "setup_family": "BREAKOUT",
+                "setup_type": "BREAKOUT_BUY", "entry_action": "NEW", "entry_grade": "REGULAR",
+                "plan_date": "2026-08-07", "plan_target_quality": "A",
+                "entry_model2_setup_signal": "NONE", "model2_setup_quality": "D",
+                "post_breakout_state": "POST_BREAKOUT_HOT", "trigger_price_low": 29.58,
+                "trigger_price_high": 31.63, "volume_min": 75131, "invalid_price": 28.41,
+            }
+            with patch.object(dashboard_signals, "RUNS", runs), patch.object(
+                dashboard_signals, "PLAN_RUNS", plans
+            ), patch.object(dashboard_signals, "realized_events_for_date", return_value=[event]), patch.object(
+                dashboard_signals, "pool_notices", return_value={}
+            ), patch.object(dashboard_signals, "market_notice", return_value={"state": "UNKNOWN"}), patch.object(
+                dashboard_signals, "sector_notices", return_value={}
+            ), patch.object(dashboard_signals, "capital_notices", return_value=({}, 0, [])):
+                result = dashboard_signals.build("260810")
+
+        self.assertEqual(result["summary"]["plan_hits"], 0)
+        self.assertEqual(result["summary"]["triggered"], 0)
+        self.assertEqual(result["signals"], [])
+
+    def test_model2_and_plan_same_trigger_are_deduplicated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"; plans = root / "plans"
+            runs.mkdir(); plans.mkdir()
+            quant = {
+                "meta": {"run_date": "2026-08-10", "strategy_version": "test-quant"},
+                "results": [{
+                    "code": "000001", "name": "测试", "setup_signal": "BREAKOUT_BUY",
+                    "setup_quality": "A", "setup_score": 80, "setup_plan_inputs": {},
+                }],
+            }
+            (runs / "quant_260810.json").write_text(json.dumps(quant), encoding="utf-8")
+            event = {
+                "code": "000001", "setup_type": "BREAKOUT_BUY", "entry_action": "NEW",
+                "entry_grade": "A", "plan_date": "2026-08-07", "plan_target_quality": "A",
+            }
+            with patch.object(dashboard_signals, "RUNS", runs), patch.object(
+                dashboard_signals, "PLAN_RUNS", plans
+            ), patch.object(dashboard_signals, "realized_events_for_date", return_value=[event]), patch.object(
+                dashboard_signals, "pool_notices", return_value={}
+            ), patch.object(dashboard_signals, "market_notice", return_value={"state": "UNKNOWN"}), patch.object(
+                dashboard_signals, "sector_notices", return_value={}
+            ), patch.object(dashboard_signals, "capital_notices", return_value=({}, 0, [])):
+                result = dashboard_signals.build("260810")
+
+        triggered = [row for row in result["signals"] if row["signal_kind"] == "TRIGGERED"]
+        self.assertEqual(len(triggered), 1)
+        self.assertEqual(triggered[0]["signal_source"], "MODEL2_AND_PLAN")
+        self.assertTrue(triggered[0]["previous_plan_hit"])
+        self.assertEqual(triggered[0]["previous_plan_source_date"], "2026-08-07")
+        self.assertNotIn("realized_plan_grade", triggered[0])
+        self.assertEqual(result["summary"]["plan_hits"], 1)
+
     def test_capital_notice_keeps_main_and_margin_independent(self):
         rows = [
             {"trade_date": "2026-08-05", "main_net_inflow": -10.0, "amount": 1000.0, "financing_balance": 100.0},

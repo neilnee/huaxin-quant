@@ -1,7 +1,7 @@
 # 模型二：量价精筛模型（自执行指令）
 
 - **版本管理**: 由 Git 分支与提交历史管理，文件名不再携带版本号
-- **最近更新**: 2026-07-22（model2_quant_v13）
+- **最近更新**: 2026-08-10（model2_quant_v14）
 - **核心目标**: 在模型一基本面候选池中，寻找 VCP 蓄力结构和可交易触发，输出可复现、可回测、可供模型三/四复用的结构化量价结果。
 - **核心哲学**: 基本面先过滤烂公司，模型二只判断资金行为和价格位置。脚本负责确定性计算，LLM 只做可选解释，不参与结构阶段或交易触发判定。
 - **输入**: `pool/pool_<YYMMDD>.csv`，或命令行指定 `--code/--codes`
@@ -375,7 +375,7 @@ TREND_REBUILD
 | `RETEST_BUY` | 突破后回踩确认买点，确认度高于 PULLBACK_BUY |
 
 `setup_signal` 必须建立在 `structure_stage` 之上。它不是独立形态，而是“结构阶段 + 当日量价触发条件”的结果。
-模型二使用四段式买点评分：硬条件只判断买点形态是否成立；`setup_pattern_score` 表示动作分；`setup_score` 是结构基础分、动作分和风险修正后的最终买点分。
+模型二使用四段式买点评分：硬条件只判断买点形态是否成立；`setup_pattern_score` 表示类型分与动作质量分之和；`setup_score` 是买点对应阶段的结构质量、类型分、动作质量和当日风险修正后的最终买点分。Signal Plan 只负责预告条件，不参与评分来源判定。
 
 ```text
 setup_signal = structure_stage + trigger_conditions
@@ -787,7 +787,7 @@ close < open
 买点评分公式：
 
 ```text
-setup_score = stage_base
+setup_score = setup_structure_base
             + action_type_base
             + action_quality_score
             + risk_adjust
@@ -795,12 +795,19 @@ setup_score = stage_base
 
 结构基础分：
 
-| structure_stage | stage_base |
-|-----------------|------------|
-| `VCP_FORMING` | 30 |
-| `VCP_MATURE` | 50 |
-| `VCP_TIGHT` | 60 |
-| `VCP_EARLY` | 不触发买点 |
+```text
+setup_structure_base = clamp(round(setup_structure_score × 0.60), 0, 60)
+```
+
+`setup_structure_score` 不固定读取触发日的当前结构，而按买点生命周期选择时间锚点：
+
+| setup_signal | 结构评分锚点 |
+|--------------|--------------|
+| `PULLBACK_BUY` | 当日仍未突破的当前 VCP |
+| `BREAKOUT_BUY` | 突破日之前最后一个交易日的 VCP |
+| `RETEST_BUY` | 原突破日之前最后一个交易日的 VCP |
+
+突破行为会自然改变位置、缩量和阶段指标，因此突破日及突破后的当前 `structure_score` 只继续描述“今天看到的结构状态”，不得用于反向降低原 VCP 的突破或回踩买点质量。输出必须保留 `setup_structure_score`、`setup_structure_anchor_date`、`setup_action_score` 和评分组件，供回测与 Dashboard 审计。旧数据或独立单元调用无法构造评分锚点时，才允许按 `stage_base` 兼容回退。
 
 买点类型基础分：
 
@@ -810,7 +817,13 @@ setup_score = stage_base
 | `BREAKOUT_BUY` | 10 |
 | `RETEST_BUY` | 15 |
 
-动作质量分为 0-15 分，三类买点分别评分。
+动作质量分为 0-15 分，三类买点分别评分。`PULLBACK_BUY` 和 `BREAKOUT_BUY` 直接使用当日动作质量；`RETEST_BUY` 使用：
+
+```text
+action_quality_score = round(突破动作质量 × 0.40 + 回踩动作质量 × 0.60)
+```
+
+这样回踩质量同时验证原 VCP、突破动作和回踩确认，但不额外扩张总分上限。
 
 `PULLBACK_BUY`：
 
@@ -827,6 +840,8 @@ setup_score = stage_base
 | 突破幅度 | `close / pivot ∈ [1.02, 1.05]` 得 5；`[1.01, 1.02)` 或 `(1.05, 1.08]` 得 2；其他 0 |
 | 量能质量 | `volume > vol_ma20 * 1.5` 得 5；`> 1.2` 得 3；`> 1.0` 得 1；其他 0 |
 | K 线确认 | 收盘接近日高、实体强、无明显上影得 5；站上 pivot 且无长上影得 2；其他 0 |
+
+首次突破日即使生命周期已经被标为 `POST_BREAKOUT_HOT`，只要 `breakout_days = 0`，仍按一次 `BREAKOUT_BUY` 评估；从下一交易日起继续禁止旧结构重复发出突破买点。
 
 `RETEST_BUY`：
 

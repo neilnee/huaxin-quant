@@ -151,6 +151,83 @@ class CloseBasedContractionTests(unittest.TestCase):
         self.assertFalse(result["hit"])
         self.assertIn("禁止旧结构PULLBACK_BUY", result["reason"])
 
+    def test_breakout_score_uses_pre_breakout_structure_anchor(self):
+        structure = {
+            "state": "VCP_FORMING",
+            "setup_score_context": {
+                "BREAKOUT_BUY": {
+                    "structure_score": 89,
+                    "anchor_date": "2026-08-07",
+                    "source": "pre_event_vcp",
+                }
+            },
+        }
+        score, pattern_score, _, _, context = quant.finalize_setup_score(
+            "BREAKOUT_BUY",
+            9,
+            [],
+            [],
+            structure,
+            {"risk_flags": ["EXTENDED_FROM_MA20"], "risk_score": 8},
+        )
+
+        self.assertEqual(score, 67)
+        self.assertEqual(pattern_score, 19)
+        self.assertEqual(quant.setup_quality(score), "B")
+        self.assertEqual(context["setup_structure_score"], 89)
+        self.assertEqual(context["setup_structure_anchor_date"], "2026-08-07")
+        self.assertEqual(context["setup_structure_base"], 53)
+
+    def test_retest_action_score_combines_breakout_and_retest_quality(self):
+        structure = {
+            "state": "VCP_MATURE",
+            "setup_score_context": {
+                "RETEST_BUY": {
+                    "structure_score": 80,
+                    "anchor_date": "2026-07-31",
+                    "source": "pre_event_vcp",
+                    "breakout_action_score": 15,
+                }
+            },
+        }
+        score, _, _, _, context = quant.finalize_setup_score(
+            "RETEST_BUY", 5, [], [], structure, {"risk_flags": [], "risk_score": 0}
+        )
+
+        self.assertEqual(context["setup_action_score"], 9)
+        self.assertEqual(context["setup_current_action_score"], 5)
+        self.assertEqual(context["setup_breakout_action_score"], 15)
+        self.assertEqual(score, 82)
+
+    def test_first_breakout_day_can_emit_breakout_buy_once(self):
+        df = make_frame([98.0] * 79 + [103.0])
+        df.loc[79, ["open", "high", "low", "volume"]] = [100.0, 104.0, 99.0, 220.0]
+        df = quant.calc_indicators(df)
+        structure = {
+            "state": "VCP_MATURE",
+            "structure_valid": True,
+            "structure_pivot": 100.0,
+            "post_breakout_state": "POST_BREAKOUT_HOT",
+            "breakout_days": 0,
+            "setup_score_context": {
+                "BREAKOUT_BUY": {
+                    "structure_score": 85,
+                    "anchor_date": str(df.iloc[-2]["date"]),
+                    "source": "pre_event_vcp",
+                }
+            },
+        }
+        overheat = {"risk_flags": [], "risk_score": 0}
+
+        result = quant.detect_breakout_buy(df, structure, overheat)
+        self.assertTrue(result["hit"])
+        self.assertEqual(result["setup_quality"], "A")
+
+        structure["breakout_days"] = 1
+        repeated = quant.detect_breakout_buy(df, structure, overheat)
+        self.assertFalse(repeated["hit"])
+        self.assertIn("禁止重复BREAKOUT_BUY", repeated["reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

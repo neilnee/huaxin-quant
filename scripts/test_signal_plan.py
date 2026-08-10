@@ -34,6 +34,11 @@ def sample_row(state="PRE_BREAKOUT", signal="NONE"):
                 "volume_threshold": 70000.0,
                 "ideal_volume_max": 55000.0,
                 "invalid_price": 97.0,
+                "days_after_breakout": 1,
+                "min_allowed_days_after_breakout": 1,
+                "standard_min_days_after_breakout": 3,
+                "standard_max_days_after_breakout": 10,
+                "max_allowed_days_after_breakout": 15,
             },
         },
     }
@@ -77,6 +82,28 @@ class SignalPlanLifecycleTests(unittest.TestCase):
     def test_triggered_retest_generates_follow_plan(self):
         plans = plans_for_row(sample_row("POST_BREAKOUT_RETEST", "RETEST_BUY"))
         self.assertEqual([(p["setup_family"], p["plan_action"]) for p in plans], [("RETEST", "FOLLOW")])
+        self.assertEqual(plans[0]["setup_timing"], "FAST")
+        self.assertEqual(plans[0]["target_quality"], "A")
+
+    def test_retest_follow_can_repeat_inside_window(self):
+        candidate = sample_row("POST_BREAKOUT_RETEST", "RETEST_BUY")
+        candidate["setup_plan_inputs"]["retest"]["days_after_breakout"] = 8
+        plans = plans_for_row(candidate)
+        self.assertEqual(len(plans), 1)
+        self.assertEqual(plans[0]["days_after_breakout"], 9)
+        self.assertEqual(plans[0]["setup_timing"], "STANDARD")
+
+    def test_day_ten_follow_is_capped_as_late_window(self):
+        candidate = sample_row("POST_BREAKOUT_RETEST", "RETEST_BUY")
+        candidate["setup_plan_inputs"]["retest"]["days_after_breakout"] = 10
+        plans = plans_for_row(candidate)
+        self.assertEqual(plans[0]["setup_timing"], "LATE")
+        self.assertEqual(plans[0]["target_quality"], "C")
+
+    def test_day_fifteen_does_not_emit_day_sixteen_follow(self):
+        candidate = sample_row("POST_BREAKOUT_RETEST", "RETEST_BUY")
+        candidate["setup_plan_inputs"]["retest"]["days_after_breakout"] = 15
+        self.assertEqual(plans_for_row(candidate), [])
 
     def test_non_retest_post_breakout_states_are_excluded(self):
         for state in (

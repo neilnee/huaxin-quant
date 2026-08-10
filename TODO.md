@@ -346,6 +346,7 @@ for each stock in quant_output where structure_stage in {VCP_MATURE, VCP_TIGHT}:
 
 ## 已完成
 
+- [x] RETEST 生命周期统一：突破日排除，1-2日快速回踩只标记不封顶、3-10日标准回踩、11-15日迟到回踩最高C、超过15日硬截止；窗口内允许连续 RETEST/FOLLOW 机会提示，且不读取或推断持仓
 - [x] Dashboard 技术风险标签中文化并按枚举去重，避免 setup 与 structure 同源风险重复展示
 - [x] Plan 兑现展示收敛：当日买点仅认模型二触发，Plan 不再补造信号或改写 VCP 列表；同类型命中只显示“前日计划命中”，A类/常规分层仅保留在回测审计
 - [x] 模型二买点评分时间锚点统一：PULLBACK 使用当前 VCP，BREAKOUT/RETEST 冻结突破前 VCP；RETEST 联合突破与回踩动作质量，并允许首次突破日正常发出 BREAKOUT_BUY

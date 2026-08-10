@@ -1095,6 +1095,26 @@ def setup_quality(score):
     return "D"
 
 
+def weaker_quality_cap(*caps):
+    valid = [cap for cap in caps if cap and cap in "ABCD"]
+    return max(valid, key="ABCD".index) if valid else None
+
+
+def classify_retest_timing(days_after, cfg=None):
+    cfg = cfg or SETUP_CFG["retest_buy"]
+    min_allowed = int(cfg.get("min_allowed_days_after_breakout", 1))
+    standard_min = int(cfg.get("standard_min_days_after_breakout", cfg.get("min_days_after_breakout", 3)))
+    standard_max = int(cfg.get("standard_max_days_after_breakout", cfg.get("max_days_after_breakout", 10)))
+    max_allowed = int(cfg.get("max_allowed_days_after_breakout", standard_max))
+    if days_after < min_allowed or days_after > max_allowed:
+        return "OUTSIDE", None
+    if days_after < standard_min:
+        return "FAST", None
+    if days_after <= standard_max:
+        return "STANDARD", None
+    return "LATE", "C"
+
+
 def setup_hard_reject(overheat, cfg):
     hard_flags = set(cfg.get("hard_risk_flags", []))
     return any(flag in overheat["risk_flags"] for flag in hard_flags)
@@ -1702,6 +1722,7 @@ def detect_retest_buy(df, structure, overheat, code=None):
         return base_setup_result(False, "近期无有效突破")
 
     days_after = len(df) - breakout["idx"] - 1
+    setup_timing, timing_quality_cap = classify_retest_timing(days_after, cfg)
     ma10 = safe_float(latest.get("MA10"))
     plan_inputs = {
         "allowed": True,
@@ -1719,16 +1740,19 @@ def detect_retest_buy(df, structure, overheat, code=None):
         "ideal_volume_max": breakout["volume"] * 0.70,
         "confirm_price": max(breakout["level"], ma10) if ma10 is not None else breakout["level"],
         "invalid_price": breakout["level"] * cfg["invalid_support_ratio"],
-        "min_days_after_breakout": cfg["min_days_after_breakout"],
-        "max_days_after_breakout": cfg["max_days_after_breakout"],
-        "max_allowed_days_after_breakout": cfg.get("max_allowed_days_after_breakout", cfg["max_days_after_breakout"]),
+        "setup_timing": setup_timing,
+        "min_allowed_days_after_breakout": cfg.get("min_allowed_days_after_breakout", 1),
+        "standard_min_days_after_breakout": cfg.get("standard_min_days_after_breakout", cfg.get("min_days_after_breakout", 3)),
+        "standard_max_days_after_breakout": cfg.get("standard_max_days_after_breakout", cfg.get("max_days_after_breakout", 10)),
+        "max_allowed_days_after_breakout": cfg.get("max_allowed_days_after_breakout", cfg.get("standard_max_days_after_breakout", cfg.get("max_days_after_breakout", 10))),
         "blocked_risk_flags": cfg["blocked_risk_flags"],
         "structure_volume_alignment": volume_alignment,
     }
-    if days_after < 1 or days_after > cfg.get("max_allowed_days_after_breakout", cfg["max_days_after_breakout"]):
+    if setup_timing == "OUTSIDE":
         return base_setup_result(
             False,
             "突破后天数不在允许范围",
+            setup_timing=setup_timing,
             breakout_level=breakout["level"],
             plan_inputs=plan_inputs,
         )
@@ -1773,7 +1797,14 @@ def detect_retest_buy(df, structure, overheat, code=None):
     score, pattern_score, reasons, misses, score_context = finalize_setup_score(
         "RETEST_BUY", action_quality_score, reasons, misses, structure, overheat
     )
-    quality_cap = "B" if volume_alignment == "CAUTION" else None
+    volume_quality_cap = "B" if volume_alignment == "CAUTION" else None
+    quality_cap = weaker_quality_cap(volume_quality_cap, timing_quality_cap)
+    timing_labels = {
+        "FAST": f"快速回踩窗口（突破后第{days_after}日）",
+        "STANDARD": f"标准回踩窗口（突破后第{days_after}日）",
+        "LATE": f"迟到回踩窗口（突破后第{days_after}日，质量最高C）",
+    }
+    reasons.append(timing_labels[setup_timing])
     hit = all(hard_conditions) and score >= cfg["min_setup_score"]
     if pullback_low < breakout["level"] * cfg["max_pullback_below_breakout_ratio"]:
         misses.append("回踩有效跌破突破位")
@@ -1804,6 +1835,7 @@ def detect_retest_buy(df, structure, overheat, code=None):
         quality_cap=quality_cap,
         hard_block=selling_blocked,
         setup_risk_flags=["FAILED_RETEST_SELLING"] if selling_blocked else [],
+        setup_timing=setup_timing,
         structure_volume_alignment=volume_alignment,
         breakout_level=breakout["level"],
         support_price=breakout["level"],
@@ -2060,6 +2092,7 @@ def screen(df, code=None):
             "setup_reasons": [],
             "setup_misses": ["数据不足"],
             "setup_risk_flags": [],
+            "setup_timing": "",
             "structure_volume_alignment": "",
             "support_price": None, "invalid_price": None, "breakout_level": None,
             "reason": f"MA20=NaN，仅{len(df)}个有效交易日", "structure_risk_flags": [],
@@ -2145,6 +2178,7 @@ def screen(df, code=None):
         "setup_reasons": setup_detail.get("setup_reasons", []),
         "setup_misses": setup_detail.get("setup_misses", []),
         "setup_risk_flags": setup_detail.get("setup_risk_flags", []),
+        "setup_timing": setup_detail.get("setup_timing", ""),
         "structure_volume_alignment": setup_detail.get("structure_volume_alignment", ""),
         "support_price": round_or_none(support),
         "invalid_price": round_or_none(invalid),
@@ -2191,7 +2225,7 @@ CSV_COLUMNS = [
     "action_hint", "suggested_position", "model2_include", "structure_score", "structure_risk_score",
     "setup_pattern_score", "setup_score", "setup_quality", "setup_structure_score", "setup_structure_anchor_date",
     "setup_structure_base", "setup_action_score", "setup_current_action_score", "setup_breakout_action_score", "setup_score_components",
-    "setup_reasons", "setup_misses", "setup_risk_flags", "structure_volume_alignment",
+    "setup_reasons", "setup_misses", "setup_risk_flags", "setup_timing", "structure_volume_alignment",
     "structure_risk_flags", "support_price", "invalid_price", "breakout_level",
     "contraction_count", "contraction_pcts", "contraction_days", "volume_pattern",
     "pivot_price", "structure_pivot", "market_pivot", "pivot_distance", "last_contraction_low",
@@ -2277,6 +2311,7 @@ def write_csv(results, quant_path):
                 ";".join(r["setup_reasons"]),
                 ";".join(r["setup_misses"]),
                 ";".join(r.get("setup_risk_flags", [])),
+                r.get("setup_timing", ""),
                 r.get("structure_volume_alignment", ""),
                 ";".join(r["structure_risk_flags"]),
                 r["support_price"] if r["support_price"] is not None else "",

@@ -68,13 +68,13 @@
 .signal-position-advice.position-observe { border-left-color: #7b6735; }
 .signal-detail-topline { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; }
 .signal-detail-topline .section-label { min-width: 0; padding-top: 0; }
-.signal-primary-tags { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 0; align-items: center; margin: 0; }
+.signal-primary-tags { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 10px; align-items: center; margin: 0; }
 .signal-detail-topline .status-pill,
 .signal-detail-topline .signal-source-pill { padding: 0; border: 0; border-radius: 0; background: transparent; font-size: 11px; line-height: 1.5; }
 .signal-detail-topline .status-pill.status-early { color: #f0d895; }
 .signal-detail-topline .status-pill.status-triggered { color: #ff9da3; }
 .signal-detail-topline .status-pill::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: currentColor; vertical-align: 1px; }
-.signal-detail-topline .signal-source-pill { margin-left: 10px; padding-left: 10px; border-left: 1px solid var(--line); font-weight: 600; }
+.signal-detail-topline .signal-source-pill { margin-left: 0; padding-left: 10px; border-left: 1px solid var(--line); font-weight: 600; }
 .sector-status-pill { display: inline-block; padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; font-size: 11px; font-weight: 700; }
 .sector-status-pill.sector-strong { border-color: #7257a7; background: #302548; color: #d8c3ff; }
 .sector-status-pill.sector-neutral { border-color: #5a5672; background: #2a2938; color: #bbb7d2; }

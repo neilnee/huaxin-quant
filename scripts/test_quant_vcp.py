@@ -106,6 +106,26 @@ class CloseBasedContractionTests(unittest.TestCase):
         result = quant.base_setup_result(True, "test", score=85, quality_cap="B")
         self.assertEqual(result["setup_quality"], "B")
 
+    def test_retest_timing_has_no_minimum_wait_but_has_hard_maximum(self):
+        expected = {
+            0: ("OUTSIDE", None),
+            1: ("FAST", None),
+            2: ("FAST", None),
+            3: ("STANDARD", None),
+            10: ("STANDARD", None),
+            11: ("LATE", "C"),
+            15: ("LATE", "C"),
+            16: ("OUTSIDE", None),
+        }
+        for days_after, result in expected.items():
+            with self.subTest(days_after=days_after):
+                self.assertEqual(quant.classify_retest_timing(days_after), result)
+
+    def test_late_timing_cap_is_weaker_than_mixed_volume_cap(self):
+        self.assertEqual(quant.weaker_quality_cap("B", "C"), "C")
+        self.assertEqual(quant.weaker_quality_cap("B", None), "B")
+        self.assertIsNone(quant.weaker_quality_cap(None, None))
+
     def test_failed_structure_volume_blocks_retest_before_buy_point_scoring(self):
         df = make_frame([100.0] * 70)
         df.loc[60, ["open", "high", "low", "close", "volume"]] = [100.0, 106.0, 100.0, 105.0, 200.0]

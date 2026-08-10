@@ -200,6 +200,38 @@ class CapitalDataTests(unittest.TestCase):
         conn.close()
         self.assertEqual(payload["financing_balance"], 20_000.0)
 
+    def test_contract_accepts_equivalent_label_when_source_id_changes(self):
+        service = self.service()
+        service._save_contracts("stock", "000001", {
+            ("000001", "main_net_inflow"): {
+                "source_field_code": "old_interval_id",
+                "source_field_name": "(区间)主力净流入资金",
+            }
+        })
+        error = service._contract_error("stock", "000001", {
+            ("000001", "main_net_inflow"): {
+                "source_field_code": "new_daily_id",
+                "source_field_name": "主力净流入资金",
+            }
+        })
+        self.assertIsNone(error)
+
+    def test_contract_rejects_id_change_with_different_semantics(self):
+        service = self.service()
+        service._save_contracts("stock", "000001", {
+            ("000001", "main_net_inflow"): {
+                "source_field_code": "old_main_id",
+                "source_field_name": "主力净流入资金",
+            }
+        })
+        error = service._contract_error("stock", "000001", {
+            ("000001", "main_net_inflow"): {
+                "source_field_code": "wrong_margin_id",
+                "source_field_name": "融资余额",
+            }
+        })
+        self.assertIn("字段语义契约变化", error)
+
 
 if __name__ == "__main__":
     unittest.main()

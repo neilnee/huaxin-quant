@@ -116,6 +116,8 @@ def _step_label(step):
         "quant": "模型二 Quant",
         "bloom": "Bloom 信号",
         "signal_plan": "Signal Plan",
+        "signal_fundamentals": "信号财务提示",
+        "capital_observer": "当天完整资金观测",
         "dashboard": "数据分析面板",
         "verify": "产物完整性核验",
         "open_dashboard": "打开数据分析面板",
@@ -142,7 +144,7 @@ def _build_progress_markdown(progress):
         "|------|------|------|",
     ]
 
-    for key in ("data_update", "pool", "quant", "bloom", "signal_plan", "dashboard", "verify", "open_dashboard", "zixuan"):
+    for key in ("data_update", "pool", "quant", "bloom", "signal_plan", "signal_fundamentals", "capital_observer", "dashboard", "verify", "open_dashboard", "zixuan"):
         step = steps.get(key, {})
         status = step.get("status", "waiting")
         icon = _status_icon(status)

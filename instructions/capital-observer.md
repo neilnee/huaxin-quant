@@ -52,6 +52,18 @@ python3 scripts/capital_observer.py run --date 2026-08-07 --fetch --max-mx-reque
 python3 scripts/capital_observer.py publish-dashboard
 ```
 
+## 每日工作流
+
+`scripts/daily.py` 必须在共享市场数据更新完成后、回测与 Dashboard 汇总发布前执行当天完整资金观测：
+
+```bash
+python3 scripts/capital_observer.py run --date <YYYY-MM-DD> --fetch
+```
+
+该步骤使用策略配置中的默认请求预算，覆盖当天申万二级成交额迁移候选、可映射板块主力资金，以及全部候选行业前 5 只核心股的主力与融资资金。达到预算或部分数据源失败时允许输出 `partial`，但必须写出同日 `capital_observer_<YYMMDD>.json|md` 和 `capital_context_<YYMMDD>.js`，并在元数据中保留请求数与错误；脚本异常、当日产物缺失、`fetch_enabled=false` 或 Dashboard 资金日期索引缺失必须阻断每日完整性核验。
+
+信号发现页的当日触发股与 Signal Plan 股票不以资金观测候选行业为限，由 `dashboard_signals.py --fetch-capital` 使用独立小额预算按代码去重补查。完整资金观测与信号股补查必须同时执行，前者不能替代后者。
+
 ## 输出与展示
 
 ```text

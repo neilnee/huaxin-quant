@@ -18,6 +18,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from scripts.shared import PROJECT_ROOT, default_pipeline_date
 from scripts.strategy_config import load_strategy_config
+from scripts.capital_observer import CONFIG as CAPITAL_CONFIG, classify_stock_capital
+from scripts.data.capital_data_store import DB_PATH as CAPITAL_DB
+from scripts.plan_realization import plan_hit_grade, realized_plan_event, structure_anchor
 
 
 ROOT = Path(PROJECT_ROOT)
@@ -26,18 +29,27 @@ PLAN_DIR = ROOT / "signal_plan"
 MARKET_CONTEXT_DIR = ROOT / "market" / "data"
 MARKET_REPORT_DIR = ROOT / "market"
 MARKET_DB = ROOT / "cache" / "market_data" / "market_data.sqlite"
+MARKET_STATE_DB = ROOT / "cache" / "market_regime" / "market_regime.sqlite"
 CORPORATE_ACTION_CACHE_DIR = ROOT / "cache" / "market_data" / "corporate_actions"
 OUTPUT_DIR = ROOT / "backtest"
 DASHBOARD_DATA_DIR = ROOT / "dashboard" / "data"
 
 CONFIG, CONFIG_PATH = load_strategy_config("backtest.json")
-SETUP_FAMILIES = set(CONFIG["event_rules"]["setup_families"])
-FAILED_LIFECYCLE_STATES = set(CONFIG["event_rules"]["failed_lifecycle_states"])
 HORIZONS = [int(value) for value in CONFIG["evaluation"]["horizons"]]
 WINDOW_MIN = int(CONFIG["evaluation"]["window_min_days"])
 WINDOW_MAX = int(CONFIG["evaluation"]["window_max_days"])
+DEFAULT_SAMPLE_WINDOW = str(CONFIG["evaluation"]["default_sample_window"])
+SAMPLE_WINDOWS = CONFIG["evaluation"]["sample_windows"]
+DEFAULT_SAMPLE_WINDOW_LABEL = next(
+    window["label"] for window in SAMPLE_WINDOWS if window["id"] == DEFAULT_SAMPLE_WINDOW
+)
 WIN_THRESHOLD = float(CONFIG["evaluation"]["win_return_threshold_pct"])
 BREAKOUT_PIVOT_RATIO = float(CONFIG["evaluation"]["breakout_pivot_ratio"])
+CONDITION_CONFIG = CONFIG["condition_evaluation"]
+CAPITAL_OBSERVATION_START = str(CONDITION_CONFIG["capital_observation_start_date"])
+CAPITAL_LOOKBACK = int(CONDITION_CONFIG["capital_lookback_trade_days"])
+SAMPLE_THRESHOLDS = CONDITION_CONFIG["sample_thresholds"]
+CONDITIONS = CONDITION_CONFIG["conditions"]
 _CORPORATE_ACTION_SOURCE = None
 
 
@@ -64,68 +76,12 @@ def load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def structure_anchor(row: dict) -> str:
-    group = row.get("contraction_group") or []
-    if group and isinstance(group[0], dict) and group[0].get("start_date"):
-        return str(group[0]["start_date"])
-    contractions = row.get("contractions") or []
-    if contractions and isinstance(contractions[-1], dict) and contractions[-1].get("start_date"):
-        return str(contractions[-1]["start_date"])
-    return str(row.get("structure_breakout_date") or "unanchored")
-
-
 def safe_float(value) -> float | None:
     try:
         number = None if value in (None, "") else float(value)
         return number if number is not None and math.isfinite(number) else None
     except (TypeError, ValueError):
         return None
-
-
-def normalize_bool(value) -> bool:
-    if isinstance(value, bool):
-        return value
-    return value in ("True", "true", "TRUE", "1", 1)
-
-
-def value_in_range(value: float, low, high) -> bool:
-    low_value = safe_float(low)
-    high_value = safe_float(high)
-    return (low_value is None or value >= low_value) and (high_value is None or value <= high_value)
-
-
-def plan_hit_grade(plan: dict, actual: dict) -> str | None:
-    """Classify a next-session close as one mutually exclusive Plan grade."""
-    family = str(plan.get("setup_family") or "").upper()
-    close = safe_float(actual.get("close"))
-    volume = safe_float(actual.get("volume"))
-    if family not in SETUP_FAMILIES or close is None or volume is None:
-        return None
-    invalid = safe_float(plan.get("invalid_price"))
-    if invalid is not None and close <= invalid:
-        return None
-    if not value_in_range(close, plan.get("trigger_price_low"), plan.get("trigger_price_high")):
-        return None
-    if family == "BREAKOUT":
-        ordinary_limit = safe_float(plan.get("volume_min"))
-        ordinary_volume_ok = ordinary_limit is not None and volume >= ordinary_limit
-        ideal_limit = safe_float(plan.get("ideal_volume_min"))
-        ideal_volume_ok = ideal_limit is not None and volume >= ideal_limit
-    else:
-        ordinary_limit = safe_float(plan.get("volume_max"))
-        ordinary_volume_ok = ordinary_limit is not None and volume <= ordinary_limit
-        ideal_limit = safe_float(plan.get("ideal_volume_max"))
-        ideal_volume_ok = ideal_limit is not None and volume <= ideal_limit
-    if not ordinary_volume_ok:
-        return None
-    ideal_price_ok = (
-        safe_float(plan.get("ideal_price_low")) is not None
-        and safe_float(plan.get("ideal_price_high")) is not None
-        and value_in_range(close, plan.get("ideal_price_low"), plan.get("ideal_price_high"))
-    )
-    if plan.get("target_quality") == "A" and ideal_price_ok and ideal_volume_ok:
-        return "A"
-    return "REGULAR"
 
 
 def quant_rows(date_value: str) -> tuple[dict, dict[str, dict]]:
@@ -139,64 +95,6 @@ def quant_rows(date_value: str) -> tuple[dict, dict[str, dict]]:
         if str(row.get("code") or "").strip("0")
     }
     return payload, rows
-
-
-def same_structure(plan: dict, actual: dict, source: dict | None = None) -> tuple[bool, str]:
-    expected = str(plan.get("structure_anchor") or structure_anchor(source or {}))
-    actual_anchor = structure_anchor(actual)
-    return expected == actual_anchor, expected
-
-
-def realized_plan_event(plan: dict, actual: dict, source: dict | None, plan_date: str, entry_date: str, strategy_version: str) -> dict | None:
-    family = str(plan.get("setup_family") or "").upper()
-    action = str(plan.get("plan_action") or "").upper()
-    grade = plan_hit_grade(plan, actual)
-    structure_matches, anchor = same_structure(plan, actual, source)
-    if grade is None or not structure_matches or family not in SETUP_FAMILIES or action not in {"NEW", "FOLLOW"}:
-        return None
-    if not normalize_bool(actual.get("model2_include")):
-        return None
-    if not normalize_bool(actual.get("structure_valid")) or actual.get("structure_type") != "VCP":
-        return None
-    lifecycle = str(actual.get("post_breakout_state") or "PRE_BREAKOUT")
-    if lifecycle in FAILED_LIFECYCLE_STATES:
-        return None
-    if family == "PULLBACK" and lifecycle != "PRE_BREAKOUT":
-        return None
-    pivot = (
-        (plan.get("formula_ref") or {}).get("pivot")
-        or actual.get("structure_pivot")
-        or actual.get("pivot_price")
-    )
-    return {
-        "event_type": "BUY_POINT",
-        "plan_date": plan_date,
-        "plan_date_yy": date_yy(plan_date),
-        "entry_date": entry_date,
-        "entry_date_yy": date_yy(entry_date),
-        "signal_date": entry_date,
-        "signal_date_yy": date_yy(entry_date),
-        "code": str(actual.get("code") or plan.get("code") or "").zfill(6),
-        "name": actual.get("name") or plan.get("name") or plan.get("code"),
-        "structure_anchor": anchor,
-        "setup_family": family,
-        "setup_type": f"{family}_BUY",
-        "entry_action": action,
-        "entry_grade": grade,
-        "plan_target_quality": plan.get("target_quality") or "",
-        "maturity_stage": plan.get("model2_stage") or (source or {}).get("structure_stage") or "NONE",
-        "entry_structure_stage": actual.get("structure_stage") or "NONE",
-        "model2_setup_quality": actual.get("setup_quality") or "",
-        "entry_model2_setup_signal": actual.get("setup_signal") or "NONE",
-        "post_breakout_state": actual.get("post_breakout_state") or "PRE_BREAKOUT",
-        "signal_close_snapshot": actual.get("close"),
-        "entry_volume": actual.get("volume"),
-        "structure_pivot": pivot,
-        "structure_score": plan.get("structure_score"),
-        "structure_risk_score": plan.get("structure_risk_score"),
-        "plan_strategy_version": plan.get("strategy_version") or "",
-        "quant_strategy_version": strategy_version,
-    }
 
 
 def discover_events(report_date_yy: str, calendar: list[str]) -> list[dict]:
@@ -370,7 +268,7 @@ def breakout_performance(
     return {"breakout_time": None, "breakout_date": None, "breakout_days": None, "breakout_return": None}
 
 
-def load_signal_environment(conn: sqlite3.Connection, event: dict) -> dict:
+def load_signal_environment(conn: sqlite3.Connection, event: dict, state_conn: sqlite3.Connection | None = None) -> dict:
     """Load the environment on the actual entry date (signal_date compatibility alias)."""
     date = event["signal_date"]
     yy = event["signal_date_yy"]
@@ -383,31 +281,126 @@ def load_signal_environment(conn: sqlite3.Connection, event: dict) -> dict:
     market_label = market_state.get("label") or "环境待确认"
 
     row = conn.execute(
-        """SELECT id.industry_name
+        """SELECT si.snapshot_date,id.industry_name
              FROM stock_industries si LEFT JOIN industry_definitions id
                ON id.snapshot_date=si.snapshot_date AND id.industry_system='sw'
               AND id.industry_code=substr(si.sw_industry_code,1,5)
-            WHERE si.snapshot_date=? AND si.code=?""",
-        (date, event["code"]),
+            WHERE si.code=?
+            ORDER BY CASE
+                       WHEN si.snapshot_date=? THEN 0
+                       WHEN si.snapshot_date<? THEN 1
+                       ELSE 2
+                     END,
+                     CASE WHEN si.snapshot_date<=? THEN si.snapshot_date END DESC,
+                     CASE WHEN si.snapshot_date>? THEN si.snapshot_date END ASC
+            LIMIT 1""",
+        (event["code"], date, date, date, date),
     ).fetchone()
-    industry = row[0] if row and row[0] else ""
+    membership_date = row[0] if row else None
+    industry = row[1] if row and row[1] else ""
+    membership_basis = (
+        "point_in_time" if membership_date == date else
+        "prior_snapshot" if membership_date and membership_date < date else
+        "earliest_available_backfill" if membership_date else
+        "unavailable"
+    )
     sector_state = "环境待确认"
+    sector_state_source = "unavailable"
+    sector_history_basis = None
     if industry:
-        for sector in context.get("sector_rankings", {}).get("industry_sw_l2", []):
-            if sector.get("block_name") == industry:
-                sector_state = sector.get("sector_state") or sector_state
-                break
+        state_row = state_conn.execute(
+            """SELECT sector_state,history_basis FROM sector_daily_metrics
+               WHERE trade_date=? AND block_kind='industry_sw_l2' AND block_name=?""",
+            (date, industry),
+        ).fetchone() if state_conn is not None else None
+        if state_row:
+            sector_state = state_row[0] or sector_state
+            sector_history_basis = state_row[1]
+            sector_state_source = "market_regime.sqlite"
+        else:
+            for sector in context.get("sector_rankings", {}).get("industry_sw_l2", []):
+                if sector.get("block_name") == industry:
+                    sector_state = sector.get("sector_state") or sector_state
+                    sector_history_basis = sector.get("history_basis")
+                    sector_state_source = "market_context"
+                    break
     return {
         "market_state": market_code,
         "market_state_label": market_label,
         "sector_name": industry or "行业待确认",
         "sector_state": sector_state,
+        "sector_membership_date": membership_date,
+        "sector_membership_basis": membership_basis,
+        "sector_state_source": sector_state_source,
+        "sector_history_basis": sector_history_basis,
+    }
+
+
+def missing_capital_support(observation_date: str, status: str = "unavailable") -> dict:
+    return {
+        "observation_date": observation_date,
+        "observation_start_date": CAPITAL_OBSERVATION_START,
+        "status": status,
+        "main_order_state": "INSUFFICIENT",
+        "main_net_inflow_ratio": None,
+        "main_positive_days_3d": 0,
+        "main_observation_days_3d": 0,
+        "main_data_date": None,
+        "margin_state": "INSUFFICIENT",
+        "financing_balance_change": None,
+        "financing_net_buy": None,
+        "margin_data_date": None,
+        "source": "capital_data.sqlite",
+        "strategy_version": CAPITAL_CONFIG["strategy_version"],
+    }
+
+
+def load_plan_capital(conn: sqlite3.Connection | None, event: dict) -> dict:
+    """Classify cached stock capital using only facts available through Plan date."""
+    observation_date = str(event.get("plan_date") or "")
+    if observation_date < CAPITAL_OBSERVATION_START:
+        return missing_capital_support(observation_date, "before_observation_start")
+    if conn is None:
+        return missing_capital_support(observation_date)
+    rows = conn.execute(
+        """SELECT trade_date,metrics_json FROM stock_capital
+           WHERE code=? AND trade_date<=?
+           ORDER BY trade_date DESC LIMIT ?""",
+        (event["code"], observation_date, CAPITAL_LOOKBACK),
+    ).fetchall()
+    history = [
+        {"trade_date": row[0], **json.loads(row[1])}
+        for row in reversed(rows)
+    ]
+    if not history:
+        return missing_capital_support(observation_date)
+    result = classify_stock_capital({"amount": None, "amount_ratio_20d": None}, history)
+    valid_main = [row for row in history if row.get("main_net_inflow") is not None]
+    main_available = result["main_order_state"] != "INSUFFICIENT"
+    margin_available = result["margin_state"] != "INSUFFICIENT"
+    return {
+        "observation_date": observation_date,
+        "observation_start_date": CAPITAL_OBSERVATION_START,
+        "status": "complete" if main_available and margin_available else "partial" if main_available else "unavailable",
+        "main_order_state": result["main_order_state"],
+        "main_net_inflow_ratio": result["main_net_inflow_ratio"],
+        "main_positive_days_3d": sum(float(row["main_net_inflow"]) > 0 for row in valid_main[-3:]),
+        "main_observation_days_3d": len(valid_main[-3:]),
+        "main_data_date": result["main_data_date"],
+        "margin_state": result["margin_state"],
+        "financing_balance_change": result["financing_balance_change"],
+        "financing_net_buy": result["financing_net_buy"],
+        "margin_data_date": result["margin_data_date"],
+        "source": "capital_data.sqlite",
+        "strategy_version": CAPITAL_CONFIG["strategy_version"],
     }
 
 
 def add_performance(events: list[dict], report_date_yy: str) -> list[dict]:
     report_date = iso_date(report_date_yy)
     conn = sqlite3.connect(MARKET_DB)
+    capital_conn = sqlite3.connect(CAPITAL_DB) if CAPITAL_DB.exists() else None
+    state_conn = sqlite3.connect(MARKET_STATE_DB) if MARKET_STATE_DB.exists() else None
     try:
         calendar = trading_calendar(conn, report_date)
         index = {value: idx for idx, value in enumerate(calendar)}
@@ -420,7 +413,7 @@ def add_performance(events: list[dict], report_date_yy: str) -> list[dict]:
         result = []
         for event in eligible:
             age = index[report_date] - index[event["signal_date"]]
-            if age < WINDOW_MIN or age > WINDOW_MAX:
+            if age < WINDOW_MIN:
                 continue
             prices = bars.get(event["code"], {})
             signal_close = prices.get(event["signal_date"])
@@ -440,11 +433,12 @@ def add_performance(events: list[dict], report_date_yy: str) -> list[dict]:
                         target_value, _ = holding_period_value(event["signal_date"], target, target_close, actions)
                         value = round((target_value / signal_close - 1) * 100, 3)
                 performance[f"return_{horizon}d"] = value
-            report_close = price_on_or_before(prices, report_date, event["signal_date"])
+            observation_end_date = calendar[min(index[report_date], index[event["signal_date"]] + WINDOW_MAX)]
+            report_close = price_on_or_before(prices, observation_end_date, event["signal_date"])
             report_value = None
             applied_actions = []
             if report_close is not None:
-                report_value, applied_actions = holding_period_value(event["signal_date"], report_date, report_close, actions)
+                report_value, applied_actions = holding_period_value(event["signal_date"], observation_end_date, report_close, actions)
             breakout = breakout_performance(
                 event,
                 prices,
@@ -453,10 +447,16 @@ def add_performance(events: list[dict], report_date_yy: str) -> list[dict]:
                 index[report_date],
                 actions,
             )
+            capital = load_plan_capital(capital_conn, event)
             result.append({
                 **event,
-                **load_signal_environment(conn, event),
+                **load_signal_environment(conn, event, state_conn),
+                "capital_support": capital,
+                "main_order_state": capital["main_order_state"],
+                "margin_state": capital["margin_state"],
                 "age_days": age,
+                "observation_age_days": min(age, WINDOW_MAX),
+                "observation_end_date": observation_end_date,
                 "signal_close": round(signal_close, 3) if signal_close is not None else None,
                 "report_close": round(report_close, 3) if report_close is not None else None,
                 "report_value_adjusted": round(report_value, 3) if report_value is not None else None,
@@ -467,6 +467,10 @@ def add_performance(events: list[dict], report_date_yy: str) -> list[dict]:
             })
         return sorted(result, key=lambda item: (item["signal_date"], item["code"], item["event_type"]), reverse=True)
     finally:
+        if capital_conn is not None:
+            capital_conn.close()
+        if state_conn is not None:
+            state_conn.close()
         conn.close()
 
 
@@ -476,8 +480,10 @@ def horizon_stats(rows: list[dict]) -> dict:
         values = [float(row[f"return_{horizon}d"]) for row in rows if row.get(f"return_{horizon}d") is not None]
         result[str(horizon)] = {
             "samples": len(values),
+            "winners": sum(value > WIN_THRESHOLD for value in values),
             "win_rate": round(sum(value > WIN_THRESHOLD for value in values) / len(values) * 100, 1) if values else None,
             "avg_return": round(statistics.fmean(values), 3) if values else None,
+            "median_return": round(statistics.median(values), 3) if values else None,
         }
     return result
 
@@ -492,13 +498,134 @@ def grouped_stats(rows: list[dict], field: str) -> list[dict]:
     ]
 
 
+def condition_matches(value, condition: dict) -> bool:
+    values = condition.get("values", [])
+    operator = condition.get("operator")
+    if operator == "in":
+        return value in values
+    if operator == "not_in":
+        return value not in values
+    raise ValueError(f"未知条件操作符: {operator}")
+
+
+def condition_sample_status(samples: int) -> str:
+    if samples < int(SAMPLE_THRESHOLDS["preliminary"]):
+        return "INSUFFICIENT"
+    if samples < int(SAMPLE_THRESHOLDS["stable"]):
+        return "PRELIMINARY"
+    return "STABILITY_WATCH"
+
+
+def condition_horizon(rows: list[dict], condition: dict, horizon: int) -> dict:
+    field = condition["field"]
+    unavailable = set(condition.get("unavailable_values", []))
+    baseline_values = set(condition.get("baseline_values", []))
+    weak_values = set(condition.get("weak_values", []))
+    matured = [row for row in rows if row.get(f"return_{horizon}d") is not None]
+    available = [row for row in matured if row.get(field) not in (None, "") and row.get(field) not in unavailable]
+    baseline = [row for row in available if not baseline_values or row.get(field) in baseline_values]
+    retained = [row for row in baseline if condition_matches(row.get(field), condition)]
+    excluded = [row for row in baseline if not condition_matches(row.get(field), condition)]
+    weak = [row for row in available if row.get(field) in weak_values]
+    baseline_stats = horizon_stats(baseline)[str(horizon)]
+    retained_stats = horizon_stats(retained)[str(horizon)]
+    excluded_stats = horizon_stats(excluded)[str(horizon)]
+    weak_stats = horizon_stats(weak)[str(horizon)]
+    baseline_winners = baseline_stats["winners"]
+    excluded_winners = excluded_stats["winners"]
+    return {
+        "baseline_samples": len(baseline),
+        "retained_samples": len(retained),
+        "excluded_samples": len(excluded),
+        "weak_samples": len(weak),
+        "unavailable_samples": len(matured) - len(baseline) - len(weak),
+        "retention_rate": round(len(retained) / len(baseline) * 100, 1) if baseline else None,
+        "baseline_win_rate": baseline_stats["win_rate"],
+        "retained_win_rate": retained_stats["win_rate"],
+        "win_rate_lift": round(retained_stats["win_rate"] - baseline_stats["win_rate"], 1) if retained_stats["win_rate"] is not None and baseline_stats["win_rate"] is not None else None,
+        "baseline_avg_return": baseline_stats["avg_return"],
+        "retained_avg_return": retained_stats["avg_return"],
+        "avg_return_lift": round(retained_stats["avg_return"] - baseline_stats["avg_return"], 3) if retained_stats["avg_return"] is not None and baseline_stats["avg_return"] is not None else None,
+        "retained_median_return": retained_stats["median_return"],
+        "excluded_avg_return": excluded_stats["avg_return"],
+        "neutral_avg_return": excluded_stats["avg_return"],
+        "weak_avg_return": weak_stats["avg_return"],
+        "missed_winners": excluded_winners,
+        "missed_winner_rate": round(excluded_winners / baseline_winners * 100, 1) if baseline_winners else None,
+        "sample_status": condition_sample_status(len(retained)),
+    }
+
+
+def evaluate_conditions(rows: list[dict]) -> list[dict]:
+    result = []
+    for condition in CONDITIONS:
+        result.append({
+            "condition_id": condition["id"],
+            "category": condition["category"],
+            "label": condition["label"],
+            "field": condition["field"],
+            "operator": condition["operator"],
+            "values": condition["values"],
+            "horizons": {
+                str(horizon): condition_horizon(rows, condition, horizon)
+                for horizon in HORIZONS
+            },
+        })
+    return result
+
+
+def build_analysis_profile(rows: list[dict], setup_family: str) -> dict:
+    selected = rows if setup_family == "ALL" else [row for row in rows if row.get("setup_family") == setup_family]
+    dates = sorted(row["entry_date"] for row in selected if row.get("entry_date"))
+    return {
+        "setup_family": setup_family,
+        "events": len(selected),
+        "sample_start_date": dates[0] if dates else None,
+        "sample_end_date": dates[-1] if dates else None,
+        "baseline": horizon_stats(selected),
+        "grade_groups": grouped_stats(selected, "entry_grade"),
+        "maturity_groups": grouped_stats(selected, "maturity_stage"),
+        "condition_evaluations": evaluate_conditions(selected),
+    }
+
+
+def build_sample_window(rows: list[dict], window: dict) -> dict:
+    max_age = window.get("max_age_trade_days")
+    selected = rows if max_age is None else [row for row in rows if int(row["age_days"]) <= int(max_age)]
+    profiles = [
+        build_analysis_profile(selected, family)
+        for family in ["ALL", *CONFIG["event_rules"]["setup_families"]]
+    ]
+    dates = sorted(row["entry_date"] for row in selected if row.get("entry_date"))
+    return {
+        "id": window["id"],
+        "label": window["label"],
+        "max_age_trade_days": max_age,
+        "events": selected,
+        "summary": {
+            "events": len(selected),
+            "a_events": sum(row["entry_grade"] == "A" for row in selected),
+            "regular_events": sum(row["entry_grade"] == "REGULAR" for row in selected),
+            "sample_start_date": dates[0] if dates else None,
+            "sample_end_date": dates[-1] if dates else None,
+            "horizons": horizon_stats(selected),
+        },
+        "setup_profiles": profiles,
+        "setup_groups": grouped_stats(selected, "setup_family"),
+    }
+
+
 def build_context(report_date_yy: str) -> dict:
     conn = sqlite3.connect(MARKET_DB)
     try:
         calendar = trading_calendar(conn, iso_date(report_date_yy))
     finally:
         conn.close()
-    events = add_performance(discover_events(report_date_yy, calendar), report_date_yy)
+    analysis_events = add_performance(discover_events(report_date_yy, calendar), report_date_yy)
+    sample_windows = [build_sample_window(analysis_events, window) for window in SAMPLE_WINDOWS]
+    default_window = next(window for window in sample_windows if window["id"] == DEFAULT_SAMPLE_WINDOW)
+    events = default_window["events"]
+    profiles = default_window["setup_profiles"]
     return {
         "meta": {
             "report_date": iso_date(report_date_yy),
@@ -508,10 +635,16 @@ def build_context(report_date_yy: str) -> dict:
             "strategy_file": str(CONFIG_PATH),
             "window_min_days": WINDOW_MIN,
             "window_max_days": WINDOW_MAX,
+            "default_sample_window": DEFAULT_SAMPLE_WINDOW,
+            "sample_window_definitions": SAMPLE_WINDOWS,
             "horizons": HORIZONS,
             "breakout_pivot_ratio": BREAKOUT_PIVOT_RATIO,
             "return_basis": "holding_period_total_return",
             "corporate_action_source": "tdx_xdxr_cache",
+            "capital_source": "capital_data.sqlite",
+            "capital_strategy_version": CAPITAL_CONFIG["strategy_version"],
+            "capital_observation_start_date": CAPITAL_OBSERVATION_START,
+            "condition_sample_thresholds": SAMPLE_THRESHOLDS,
         },
         "summary": {
             "events": len(events),
@@ -521,8 +654,14 @@ def build_context(report_date_yy: str) -> dict:
             "regular_events": sum(row["entry_grade"] == "REGULAR" for row in events),
             "horizons": horizon_stats(events),
         },
+        "analysis_summary": {
+            "events": len(analysis_events),
+            "horizons": horizon_stats(analysis_events),
+        },
         "events": events,
-        "setup_groups": grouped_stats(events, "setup_family"),
+        "sample_windows": sample_windows,
+        "setup_profiles": profiles,
+        "setup_groups": default_window["setup_groups"],
         "action_groups": grouped_stats(events, "entry_action"),
         "grade_groups": grouped_stats(events, "entry_grade"),
         "maturity_groups": grouped_stats(events, "maturity_stage"),
@@ -544,19 +683,21 @@ def update_dashboard_index() -> None:
 
 
 def render_markdown(context: dict) -> str:
+    main_labels = {"INFLOW": "流入", "BALANCED": "平衡", "OUTFLOW": "流出", "INSUFFICIENT": "数据不足"}
+    margin_labels = {"LEVERAGING": "加杠杆", "STABLE": "稳定", "DELEVERAGING": "去杠杆", "NOT_APPLICABLE": "不适用", "INSUFFICIENT": "数据不足"}
     lines = [
         f"# 实际买点回测｜{context['meta']['report_date']}", "",
-        f"窗口：买点成立后 {WINDOW_MIN}~{WINDOW_MAX} 个交易日｜事件 {context['summary']['events']} 条", "",
-        "| Plan日 | 成立日 | 股票 | 买点 | 进入 | 等级 | 形态 | 成立价 | 年龄 | 突破时间 | 突破时涨幅 | 5日 | 10日 | 20日 | 成立时市场 | 成立时板块 |", "|---|---|---|---|---|---|---|---:|---:|---|---:|---:|---:|---:|---|---|",
+        f"成立范围：{DEFAULT_SAMPLE_WINDOW_LABEL}｜收益观察：成立后 {'/'.join(map(str, HORIZONS))} 个交易日｜事件 {context['summary']['events']} 条", "",
+        "| Plan日 | 成立日 | 股票 | 买点 | 等级 | 形态 | 成立价 | 年龄 | 突破时间 | 突破时涨幅 | 5日 | 10日 | 20日 | 成立时市场 | 成立时板块 | Plan日主力 | Plan日融资 |", "|---|---|---|---|---|---|---:|---:|---|---:|---:|---:|---:|---|---|---|---|",
     ]
     for row in context["events"]:
         value = lambda horizon: "—" if row.get(f"return_{horizon}d") is None else f"{row[f'return_{horizon}d']:.2f}%"
         breakout_value = "—" if row.get("breakout_return") is None else f"{row['breakout_return']:.2f}%"
         lines.append(
-            f"| {row['plan_date']} | {row['entry_date']} | {row['name']}（{row['code']}） | {row['setup_family']} | {row['entry_action']} | {row['entry_grade']} | {row['maturity_stage']} | {row['signal_close']:.2f} | {row['age_days']} | {row['breakout_time'] or '无'} | {breakout_value} | {value(5)} | {value(10)} | {value(20)} | {row['market_state_label']} | {row['sector_name']} · {row['sector_state']} |"
+            f"| {row['plan_date']} | {row['entry_date']} | {row['name']}（{row['code']}） | {row['setup_family']} | {row['entry_grade']} | {row['maturity_stage']} | {row['signal_close']:.2f} | {row['age_days']} | {row['breakout_time'] or '无'} | {breakout_value} | {value(5)} | {value(10)} | {value(20)} | {row['market_state_label']} | {row['sector_name']} · {row['sector_state']} | {main_labels.get(row.get('main_order_state'), '数据不足')} | {margin_labels.get(row.get('margin_state'), '数据不足')} |"
         )
     if not context["events"]:
-        lines.append("| — | — | 当前窗口没有已满5个交易日的实际买点事件 | — | — | — | — | — | — | — | — | — | — | — | — | — |")
+        lines.append("| — | — | 当前窗口没有已满5个交易日的实际买点事件 | — | — | — | — | — | — | — | — | — | — | — | — | — | — |")
     lines.extend(["", "> 以买点实际成立日收盘价为基准，送转、分红和配股按持有期总回报调整；不代表真实交易收益。", ""])
     return "\n".join(lines)
 
@@ -602,7 +743,10 @@ def main() -> None:
         raise FileNotFoundError(f"共享日线库不存在: {MARKET_DB}")
     context = build_context(report_date)
     paths = publish(context)
-    print(f"[backtest] {report_date}: {context['summary']['events']} events")
+    print(
+        f"[backtest] {report_date}: {context['summary']['events']} events in {DEFAULT_SAMPLE_WINDOW} / "
+        f"{context['analysis_summary']['events']} all historical events"
+    )
     for path in paths:
         print(f"[backtest] wrote {path.relative_to(ROOT)}")
 

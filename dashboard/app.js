@@ -1,7 +1,7 @@
 const MODULES = { market: "市场环境", capital: "资金观测", vcp: "VCP结构", signals: "信号发现", backtest: "回测表现", valuation: "投研分析" };
 const LABELS = { industry_sw_l1: "申万一级", industry_sw_l2: "申万二级", gn: "概念题材", fg: "风格特征" };
 const INDEX_LABELS = { shanghai_composite: "上证综指", csi300: "沪深300", csi500: "中证500", csi1000: "中证1000", chinext: "创业板指", star50: "科创50" };
-let context, capitalContext, vcpContext, signalsContext, backtestContext, vcpFilter = "ALL", signalsFilter="ALL", backtestFilter="ALL", vcpSelectedCode, signalsSelectedCode, capitalSelectedCode, calendarMonth, currentKind = "industry_sw_l2", rankWindow = "rank_20", selectedName, matrixSelectedName, activeModule = "market";
+let context, capitalContext, vcpContext, signalsContext, backtestContext, vcpFilter = "ALL", signalsFilter="ALL", backtestFilter="ALL", backtestSampleWindow="90D", backtestConditionHorizon=10, vcpSelectedCode, signalsSelectedCode, capitalSelectedCode, calendarMonth, currentKind = "industry_sw_l2", rankWindow = "rank_20", selectedName, matrixSelectedName, activeModule = "market";
 const $ = (id) => document.getElementById(id), pct = (v, d = 2) => v == null ? "—" : `${Number(v).toFixed(d)}%`, cls = (v) => v > 0 ? "positive" : v < 0 ? "negative" : "";
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
 const monthPath = (date) => `20${date.slice(0,4)}`;
@@ -218,8 +218,8 @@ function loadBacktestContext(date) {
   });
 }
 async function loadBacktest(date) {
-  try { backtestContext = await loadBacktestContext(date); if (!backtestContext) throw new Error(`缺少 ${date} 的回测数据`); renderBacktest(); }
-  catch (error) { $("backtest-meta").textContent = "当前日期尚未发布回测数据"; $("backtest-summary").innerHTML = ""; $("backtest-table").innerHTML = `<caption class="muted">${esc(error.message)}</caption>`; ["backtest-event-table", "backtest-action-table", "backtest-grade-table", "backtest-maturity-table", "backtest-market-table", "backtest-sector-table"].forEach((id) => $(id).innerHTML = ""); }
+  try { backtestContext = await loadBacktestContext(date); if (!backtestContext) throw new Error(`缺少 ${date} 的回测数据`); const windows=backtestContext.sample_windows||[]; if(windows.length&&!windows.some(row=>row.id===backtestSampleWindow))backtestSampleWindow=backtestContext.meta?.default_sample_window||windows[0].id; renderBacktest(); }
+  catch (error) { $("backtest-meta").textContent = "当前日期尚未发布回测数据"; $("backtest-summary").innerHTML = ""; $("backtest-window-tabs").innerHTML = ""; $("backtest-table").innerHTML = `<caption class="muted">${esc(error.message)}</caption>`; ["backtest-event-table", "backtest-grade-table", "backtest-maturity-table", "backtest-condition-table"].forEach((id) => $(id).innerHTML = ""); }
 }
 function backtestReturn(value) {
   if (value == null) return `<span class="backtest-pending">—</span>`;
@@ -238,28 +238,69 @@ function renderBacktestGroupTable(id, groups) {
   const cells = (stats, horizon) => { const item = stats?.[String(horizon)] || {}; return `<td>${item.samples || 0}</td><td class="${cls(item.avg_return)}">${backtestStat(item.avg_return, "%")}</td><td>${backtestStat(item.win_rate, "%")}</td>`; };
   $(id).innerHTML = `<thead><tr><th rowspan="2">状态</th><th colspan="3">5日</th><th colspan="3">10日</th><th colspan="3">20日</th></tr><tr><th>样本</th><th>平均</th><th>胜率</th><th>样本</th><th>平均</th><th>胜率</th><th>样本</th><th>平均</th><th>胜率</th></tr></thead><tbody>${(groups || []).map((row) => `<tr><td>${esc(row.group)}</td>${cells(row.horizons, 5)}${cells(row.horizons, 10)}${cells(row.horizons, 20)}</tr>`).join("") || "<tr><td colspan='10' class='muted'>当前窗口暂无可分组事件</td></tr>"}</tbody>`;
 }
+function backtestWindow() {
+  const windows=backtestContext.sample_windows||[];
+  if(windows.length)return windows.find(row=>row.id===backtestSampleWindow)||windows[0];
+  return {id:"LEGACY",label:"历史数据",events:backtestContext.events||[],summary:backtestContext.summary||{},setup_profiles:backtestContext.setup_profiles||[],setup_groups:backtestContext.setup_groups||[]};
+}
+function backtestProfile(window) {
+  const profiles=window.setup_profiles||[];
+  return profiles.find(row=>row.setup_family===backtestFilter)||{
+    setup_family:backtestFilter,
+    events:(window.events||[]).filter(row=>backtestFilter==="ALL"||row.setup_family===backtestFilter).length,
+    baseline:backtestFilter==="ALL"?(window.summary||{}).horizons||{}:{},
+    grade_groups:backtestContext.grade_groups||[],
+    maturity_groups:backtestContext.maturity_groups||[],
+    condition_evaluations:[]
+  };
+}
+function backtestDelta(value) {
+  if(value==null)return "—";
+  const number=Number(value);
+  return `<span class="${cls(number)}">${number>0?"+":""}${number.toFixed(1)}pct</span>`;
+}
+function backtestSampleStatus(value) {
+  const labels={INSUFFICIENT:"样本不足",PRELIMINARY:"初步观察",STABILITY_WATCH:"稳定性观察"};
+  return `<span class="backtest-sample-status status-${String(value||"INSUFFICIENT").toLowerCase()}">${labels[value]||"样本不足"}</span>`;
+}
+function renderBacktestConditions(profile, window) {
+  const horizon=String(backtestConditionHorizon), groups={market:"市场",sector:"板块",capital:"资金"};
+  $("backtest-horizon-tabs").innerHTML=[5,10,20].map(value=>`<button class="${value===backtestConditionHorizon?"active":""}" data-horizon="${value}">${value}日</button>`).join("");
+  $("backtest-horizon-tabs").querySelectorAll("button").forEach(button=>button.onclick=()=>{backtestConditionHorizon=Number(button.dataset.horizon);renderBacktest();});
+  const rows=profile.condition_evaluations||[];
+  $("backtest-condition-table").innerHTML=`<thead><tr><th>类别</th><th>观察维度</th><th>可参与基准</th><th>强势确认</th><th>保留率</th><th>强势胜率</th><th>胜率提升</th><th>平均收益提升</th><th>中性组平均</th><th>赢家遗漏</th><th>弱势对照</th><th>样本状态</th></tr></thead><tbody>${rows.map(row=>{const item=row.horizons?.[horizon]||{};return `<tr><td><span class="backtest-condition-category category-${esc(row.category)}">${esc(groups[row.category]||row.category)}</span></td><td><b>${esc(row.label)}</b></td><td>${item.baseline_samples||0}${item.unavailable_samples?`<small class="backtest-unavailable">${item.unavailable_samples}条待确认</small>`:""}</td><td>${item.retained_samples||0}</td><td>${backtestStat(item.retention_rate,"%")}</td><td>${backtestStat(item.retained_win_rate,"%")}</td><td>${backtestDelta(item.win_rate_lift)}</td><td>${backtestDelta(item.avg_return_lift)}</td><td>${backtestReturn(item.neutral_avg_return)}</td><td>${item.missed_winners||0}${item.missed_winner_rate==null?"":` / ${backtestStat(item.missed_winner_rate,"%")}`}</td><td>${item.weak_samples||0} / ${backtestReturn(item.weak_avg_return)}</td><td>${backtestSampleStatus(item.sample_status)}</td></tr>`;}).join("")||"<tr><td colspan='12' class='muted'>该历史数据包尚未包含条件价值评价；重新发布后即可查看</td></tr>"}</tbody>`;
+  const start=backtestContext.meta.capital_observation_start_date;
+  const sectorBackfilled=(window.events||[]).filter(row=>row.sector_history_basis==="current_snapshot_backfill"||row.sector_membership_basis==="earliest_available_backfill").length;
+  const sectorNote=sectorBackfilled?`板块历史回填 ${sectorBackfilled} 条，使用同日状态但行业成分为非严格点时口径。`:"";
+  const capitalNote=start?`资金观察自 ${start} 起；更早资金行只用于首个观察日的状态窗口，不作为独立回测样本。`:"历史数据包尚未记录资金观察起点。";
+  $("backtest-condition-note").textContent=[sectorNote,capitalNote].filter(Boolean).join(" ");
+}
 function renderBacktest() {
-  const summary = backtestContext.summary || {}, rows = backtestContext.events || [];
-  const filtered = backtestFilter === "ALL" ? rows : rows.filter((row) => row.entry_action === backtestFilter);
-  const horizon = summary.horizons || {};
-  $("backtest-meta").textContent = `报告日 ${backtestContext.meta.report_date} · 观察买点成立后 ${backtestContext.meta.window_min_days}–${backtestContext.meta.window_max_days} 个交易日`;
+  const window=backtestWindow(), summary=window.summary||{}, rows=window.events||[];
+  const filtered = backtestFilter === "ALL" ? rows : rows.filter((row) => row.setup_family === backtestFilter), profile=backtestProfile(window);
+  const horizon = profile.baseline || summary.horizons || {};
+  const profileLabel=backtestFilter==="ALL"?"全部买点":backtestSetupLabel(backtestFilter);
+  const sampleSpan=profile.sample_start_date&&profile.sample_end_date?`${profile.sample_start_date}–${profile.sample_end_date}`:"尚无成熟样本";
+  $("backtest-meta").textContent = `报告日 ${backtestContext.meta.report_date} · ${window.label} · ${profileLabel}成熟样本 ${profile.events||0} 条 · 买点成立区间 ${sampleSpan}`;
+  const windows=backtestContext.sample_windows||[];
+  $("backtest-window-tabs").innerHTML=(windows.length?windows:[window]).map(row=>`<button class="${row.id===window.id?"active":""}" data-window="${esc(row.id)}">${esc(row.label)}</button>`).join("");
+  $("backtest-window-tabs").querySelectorAll("button").forEach(button=>button.onclick=()=>{backtestSampleWindow=button.dataset.window;renderBacktest();});
   $("backtest-summary").innerHTML = [
-    ["窗口事件", summary.events || 0],
-    ["NEW / FOLLOW", `${summary.new_events || 0} / ${summary.follow_events || 0}`],
-    ["A类 / 常规", `${summary.a_events || 0} / ${summary.regular_events || 0}`],
+    ["统计样本", profile.events || 0],
+    ["A类 / 常规", `${(profile.grade_groups||[]).find(row=>row.group==="A")?.events||0} / ${(profile.grade_groups||[]).find(row=>row.group==="REGULAR")?.events||0}`],
     ["5日胜率", horizon["5"]?.win_rate == null ? "—" : `${horizon["5"].win_rate.toFixed(1)}%`],
+    ["10日胜率", horizon["10"]?.win_rate == null ? "—" : `${horizon["10"].win_rate.toFixed(1)}%`],
     ["20日胜率", horizon["20"]?.win_rate == null ? "—" : `${horizon["20"].win_rate.toFixed(1)}%`],
   ].map(([label, value]) => `<div><span>${label}</span><b>${value}</b></div>`).join("");
-  $("backtest-filters").innerHTML = [["ALL", "全部"], ["NEW", "NEW"], ["FOLLOW", "FOLLOW"]].map(([key, label]) => `<button class="${key === backtestFilter ? "active" : ""}" data-filter="${key}">${label}</button>`).join("");
+  $("backtest-filters").innerHTML = [["ALL", "全部买点"], ["PULLBACK", "回踩"], ["BREAKOUT", "突破"], ["RETEST", "回踩确认"]].map(([key, label]) => `<button class="${key === backtestFilter ? "active" : ""}" data-filter="${key}">${label}</button>`).join("");
   $("backtest-filters").querySelectorAll("button").forEach((button) => button.onclick = () => { backtestFilter = button.dataset.filter; renderBacktest(); });
-  $("backtest-note").textContent = `显示 ${filtered.length}/${rows.length} 条唯一实际买点；未满周期留空`;
-  $("backtest-table").innerHTML = `<thead><tr><th>日期</th><th>标的</th><th>买点</th><th>形态</th><th>成立</th><th>突破</th><th>5日</th><th>10日</th><th>20日</th><th>成立时环境</th></tr></thead><tbody>${filtered.map((row) => `<tr><td class="backtest-stack"><b>${backtestShortDate(row.entry_date)}</b><small>Plan ${backtestShortDate(row.plan_date)}</small></td><td><b>${esc(row.name)}</b><br><span class="vcp-list-note">${esc(row.code)}</span></td><td class="backtest-stack"><b>${backtestSetupLabel(row.setup_family)}</b><small>${esc(row.entry_action)} · ${esc(row.entry_grade === "A" ? "A类" : "常规")}</small></td><td class="backtest-stack"><b>${esc(row.maturity_stage)}</b><small>${row.age_days == null ? "—" : `${Number(row.age_days)}日`}</small></td><td class="backtest-stack"><b>${row.signal_close == null ? "—" : Number(row.signal_close).toFixed(2)}</b><small>收盘价</small></td><td class="backtest-stack backtest-breakout">${backtestBreakout(row)}</td><td>${backtestReturn(row.return_5d)}</td><td>${backtestReturn(row.return_10d)}</td><td>${backtestReturn(row.return_20d)}</td><td class="backtest-context"><b>${esc(row.market_state_label || "—")}</b><small>${esc(row.sector_state || "—")} · ${esc(row.sector_name || "—")}</small></td></tr>`).join("") || "<tr><td colspan='10' class='muted'>当前窗口没有已满5个交易日的实际买点事件</td></tr>"}</tbody>`;
-  renderBacktestGroupTable("backtest-event-table", backtestContext.setup_groups);
-  renderBacktestGroupTable("backtest-action-table", backtestContext.action_groups);
-  renderBacktestGroupTable("backtest-grade-table", (backtestContext.grade_groups || []).map((row) => ({ ...row, group: row.group === "A" ? "A类" : row.group === "REGULAR" ? "常规" : row.group })));
-  renderBacktestGroupTable("backtest-maturity-table", backtestContext.maturity_groups);
-  renderBacktestGroupTable("backtest-market-table", backtestContext.market_groups);
-  renderBacktestGroupTable("backtest-sector-table", backtestContext.sector_groups);
+  $("backtest-note").textContent = `${window.label}明细 ${filtered.length}/${rows.length} 条；所有板块使用同一成立范围`;
+  $("backtest-table").innerHTML = `<thead><tr><th>日期</th><th>标的</th><th>买点</th><th>形态</th><th>成立</th><th>突破</th><th>5日</th><th>10日</th><th>20日</th><th>成立时环境</th><th>计划日资金</th></tr></thead><tbody>${filtered.map((row) => `<tr><td class="backtest-stack"><b>${backtestShortDate(row.entry_date)}</b><small>Plan ${backtestShortDate(row.plan_date)}</small></td><td><b>${esc(row.name)}</b><br><span class="vcp-list-note">${esc(row.code)}</span></td><td class="backtest-stack"><b>${backtestSetupLabel(row.setup_family)}</b><small>${esc(row.entry_grade === "A" ? "A类" : "常规")}</small></td><td class="backtest-stack"><b>${esc(row.maturity_stage)}</b><small>${row.age_days == null ? "—" : `${Number(row.age_days)}日`}</small></td><td class="backtest-stack"><b>${row.signal_close == null ? "—" : Number(row.signal_close).toFixed(2)}</b><small>收盘价</small></td><td class="backtest-stack backtest-breakout">${backtestBreakout(row)}</td><td>${backtestReturn(row.return_5d)}</td><td>${backtestReturn(row.return_10d)}</td><td>${backtestReturn(row.return_20d)}</td><td class="backtest-context"><b>${esc(row.market_state_label || "—")}</b><small>${esc(row.sector_state || "—")} · ${esc(row.sector_name || "—")}</small></td><td class="backtest-capital-context"><span>主力 ${capitalState(row.main_order_state,"main")}</span><span>融资 ${capitalState(row.margin_state,"margin")}</span></td></tr>`).join("") || "<tr><td colspan='11' class='muted'>当前窗口没有已满5个交易日的实际买点事件</td></tr>"}</tbody>`;
+  renderBacktestGroupTable("backtest-event-table", window.setup_groups);
+  renderBacktestGroupTable("backtest-grade-table", (profile.grade_groups || []).map((row) => ({ ...row, group: row.group === "A" ? "A类" : row.group === "REGULAR" ? "常规" : row.group })));
+  renderBacktestGroupTable("backtest-maturity-table", profile.maturity_groups);
+  $("backtest-profile-note").textContent=`当前基准：${window.label} · ${profileLabel} · ${profile.events||0} 条成熟样本 · ${sampleSpan}`;
+  renderBacktestConditions(profile, window);
 }
 
 function moduleDateData(module) {

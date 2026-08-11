@@ -70,7 +70,7 @@ def connect_state_db() -> sqlite3.Connection:
         member_count INTEGER NOT NULL, rank_20 INTEGER NOT NULL, rank_5 INTEGER NOT NULL,
         return_1 REAL NOT NULL, return_5 REAL NOT NULL, return_10 REAL NOT NULL, return_20 REAL NOT NULL,
         relative_strength_5 REAL NOT NULL, relative_strength_20 REAL NOT NULL,
-        median_return_1 REAL NOT NULL, advance_ratio REAL NOT NULL, volume_activity REAL NOT NULL,
+        median_return_1 REAL NOT NULL, advance_ratio REAL NOT NULL, advance_ratio_5 REAL, volume_activity REAL NOT NULL,
         above_ma20_ratio REAL NOT NULL, above_ma60_ratio REAL NOT NULL, new_high_ratio REAL NOT NULL,
         strong_stock_density REAL NOT NULL, sector_state TEXT NOT NULL,
         history_basis TEXT NOT NULL DEFAULT 'point_in_time',
@@ -78,6 +78,7 @@ def connect_state_db() -> sqlite3.Connection:
     )""")
     columns = {row[1] for row in conn.execute("PRAGMA table_info(sector_daily_metrics)")}
     added_rank_percentiles = "rank_pct_20" not in columns
+    added_breadth_5 = "advance_ratio_5" not in columns
     if "history_basis" not in columns:
         conn.execute("ALTER TABLE sector_daily_metrics ADD COLUMN history_basis TEXT NOT NULL DEFAULT 'point_in_time'")
     daily_columns = {
@@ -85,6 +86,7 @@ def connect_state_db() -> sqlite3.Connection:
         "relative_strength_1": "REAL NOT NULL DEFAULT 0",
         "daily_strong_density": "REAL NOT NULL DEFAULT 0",
         "daily_score": "REAL NOT NULL DEFAULT 0",
+        "advance_ratio_5": "REAL",
         "rank_pct_20": "REAL NOT NULL DEFAULT 1",
         "rank_pct_5": "REAL NOT NULL DEFAULT 1",
         "sector_phase": "TEXT NOT NULL DEFAULT 'NONE'",
@@ -107,6 +109,10 @@ def connect_state_db() -> sqlite3.Connection:
                 WHEN relative_strength_5 >= 0 AND advance_ratio >= 45 THEN '扩散降温'
                 ELSE '明显分歧' END,
             data_status = CASE WHEN history_basis='current_snapshot_backfill' THEN 'BACKFILL' ELSE 'READY' END""")
+    if added_breadth_5:
+        # Daily breadth cannot be converted into five-day member breadth.
+        # Historical health stays unknown until point-in-time rows accumulate.
+        conn.execute("UPDATE sector_daily_metrics SET advance_ratio_5=NULL, sector_health='数据不足'")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sector_daily_lookup ON sector_daily_metrics(block_kind, block_name, trade_date)")
     conn.execute("""CREATE TABLE IF NOT EXISTS market_state_history (
         trade_date TEXT PRIMARY KEY, raw_state TEXT NOT NULL, confirmed_state TEXT NOT NULL,
@@ -174,16 +180,19 @@ def finalize_sector_rankings(records: list[dict]) -> list[dict]:
 
 def sector_health(row: dict) -> str:
     settings = CONFIG["sector_phase"]
-    if row["relative_strength_5"] >= 0 and row["up_breadth"] >= settings["healthy_breadth_min"]:
+    breadth_5 = row.get("up_breadth_5")
+    if breadth_5 is None or pd.isna(breadth_5):
+        return "数据不足"
+    if row["relative_strength_5"] >= 0 and breadth_5 >= settings["healthy_breadth_5_min"]:
         return "扩散健康"
-    if row["relative_strength_5"] >= 0 and row["up_breadth"] >= settings["cooling_breadth_min"]:
-        return "扩散降温"
-    return "明显分歧"
+    if row["relative_strength_5"] < 0 and breadth_5 < settings["divergent_breadth_5_max"]:
+        return "明显分歧"
+    return "扩散降温"
 
 
 def sector_policy_tier(phase: str, health: str, short_pulse: bool, data_status: str) -> str:
     """Expose a stable shadow tier without changing the current signal policy."""
-    if data_status != "READY":
+    if data_status != "READY" or health == "数据不足":
         return "D"
     if phase == "主线" and health == "扩散健康":
         return "A"
@@ -320,7 +329,9 @@ def sector_rows_for_date(universe: pd.DataFrame, blocks: pd.DataFrame, trade_dat
             "return_10": round(float(group.ret10.median() * 100), 3), "return_20": round(float(group.ret20.median() * 100), 3),
             "relative_strength_1": round(float(rel1 * 100), 3),
             "relative_strength_5": round(float(rel5 * 100), 3), "relative_strength_20": round(float(rel20 * 100), 3),
-            "volume_activity": round(float(group.volume_ratio.median()), 3), "up_breadth": round(float((group.ret1 > 0).mean() * 100), 2),
+            "volume_activity": round(float(group.volume_ratio.median()), 3),
+            "up_breadth": round(float((group.ret1 > 0).mean() * 100), 2),
+            "up_breadth_5": round(float((group.ret5 > 0).mean() * 100), 2),
             "daily_strong_density": round(float((group.rps1_market >= 90).mean() * 100), 2),
             "median_return_1": round(float(group.ret1.median() * 100), 3), "above_ma20_ratio": round(float((group.close > group.ma20).mean() * 100), 2),
             "above_ma60_ratio": round(float((group.close > group.ma60).mean() * 100), 2), "new_high_ratio": round(float(group.new_high60.mean() * 100), 2),
@@ -508,7 +519,9 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
             "return_10": round(float(group.ret10.median() * 100), 3), "return_20": round(float(group.ret20.median() * 100), 3),
             "relative_strength_1": round(float(rel1 * 100), 3),
             "relative_strength_5": round(float(rel5 * 100), 3), "relative_strength_20": round(float(rel20 * 100), 3),
-            "volume_activity": round(float(group.volume_ratio.median()), 3), "up_breadth": round(float((group.ret1 > 0).mean() * 100), 2),
+            "volume_activity": round(float(group.volume_ratio.median()), 3),
+            "up_breadth": round(float((group.ret1 > 0).mean() * 100), 2),
+            "up_breadth_5": round(float((group.ret5 > 0).mean() * 100), 2),
             "daily_strong_density": round(float((group.rps1_market >= 90).mean() * 100), 2),
             "median_return_1": round(float(group.ret1.median() * 100), 3), "above_ma20_ratio": round(float((group.close > group.ma20).mean() * 100), 2),
             "above_ma60_ratio": round(float((group.close > group.ma60).mean() * 100), 2), "new_high_ratio": round(float(group.new_high60.mean() * 100), 2),
@@ -523,7 +536,8 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
             overlaps.append(len(top_sets[kind] & old) / 10)
     rotation = round((1 - float(np.mean(overlaps))) * 100, 2) if overlaps else 50.0
     history = pd.read_sql_query("""SELECT trade_date,block_kind,block_name,rank_20,rank_5,rank_pct_20,rank_pct_5,
-        relative_strength_5,advance_ratio AS up_breadth,sector_state,sector_phase,sector_health,data_status
+        relative_strength_5,advance_ratio AS up_breadth,advance_ratio_5 AS up_breadth_5,
+        sector_state,sector_phase,sector_health,data_status
         FROM sector_daily_metrics WHERE trade_date<? ORDER BY trade_date DESC LIMIT 30000""", state_conn, params=(as_of,))
     for row in sector_rows:
         prior = history[(history.block_kind == row["block_type"]) & (history.block_name == row["block_name"])].head(5)
@@ -646,9 +660,9 @@ def write_markdown(report: dict, sectors: list[dict], stocks: list[dict], as_of:
         top = [row for row in sectors if row["block_type"] == kind][:5]
         if not top:
             continue
-        lines.extend(["", f"## {label}相对强度 Top 5", "", "| 排名 | 板块 | 20日相对强度 | 5日相对强度 | 上涨扩散 |", "|---:|---|---:|---:|---:|"])
+        lines.extend(["", f"## {label}相对强度 Top 5", "", "| 排名 | 板块 | 20日相对强度 | 5日相对强度 | 5日上涨扩散 | 今日参与度 |", "|---:|---|---:|---:|---:|---:|"])
         for row in top:
-            lines.append(f"| {row['rank_20']} | {row['block_name']} | {row['relative_strength_20']:.2f}% | {row['relative_strength_5']:.2f}% | {row['up_breadth']:.2f}% |")
+            lines.append(f"| {row['rank_20']} | {row['block_name']} | {row['relative_strength_20']:.2f}% | {row['relative_strength_5']:.2f}% | {row['up_breadth_5']:.2f}% | {row['up_breadth']:.2f}% |")
     lines.extend(["", "## 全市场强度 Top 10", "", "| 代码 | 股票 | 强度分 | RPS20 | 申万二级 |", "|---|---|---:|---:|---|"])
     for row in sorted(stocks, key=lambda item: item["strength_score"], reverse=True)[:10]:
         lines.append(f"| {row['code']} | {row['name']} | {row['strength_score']:.2f} | {row['rps20_market']:.2f} | {row['sw_l2_name']} |")
@@ -1423,7 +1437,7 @@ def build_market_context(report: dict, sectors: list[dict], stocks: list[dict], 
     selected = {(kind, row["block_name"]) for kind, rows in rankings.items() for row in rows}
     history = pd.read_sql_query("""SELECT trade_date,block_kind,block_name,rank_1,rank_20,rank_5,rank_pct_20,rank_pct_5,
         return_1,return_5,return_20,relative_strength_1,relative_strength_5,relative_strength_20,daily_score,
-        advance_ratio,volume_activity,above_ma20_ratio,sector_state,sector_phase,sector_health,short_pulse,
+        advance_ratio,advance_ratio_5 AS up_breadth_5,volume_activity,above_ma20_ratio,sector_state,sector_phase,sector_health,short_pulse,
         sector_policy_tier,data_status,history_basis
         FROM sector_daily_metrics WHERE trade_date<=? ORDER BY trade_date""", state_conn, params=(as_of,))
     sector_history = {kind: [] for kind in kinds}
@@ -1536,13 +1550,13 @@ def persist_sector_metrics(conn: sqlite3.Connection, as_of: str, sectors: list[d
         """INSERT INTO sector_daily_metrics(trade_date,block_kind,block_name,member_count,rank_1,rank_20,rank_5,
             rank_pct_20,rank_pct_5,
             return_1,return_5,return_10,return_20,relative_strength_1,relative_strength_5,relative_strength_20,median_return_1,
-            advance_ratio,volume_activity,above_ma20_ratio,above_ma60_ratio,new_high_ratio,strong_stock_density,
+            advance_ratio,advance_ratio_5,volume_activity,above_ma20_ratio,above_ma60_ratio,new_high_ratio,strong_stock_density,
             daily_strong_density,daily_score,sector_state,sector_phase,sector_health,short_pulse,sector_policy_tier,data_status,
-            history_basis) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            history_basis) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         [(as_of, row["block_type"], row["block_name"], row["member_count"], row["rank_1"], row["rank_20"], row["rank_5"],
           row["rank_pct_20"], row["rank_pct_5"],
           row["return_1"], row["return_5"], row["return_10"], row["return_20"], row["relative_strength_1"],
-          row["relative_strength_5"], row["relative_strength_20"], row["median_return_1"], row["up_breadth"], row["volume_activity"],
+          row["relative_strength_5"], row["relative_strength_20"], row["median_return_1"], row["up_breadth"], row["up_breadth_5"], row["volume_activity"],
           row["above_ma20_ratio"], row["above_ma60_ratio"], row["new_high_ratio"], row["strong_stock_density"],
           row["daily_strong_density"], row["daily_score"], row.get("sector_state", "历史积累中"),
           row.get("sector_phase", "NONE"), row.get("sector_health", sector_health(row)), int(bool(row.get("short_pulse"))),

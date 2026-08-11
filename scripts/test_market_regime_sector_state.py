@@ -20,7 +20,7 @@ def prior(rank_percentiles, phases=None, health=None, legacy=None):
     })
 
 
-def row(rank_pct_20=0.05, rank_pct_5=0.08, relative_strength_5=4.827, up_breadth=96.88):
+def row(rank_pct_20=0.05, rank_pct_5=0.08, relative_strength_5=4.827, up_breadth=96.88, up_breadth_5=70):
     return {
         "rank_20": max(1, round(rank_pct_20 * 100)),
         "rank_5": max(1, round(rank_pct_5 * 100)),
@@ -28,6 +28,7 @@ def row(rank_pct_20=0.05, rank_pct_5=0.08, relative_strength_5=4.827, up_breadth
         "rank_pct_5": rank_pct_5,
         "relative_strength_5": relative_strength_5,
         "up_breadth": up_breadth,
+        "up_breadth_5": up_breadth_5,
         "history_basis": "point_in_time",
     }
 
@@ -39,7 +40,7 @@ class SectorStateTests(unittest.TestCase):
         self.assertEqual(result["sector_policy_tier"], "B")
 
     def test_cooling_does_not_remove_established_mainline(self):
-        value = row(relative_strength_5=11.15, up_breadth=47.17)
+        value = row(relative_strength_5=11.15, up_breadth=20, up_breadth_5=45)
         result = classify_sector_phase(value, prior([0.04, 0.05, 0.15, 0.09, 0.11]))
         self.assertEqual(result["sector_phase"], "主线")
         self.assertEqual(result["sector_health"], "扩散降温")
@@ -47,7 +48,7 @@ class SectorStateTests(unittest.TestCase):
         self.assertEqual(result["sector_state"], "高位分歧")
 
     def test_one_divergent_day_only_downgrades_health(self):
-        value = row(relative_strength_5=-1, up_breadth=40)
+        value = row(relative_strength_5=-1, up_breadth=70, up_breadth_5=30)
         history = prior([0.05] * 5, phases=["主线"] * 5, health=["扩散健康"] * 5)
         result = classify_sector_phase(value, history)
         self.assertEqual(result["sector_phase"], "主线")
@@ -55,7 +56,7 @@ class SectorStateTests(unittest.TestCase):
         self.assertEqual(result["sector_policy_tier"], "C")
 
     def test_two_divergent_days_confirm_fading(self):
-        value = row(relative_strength_5=-1, up_breadth=40)
+        value = row(relative_strength_5=-1, up_breadth=70, up_breadth_5=30)
         history = prior(
             [0.05] * 5,
             phases=["主线"] * 5,
@@ -66,7 +67,7 @@ class SectorStateTests(unittest.TestCase):
         self.assertEqual(result["sector_policy_tier"], "D")
 
     def test_old_observation_with_scattered_strength_does_not_become_fading(self):
-        value = row(rank_pct_20=0.35, relative_strength_5=-1, up_breadth=40)
+        value = row(rank_pct_20=0.35, relative_strength_5=-1, up_breadth=40, up_breadth_5=30)
         history = prior(
             [0.30, 0.10, 0.12, 0.25, 0.08],
             health=["明显分歧"] * 5,
@@ -76,7 +77,7 @@ class SectorStateTests(unittest.TestCase):
         self.assertEqual(result["sector_phase"], "NONE")
 
     def test_legacy_fading_alone_is_not_migrated_as_a_lifecycle(self):
-        value = row(rank_pct_20=0.35, relative_strength_5=-1, up_breadth=40)
+        value = row(rank_pct_20=0.35, relative_strength_5=-1, up_breadth=40, up_breadth_5=30)
         history = prior(
             [0.30] * 5,
             health=["明显分歧"] * 5,
@@ -105,6 +106,16 @@ class SectorStateTests(unittest.TestCase):
         self.assertEqual(result["sector_phase"], "NONE")
         self.assertTrue(result["short_pulse"])
         self.assertEqual(result["sector_policy_tier"], "C")
+
+    def test_single_day_selloff_does_not_override_five_day_health(self):
+        value = row(relative_strength_5=3, up_breadth=10, up_breadth_5=65)
+        result = classify_sector_phase(value, prior([0.05] * 5))
+        self.assertEqual(result["sector_health"], "扩散健康")
+
+    def test_mixed_five_day_signals_are_cooling(self):
+        value = row(relative_strength_5=-1, up_breadth_5=60)
+        result = classify_sector_phase(value, prior([0.05] * 5))
+        self.assertEqual(result["sector_health"], "扩散降温")
 
 
 if __name__ == "__main__":

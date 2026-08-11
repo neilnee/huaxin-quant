@@ -90,6 +90,18 @@ def write_context_js(path: Path, namespace: str, payload: dict) -> None:
     os.replace(temporary, path)
 
 
+def refresh_markdown_state(source: Path, target: Path, report: dict) -> None:
+    """Update only the deterministic state heading in the preserved daily archive."""
+    text = source.read_text(encoding="utf-8")
+    label = market_regime.state_label(report["state"]["confirmed_state"], report)
+    tag = market_regime.market_structure_tag(report)
+    heading = f"**市场状态：{label}" + (f" · {tag}" if tag else "") + "**  "
+    refreshed, count = re.subn(r"^\*\*市场状态：.*\*\*  $", heading, text, count=1, flags=re.M)
+    if count != 1:
+        raise ValueError(f"无法定位市场状态标题: {source}")
+    target.write_text(refreshed, encoding="utf-8")
+
+
 def available_dates(start: str | None, end: str | None) -> list[str]:
     dates = sorted(path.stem.rsplit("_", 1)[-1] for path in LIVE_MARKET.glob("market_regime_*.json"))
     if start:
@@ -121,6 +133,30 @@ def validate_workspace(workspace: Path) -> Path:
     return resolved
 
 
+def reclassify_market_state(report: dict, sectors: list[dict], persistent_mainlines: list[str]) -> None:
+    """Recompute deterministic market state while preserving narrative conclusions."""
+    state = report["state"]
+    benchmarks = report["benchmarks"]
+    breadth = report["breadth"]
+    evidence = market_regime.selective_opportunity_evidence(sectors, persistent_mainlines)
+    raw_state = market_regime.classify_market_state(
+        state["trend_score"], state["volatility_score"], state["breadth_score"], state["rotation_score"],
+        sum(item["above_ma20"] for item in benchmarks.values()),
+        sum(item["above_ma60"] for item in benchmarks.values()),
+        breadth["advance_ratio"], evidence["qualified"],
+    )
+    state.update({
+        "current": raw_state,
+        "raw_state": raw_state,
+        "persistent_mainline_count": len(evidence["persistent_mainlines"]),
+        "persistent_mainlines": evidence["persistent_mainlines"],
+        "local_opportunity": evidence["qualified"],
+        "local_opportunity_basis": evidence["basis"],
+        "strong_industry_count": evidence["strong_industry_count"],
+        "strong_concept_count": evidence["strong_concept_count"],
+    })
+
+
 def replay(dates: list[str], workspace: Path) -> dict:
     if workspace.exists():
         shutil.rmtree(workspace)
@@ -138,9 +174,6 @@ def replay(dates: list[str], workspace: Path) -> dict:
             report = json.loads(json.dumps(old, ensure_ascii=False))
             report["llm"] = old.get("llm", {})
             report["daily_mainline"] = old.get("daily_mainline", {})
-            market_regime.confirm_market_state(state_conn, iso_date(stamp), report)
-            preserved["llm"] += int(report["llm"] == old.get("llm", {}))
-            preserved["daily_mainline"] += int(report["daily_mainline"] == old.get("daily_mainline", {}))
             source_rows = [dict(row) for row in live_conn.execute(
                 "SELECT * FROM sector_daily_metrics WHERE trade_date=? ORDER BY block_kind,rank_20", (iso_date(stamp),)
             )]
@@ -176,10 +209,18 @@ def replay(dates: list[str], workspace: Path) -> dict:
                 row.update(market_regime.classify_sector_phase(row, prior))
                 sectors.append(row)
             market_regime.save_block_metrics(state_conn, iso_date(stamp), sectors)
+            persistent_mainlines = market_regime.continuous_core_mainlines(state_conn, iso_date(stamp), sectors)
+            reclassify_market_state(report, sectors, persistent_mainlines)
+            market_regime.confirm_market_state(state_conn, iso_date(stamp), report)
+            preserved["llm"] += int(report["llm"] == old.get("llm", {}))
+            preserved["daily_mainline"] += int(report["daily_mainline"] == old.get("daily_mainline", {}))
             paths["market"].mkdir(parents=True, exist_ok=True)
             (paths["market"] / f"market_regime_{stamp}.json").write_text(
                 json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
             )
+            live_markdown = LIVE_MARKET / f"market_regime_{stamp}.md"
+            if live_markdown.exists():
+                refresh_markdown_state(live_markdown, paths["market"] / live_markdown.name, report)
             market_regime.write_csv(paths["market"] / f"sector_heat_{stamp}.csv", sectors)
             old_state = (old.get("state") or {}).get("current") or (old.get("state") or {}).get("confirmed_state")
             new_state = report["state"]["confirmed_state"]

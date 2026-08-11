@@ -24,6 +24,17 @@ class RebuildMarketHistoryTests(unittest.TestCase):
             rebuild_market_history.write_context_js(path, "QUANT_DASHBOARD_SIGNALS_CONTEXTS", payload)
             self.assertEqual(rebuild_market_history.read_context_js(path), payload)
 
+    def test_refresh_markdown_state_preserves_body(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "old.md"
+            target = root / "new.md"
+            source.write_text("# 日报\n\n**市场状态：SELECTIVE**  \n\n保留正文\n", encoding="utf-8")
+            report = {"state": {"confirmed_state": "CONSOLIDATING"}}
+            rebuild_market_history.refresh_markdown_state(source, target, report)
+            self.assertIn("**市场状态：弱势震荡**", target.read_text(encoding="utf-8"))
+            self.assertIn("保留正文", target.read_text(encoding="utf-8"))
+
     def test_merge_sector_fields_only_updates_environment(self):
         target = {"block_name": "医疗服务", "relative_strength_20": 3.2}
         source = {
@@ -36,6 +47,31 @@ class RebuildMarketHistoryTests(unittest.TestCase):
         self.assertEqual(target["sector_phase"], "主线")
         self.assertEqual(target["sector_health_level"], -1)
         self.assertEqual(target["relative_strength_20"], 3.2)
+
+    def test_reclassify_market_state_uses_rebuilt_sector_evidence(self):
+        report = {
+            "state": {
+                "current": "SELECTIVE", "raw_state": "SELECTIVE", "trend_score": 55,
+                "volatility_score": 50, "breadth_score": 55, "rotation_score": 50,
+            },
+            "benchmarks": {
+                str(index): {"above_ma20": True, "above_ma60": True} for index in range(6)
+            },
+            "breadth": {"advance_ratio": 48},
+            "llm": {"analysis": "保留原结论"},
+        }
+        rebuild_market_history.reclassify_market_state(report, [], [])
+        self.assertEqual(report["state"]["raw_state"], "CONSOLIDATING")
+        self.assertFalse(report["state"]["local_opportunity"])
+        self.assertEqual(report["llm"]["analysis"], "保留原结论")
+
+        sectors = [
+            {"block_type": "industry_sw_l2", "block_name": "医疗服务", "sector_phase": "转强", "data_status": "READY", "relative_strength_20": 2, "relative_strength_5": 1, "above_ma20_ratio": 70},
+            {"block_type": "gn", "block_name": "创新药", "sector_phase": "主线", "data_status": "READY", "relative_strength_20": 3, "relative_strength_5": 2, "above_ma20_ratio": 75},
+        ]
+        rebuild_market_history.reclassify_market_state(report, sectors, [])
+        self.assertEqual(report["state"]["raw_state"], "SELECTIVE")
+        self.assertEqual(report["state"]["local_opportunity_basis"], "cross_level_strength")
 
 
 if __name__ == "__main__":

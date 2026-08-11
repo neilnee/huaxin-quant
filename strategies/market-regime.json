@@ -65,6 +65,13 @@
     "selective": {
       "rotation_min": 60,
       "persistent_mainline_days": 2,
+      "minimum_persistent_mainlines": 1,
+      "minimum_cross_level_strong_each": 1,
+      "strong_phases": ["主线", "转强"],
+      "persistent_mainline_block_types": ["industry_sw_l1", "industry_sw_l2"],
+      "relative_strength_20_min": 0,
+      "relative_strength_5_min": 0,
+      "above_ma20_ratio_min": 60,
       "mainline_block_types": ["industry_sw_l1", "industry_sw_l2", "gn"]
     },
     "confirmation_days": 2,

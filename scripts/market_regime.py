@@ -459,6 +459,7 @@ def classify_market_state(
     above20: int,
     above60: int,
     advance_ratio: float,
+    local_opportunity: bool,
 ) -> str:
     thresholds = CONFIG["state_thresholds"]
     if breadth_score <= thresholds["defensive"]["breadth_max"] or (
@@ -481,7 +482,43 @@ def classify_market_state(
         and advance_ratio >= thresholds["consolidating"]["advance_ratio_min"]
     ):
         return "CONSOLIDATING"
-    return "SELECTIVE"
+    if local_opportunity:
+        return "SELECTIVE"
+    return "CONSOLIDATING"
+
+
+def selective_opportunity_evidence(sector_rows: list[dict], persistent_mainlines: list[str]) -> dict:
+    """Require observable local sector strength before opening the selective regime."""
+    settings = CONFIG["state_thresholds"]["selective"]
+    strong_phases = set(settings["strong_phases"])
+    ready_strong = [
+        row for row in sector_rows
+        if row.get("data_status") == "READY" and row.get("sector_phase") in strong_phases
+        and row.get("relative_strength_20") is not None
+        and row.get("relative_strength_5") is not None
+        and row.get("above_ma20_ratio") is not None
+        and float(row.get("relative_strength_20") or 0) >= float(settings["relative_strength_20_min"])
+        and float(row.get("relative_strength_5") or 0) >= float(settings["relative_strength_5_min"])
+        and float(row.get("above_ma20_ratio") or 0) >= float(settings["above_ma20_ratio_min"])
+    ]
+    industry_count = sum(row.get("block_type") in {"industry_sw_l1", "industry_sw_l2"} for row in ready_strong)
+    concept_count = sum(row.get("block_type") == "gn" for row in ready_strong)
+    eligible_ids = {f"{row.get('block_type')}:{row.get('block_name')}" for row in ready_strong}
+    persistent_types = set(settings["persistent_mainline_block_types"])
+    qualified_persistent = sorted(
+        item for item in persistent_mainlines
+        if item in eligible_ids and item.split(":", 1)[0] in persistent_types
+    )
+    persistent = len(qualified_persistent) >= int(settings["minimum_persistent_mainlines"])
+    cross_level_min = int(settings["minimum_cross_level_strong_each"])
+    cross_level = industry_count >= cross_level_min and concept_count >= cross_level_min
+    return {
+        "qualified": bool(persistent or cross_level),
+        "basis": "persistent_mainline" if persistent else "cross_level_strength" if cross_level else "none",
+        "persistent_mainlines": qualified_persistent,
+        "strong_industry_count": industry_count,
+        "strong_concept_count": concept_count,
+    }
 
 
 def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as_of: str, allow_snapshot_fallback: bool = False) -> tuple[dict, list[dict], list[dict], list[dict]]:
@@ -587,6 +624,7 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
     above20 = sum(item["above_ma20"] for item in benchmark_metrics.values())
     above60 = sum(item["above_ma60"] for item in benchmark_metrics.values())
     persistent_mainlines = continuous_core_mainlines(state_conn, as_of, sector_rows)
+    selective_evidence = selective_opportunity_evidence(sector_rows, persistent_mainlines)
     state = classify_market_state(
         trend_score,
         volatility_score,
@@ -595,6 +633,7 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
         above20,
         above60,
         breadth["advance_ratio"],
+        selective_evidence["qualified"],
     )
     security_context = pd.read_sql_query("""SELECT s.code,s.name,si.sw_industry_code
         FROM securities s LEFT JOIN stock_industries si ON s.code=si.code AND si.snapshot_date=?""", conn, params=(snapshot_date,))
@@ -639,7 +678,7 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
         within = float((same_concept.ret20 <= row.ret20).mean() * 100)
         heat = concept_heat.get(name, {})
         concept_rows.append({"date": as_of, "code": code, "name": row.get("name", ""), "concept_name": name, "concept_relative_strength_20": heat.get("relative_strength_20"), "concept_rank": heat.get("rank_20"), "stock_return_20": round(float(row.ret20 * 100), 3), "rps20_within_concept": round(within, 2), "stock_vs_concept_return_20": round(float((row.ret20 - same_concept.ret20.mean()) * 100), 3)})
-    report = {"meta": {"run_date": as_of, "strategy_version": CONFIG["strategy_version"], "data_status": "VALID", "config": str(CONFIG_PATH), "reference_snapshot_date": snapshot_date, "history_basis": history_basis}, "state": {"current": state, "raw_state": state, "trend_score": round(trend_score, 2), "volatility_score": round(volatility_score, 2), "breadth_score": round(float(breadth_score), 2), "rotation_score": rotation, "persistent_mainline_count": len(persistent_mainlines), "persistent_mainlines": persistent_mainlines}, "benchmarks": benchmark_metrics, "breadth": breadth, "rotation": {"top10_sets": {k: sorted(v) for k, v in top_sets.items()}}, "sector_leaders": sector_leaders, "daily_sector_leaders": daily_sector_leaders}
+    report = {"meta": {"run_date": as_of, "strategy_version": CONFIG["strategy_version"], "data_status": "VALID", "config": str(CONFIG_PATH), "reference_snapshot_date": snapshot_date, "history_basis": history_basis}, "state": {"current": state, "raw_state": state, "trend_score": round(trend_score, 2), "volatility_score": round(volatility_score, 2), "breadth_score": round(float(breadth_score), 2), "rotation_score": rotation, "persistent_mainline_count": len(selective_evidence["persistent_mainlines"]), "persistent_mainlines": selective_evidence["persistent_mainlines"], "local_opportunity": selective_evidence["qualified"], "local_opportunity_basis": selective_evidence["basis"], "strong_industry_count": selective_evidence["strong_industry_count"], "strong_concept_count": selective_evidence["strong_concept_count"]}, "benchmarks": benchmark_metrics, "breadth": breadth, "rotation": {"top10_sets": {k: sorted(v) for k, v in top_sets.items()}}, "sector_leaders": sector_leaders, "daily_sector_leaders": daily_sector_leaders}
     return report, sector_rows, stock_rows, concept_rows
 
 
@@ -776,9 +815,11 @@ def market_state_view(report: dict) -> dict:
                     f"全 A 上涨占比 {breadth['advance_ratio']:.2f}%，中期趋势尚未形成广泛支撑。"
                     f"波动风险分 {report['state']['volatility_score']:.2f}，参与上应优先控制节奏与仓位。")
     elif confirmed == "CONSOLIDATING":
-        analysis = (f"普跌压力有所缓解，全 A 上涨占比回到 {breadth['advance_ratio']:.2f}%，"
-                    f"但仅 {above20}/6 个宽基站上 MA20，趋势分 {report['state']['trend_score']:.2f}。"
-                    f"波动风险分仍为 {report['state']['volatility_score']:.2f}，指数趋势修复尚待确认。")
+        local_text = ("板块层虽有局部强势，但市场弱势条件仍优先。"
+                      if report["state"].get("local_opportunity") else "板块层尚未确认连续行业主线或跨层级强势。")
+        analysis = (f"市场尚未满足趋势扩散或修复条件，{above20}/6 个宽基站上 MA20，"
+                    f"全 A 上涨占比 {breadth['advance_ratio']:.2f}%。{local_text}"
+                    f"当前按弱势震荡管理，不开放可执行信号。")
     elif confirmed == "OFFENSIVE":
         analysis = (f"宽基趋势与市场广度同步改善，{above20}/6 个宽基站上 MA20，"
                     f"全 A 上涨占比 {breadth['advance_ratio']:.2f}%。波动风险分 {report['state']['volatility_score']:.2f}，"
@@ -803,6 +844,11 @@ def market_state_view(report: dict) -> dict:
     llm_analysis = str(report.get("llm", {}).get("analysis", "")).strip()
     return {"label": state_label(confirmed, report), "raw_label": raw,
         "confirmed_state": confirmed, "candidate_state": raw, "structure_tag": market_structure_tag(report),
+        "local_opportunity": bool(report["state"].get("local_opportunity")),
+        "local_opportunity_basis": report["state"].get("local_opportunity_basis", "none"),
+        "persistent_mainline_count": report["state"].get("persistent_mainline_count", 0),
+        "strong_industry_count": report["state"].get("strong_industry_count", 0),
+        "strong_concept_count": report["state"].get("strong_concept_count", 0),
         "duration_days": report["state"]["duration_days"],
         "risk_tags": risks or ["暂无额外风险标签"], "analysis": llm_analysis or analysis,
         "analysis_source": "llm" if llm_analysis else "rule_fallback", "transition": transition}
@@ -819,13 +865,7 @@ def market_state_explainer(report: dict) -> dict:
     defensive_risk = state["volatility_score"] >= thresholds["defensive"]["volatility_min"] and state["rotation_score"] >= thresholds["defensive"]["rotation_min"]
     offensive = state["trend_score"] >= thresholds["offensive"]["trend_min"] and state["breadth_score"] >= thresholds["offensive"]["breadth_min"] and state["volatility_score"] <= thresholds["offensive"]["volatility_max"]
     recovery = above20 >= 3 and above60 <= 2 and breadth["advance_ratio"] >= 50
-    consolidating = (not defensive_breadth and not defensive_risk
-        and state["volatility_score"] >= thresholds["consolidating"]["volatility_min"]
-        and state["trend_score"] < thresholds["consolidating"]["trend_max"]
-        and above20 <= thresholds["consolidating"]["above_ma20_benchmarks_max"]
-        and breadth["advance_ratio"] >= thresholds["consolidating"]["advance_ratio_min"])
-    fast_rotation = state["rotation_score"] >= thresholds["selective"]["rotation_min"]
-    has_mainline = state.get("persistent_mainline_count", 0) > 0
+    has_local_opportunity = bool(state.get("local_opportunity"))
     return {
         "current": {
             "label": state_label(state["confirmed_state"], report),
@@ -835,6 +875,7 @@ def market_state_explainer(report: dict) -> dict:
                 {"label": "广度分", "value": state["breadth_score"]}, {"label": "轮动分", "value": state["rotation_score"]},
                 {"label": "站上 MA20 宽基", "value": f"{above20}/6"}, {"label": "全 A 上涨占比", "value": f"{breadth['advance_ratio']:.2f}%"},
                 {"label": "连续主线", "value": state.get("persistent_mainline_count", 0)},
+                {"label": "局部机会", "value": "已确认" if has_local_opportunity else "未确认"},
             ],
             "matched": [
                 "广度分不高于 45，满足弱势广度条件" if defensive_breadth else "广度分高于弱势广度阈值",
@@ -843,10 +884,10 @@ def market_state_explainer(report: dict) -> dict:
         },
         "states": [
             {"name": "防御期", "rule": "广度分 ≤ 45；或波动风险分 ≥ 75 且轮动分 ≥ 65", "confirm": "2/3 日", "meaning": "趋势与广度偏弱，不开放可执行信号。", "active": state["confirmed_state"] == "DEFENSIVE"},
-            {"name": "弱势震荡", "rule": "未触发防御期，波动风险分 ≥ 70、趋势分 < 50、站上 MA20 宽基 ≤ 2/6、全 A 上涨占比 ≥ 50%", "confirm": "2/3 日", "meaning": "普跌压力缓解但趋势未修复，不开放可执行信号。", "active": state["confirmed_state"] == "CONSOLIDATING", "matched": consolidating},
+            {"name": "弱势震荡", "rule": "命中弱势震荡条件；或未触发其他状态且缺少局部机会证据", "confirm": "2/3 日", "meaning": "趋势未修复且没有可确认的局部强势结构，不开放可执行信号。", "active": state["confirmed_state"] == "CONSOLIDATING", "matched": state["raw_state"] == "CONSOLIDATING"},
             {"name": "趋势扩散", "rule": "趋势分 ≥ 65、广度分 ≥ 60、波动风险分 ≤ 60", "confirm": "3/3 日", "meaning": "宽基趋势与市场广度同步改善。", "active": state["confirmed_state"] == "OFFENSIVE", "matched": offensive},
             {"name": "修复期", "rule": "至少 3/6 宽基站上 MA20、至多 2/6 站上 MA60、全 A 上涨占比 ≥ 50", "confirm": "3/3 日", "meaning": "短期修复出现，但中期趋势尚待确认。", "active": state["confirmed_state"] == "RECOVERY_WATCH", "matched": recovery},
-            {"name": "结构行情", "rule": "未触发其余四种状态；快速轮动、主线集中或结构分化仅作二级说明", "confirm": "2/3 日", "meaning": "整体未形成一致趋势，机会集中在局部结构。", "active": state["confirmed_state"] == "SELECTIVE", "matched": fast_rotation or has_mainline or (not fast_rotation and not has_mainline)},
+            {"name": "结构行情", "rule": "未触发其余状态；强板块须20/5日相对强度≥0且MA20覆盖≥60%，并存在连续行业主线或行业—概念跨层级强势", "confirm": "2/3 日", "meaning": "整体未形成一致趋势，但局部强板块已经得到验证。", "active": state["confirmed_state"] == "SELECTIVE", "matched": state["raw_state"] == "SELECTIVE" and has_local_opportunity},
         ],
         "score_rules": [
             {"name": "趋势分", "rule": "六个宽基分别计算：是否站上 MA20、MA20 五日斜率的历史分位、MA20 是否高于 MA60、20 日收益的历史分位；每个宽基取四项均值，全体取中位数。", "direction": "越高代表趋势越强。"},

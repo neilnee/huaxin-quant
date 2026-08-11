@@ -471,6 +471,7 @@ def classify_market_state(
         trend_score >= thresholds["offensive"]["trend_min"]
         and breadth_score >= thresholds["offensive"]["breadth_min"]
         and volatility_score <= thresholds["offensive"]["volatility_max"]
+        and rotation_score <= thresholds["offensive"]["rotation_max"]
     ):
         return "OFFENSIVE"
     if above20 >= 3 and above60 <= 2 and advance_ratio >= 50:
@@ -482,7 +483,7 @@ def classify_market_state(
         and advance_ratio >= thresholds["consolidating"]["advance_ratio_min"]
     ):
         return "CONSOLIDATING"
-    if local_opportunity:
+    if local_opportunity and above60 >= thresholds["selective"]["above_ma60_benchmarks_min"]:
         return "SELECTIVE"
     return "CONSOLIDATING"
 
@@ -863,7 +864,10 @@ def market_state_explainer(report: dict) -> dict:
     thresholds = CONFIG["state_thresholds"]
     defensive_breadth = state["breadth_score"] <= thresholds["defensive"]["breadth_max"]
     defensive_risk = state["volatility_score"] >= thresholds["defensive"]["volatility_min"] and state["rotation_score"] >= thresholds["defensive"]["rotation_min"]
-    offensive = state["trend_score"] >= thresholds["offensive"]["trend_min"] and state["breadth_score"] >= thresholds["offensive"]["breadth_min"] and state["volatility_score"] <= thresholds["offensive"]["volatility_max"]
+    offensive = (state["trend_score"] >= thresholds["offensive"]["trend_min"]
+        and state["breadth_score"] >= thresholds["offensive"]["breadth_min"]
+        and state["volatility_score"] <= thresholds["offensive"]["volatility_max"]
+        and state["rotation_score"] <= thresholds["offensive"]["rotation_max"])
     recovery = above20 >= 3 and above60 <= 2 and breadth["advance_ratio"] >= 50
     has_local_opportunity = bool(state.get("local_opportunity"))
     return {
@@ -885,9 +889,9 @@ def market_state_explainer(report: dict) -> dict:
         "states": [
             {"name": "防御期", "rule": "广度分 ≤ 45；或波动风险分 ≥ 75 且轮动分 ≥ 65", "confirm": "2/3 日", "meaning": "趋势与广度偏弱，不开放可执行信号。", "active": state["confirmed_state"] == "DEFENSIVE"},
             {"name": "弱势震荡", "rule": "命中弱势震荡条件；或未触发其他状态且缺少局部机会证据", "confirm": "2/3 日", "meaning": "趋势未修复且没有可确认的局部强势结构，不开放可执行信号。", "active": state["confirmed_state"] == "CONSOLIDATING", "matched": state["raw_state"] == "CONSOLIDATING"},
-            {"name": "趋势扩散", "rule": "趋势分 ≥ 65、广度分 ≥ 60、波动风险分 ≤ 60", "confirm": "3/3 日", "meaning": "宽基趋势与市场广度同步改善。", "active": state["confirmed_state"] == "OFFENSIVE", "matched": offensive},
+            {"name": "趋势扩散", "rule": "趋势分 ≥ 65、广度分 ≥ 60、波动风险分 ≤ 60、轮动分 ≤ 45", "confirm": "3/3 日", "meaning": "宽基趋势与市场广度同步改善，且板块更替不过快。", "active": state["confirmed_state"] == "OFFENSIVE", "matched": offensive},
             {"name": "修复期", "rule": "至少 3/6 宽基站上 MA20、至多 2/6 站上 MA60、全 A 上涨占比 ≥ 50", "confirm": "3/3 日", "meaning": "短期修复出现，但中期趋势尚待确认。", "active": state["confirmed_state"] == "RECOVERY_WATCH", "matched": recovery},
-            {"name": "结构行情", "rule": "未触发其余状态；强板块须20/5日相对强度≥0且MA20覆盖≥60%，并存在连续行业主线或行业—概念跨层级强势", "confirm": "2/3 日", "meaning": "整体未形成一致趋势，但局部强板块已经得到验证。", "active": state["confirmed_state"] == "SELECTIVE", "matched": state["raw_state"] == "SELECTIVE" and has_local_opportunity},
+            {"name": "结构行情", "rule": "至少3/6宽基站上MA60；强板块须20/5日相对强度≥0且MA20覆盖≥60%，并存在连续行业主线或行业—概念跨层级强势", "confirm": "2/3 日", "meaning": "中期市场基础仍在，局部强板块已经得到验证。", "active": state["confirmed_state"] == "SELECTIVE", "matched": state["raw_state"] == "SELECTIVE" and has_local_opportunity and above60 >= thresholds["selective"]["above_ma60_benchmarks_min"]},
         ],
         "score_rules": [
             {"name": "趋势分", "rule": "六个宽基分别计算：是否站上 MA20、MA20 五日斜率的历史分位、MA20 是否高于 MA60、20 日收益的历史分位；每个宽基取四项均值，全体取中位数。", "direction": "越高代表趋势越强。"},

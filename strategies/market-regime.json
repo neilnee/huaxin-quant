@@ -64,6 +64,7 @@
     "consolidating": {"volatility_min": 70, "trend_max": 50, "above_ma20_benchmarks_max": 2, "advance_ratio_min": 50},
     "selective": {
       "rotation_min": 60,
+      "above_ma60_benchmarks_min": 3,
       "persistent_mainline_days": 2,
       "minimum_persistent_mainlines": 1,
       "minimum_cross_level_strong_each": 1,

@@ -58,6 +58,23 @@ class DailyMainlineTests(unittest.TestCase):
         self.assertEqual(classify_market_state(**args, local_opportunity=True), "SELECTIVE")
         self.assertEqual(classify_market_state(**args, local_opportunity=False), "CONSOLIDATING")
 
+    def test_selective_market_requires_medium_term_index_base(self):
+        args = dict(
+            trend_score=32, volatility_score=84, breadth_score=52, rotation_score=36,
+            above20=5, above60=2, advance_ratio=29, local_opportunity=True,
+        )
+        self.assertEqual(classify_market_state(**args), "CONSOLIDATING")
+        args["above60"] = 3
+        self.assertEqual(classify_market_state(**args), "SELECTIVE")
+
+    def test_offensive_market_rejects_fast_rotation(self):
+        args = dict(
+            trend_score=70, volatility_score=50, breadth_score=65,
+            above20=6, above60=6, advance_ratio=70, local_opportunity=True,
+        )
+        self.assertEqual(classify_market_state(**args, rotation_score=40), "OFFENSIVE")
+        self.assertEqual(classify_market_state(**args, rotation_score=50), "SELECTIVE")
+
     def test_cross_level_strength_is_local_opportunity_evidence(self):
         rows = [
             {"block_type": "industry_sw_l2", "block_name": "医疗服务", "sector_phase": "转强", "data_status": "READY", "relative_strength_20": 2, "relative_strength_5": 1, "above_ma20_ratio": 70},

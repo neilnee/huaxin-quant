@@ -106,6 +106,10 @@
 .sector-guide > h3 { margin-bottom: 2px; }
 .sector-guide-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 10px; }
 .sector-guide-grid p { margin-top: 8px; line-height: 1.6; }
+.health-scale-guide { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.health-scale-guide > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: #141c29; }
+.health-scale-guide b { color: var(--muted); font-size: 11px; font-weight: 500; text-align: right; }
+.health-scale-note { margin: 8px 0 0; padding: 8px 10px; border-left: 3px solid #4d668c; background: #141c29; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .phase-guide-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .phase-guide-grid h4 { margin: 0 0 8px; }
 .phase-guide-grid dl { margin: 10px 0 0; }
@@ -113,8 +117,8 @@
 .phase-guide-grid dt { font-weight: 700; }
 .phase-guide-grid dd { margin: 0; color: var(--muted); text-align: right; }
 .auxiliary-guide { margin-top: 14px; }
-@media (max-width: 1100px) { .market-guide-grid, .sector-guide-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 650px) { .market-guide-grid, .sector-guide-grid { grid-template-columns: 1fr; } }
+@media (max-width: 1100px) { .market-guide-grid, .sector-guide-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .health-scale-guide { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 650px) { .market-guide-grid, .sector-guide-grid, .health-scale-guide { grid-template-columns: 1fr; } }
 
 .sector-leaders { margin-top: 14px; }
 .sector-leaders .detail-heading { display: flex; justify-content: space-between; margin-bottom: 6px; }

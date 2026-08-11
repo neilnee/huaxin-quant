@@ -1701,7 +1701,9 @@ def main() -> int:
             "status": "skipped", "reason": "disabled_by_flag", "analysis": ""
         }
         candidates = daily_mainline_candidates(report, sectors)
-        if args.no_llm:
+        if args.reuse_existing_mainline and existing_report.get("daily_mainline"):
+            report["daily_mainline"] = existing_report["daily_mainline"]
+        elif args.no_llm:
             report["daily_mainline"] = existing_report.get("daily_mainline") or daily_mainline_fallback(candidates, {"status": "skipped"}, "disabled_by_flag")
         else:
             news = fetch_daily_mainline_news(as_of, candidates)

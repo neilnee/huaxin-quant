@@ -27,6 +27,9 @@ python3 scripts/market_regime.py run --date 2026-06-01 --allow-snapshot-fallback
 # 批量重算确定性环境时复用已有当日主线，避免重复请求历史资讯和主线 LLM
 python3 scripts/market_regime.py run --date 2026-07-01 --no-llm --reuse-existing-mainline
 
+# 定向重试市场 LLM 解读，同时原样复用已经生成的当日主线
+python3 scripts/market_regime.py run --date 2026-07-01 --reuse-existing-mainline
+
 # 检查数据库、覆盖率和最近完整交易日
 python3 scripts/market_regime.py status
 
@@ -157,3 +160,5 @@ LLM 输出仍保持扁平的固定七字段 JSON，不增加事件嵌套结构�
 个股日线可在初始化时回填；板块成分严格点时可得仅从首次保存每日快照开始。缺少目标日期快照时，默认运行必须报数据未就绪，不得将当前成分伪装为历史成分。仅在历史补录明确传入 `--allow-snapshot-fallback` 时，才可选取距离目标日最近的完整成分快照计算，并在报告元数据和板块历史中标记 `current_snapshot_backfill`（页面显示“当前成分快照回填（非严格点时）”）。该降级结果可用于市场环境观察，不得用于宣称严格点时板块回测。
 
 历史批量重算可组合使用 `--no-llm --reuse-existing-mainline`：市场状态解读使用当次确定性指标的规则文案；若目标日已经保存过 `daily_mainline`，则原样复用，避免重复检索历史资讯。没有已有主线的日期仍输出规则型降级结论，不得借用其他日期的主线。
+
+每日完整工作流不得传入 `--no-llm`。市场解读必须 `llm.status=success` 且正文非空后才算发布成功；若市场解读首次失败，总控可使用 `--reuse-existing-mainline` 重跑市场发布，重新校验确定性指标并重试市场解读 LLM，已有的同日 `daily_mainline` 必须原样保留。若不存在可复用主线，则按正常流程生成，不得借用其他日期结果。

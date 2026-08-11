@@ -72,11 +72,26 @@ def _progress_path(date_yy):
 
 # ── stage runners ──
 
+def run_command_with_retries(command, *, attempts=2, label="步骤"):
+    """仅用于可重入步骤的有限重试。
+
+    Pool / Quant / Bloom / Signal Plan 会维护跨日状态，不得调用此函数盲目重试。
+    """
+    result = None
+    for attempt in range(1, attempts + 1):
+        result = subprocess.run(command, cwd=PROJECT_ROOT)
+        if result.returncode == 0:
+            return result
+        if attempt < attempts:
+            print(f"[daily] ⚠ {label}失败 (exit {result.returncode})，将重试 {attempts - attempt} 次")
+    return result
+
+
 def run_market_update(date_yy):
     iso = datetime.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
-    return subprocess.run(
+    return run_command_with_retries(
         ["python3", "scripts/market_regime.py", "update", "--date", iso],
-        cwd=PROJECT_ROOT,
+        label="市场数据更新",
     )
 
 
@@ -124,9 +139,9 @@ def run_signal_fundamentals(date_yy):
 
 def run_capital_observer(date_yy):
     iso = datetime.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
-    return subprocess.run(
+    return run_command_with_retries(
         ["python3", "scripts/capital_observer.py", "run", "--date", iso, "--fetch"],
-        cwd=PROJECT_ROOT,
+        label="资金观测",
     )
 
 
@@ -144,16 +159,62 @@ def load_capital_observer_meta(date_yy):
     return meta
 
 
-def run_dashboard_publish(date_yy):
+def load_market_llm_meta(date_yy):
+    """读取市场报告并确认当日 LLM 解读真正成功。"""
+    path = Path(PROJECT_ROOT) / "market" / f"market_regime_{date_yy}.json"
+    if not path.exists():
+        raise FileNotFoundError(path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    expected_date = datetime.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
+    meta = payload.get("meta") or {}
+    if meta.get("run_date") != expected_date:
+        raise ValueError(f"市场报告日期不一致: {meta.get('run_date')} != {expected_date}")
+    llm = payload.get("llm") or {}
+    if llm.get("status") != "success":
+        reason = llm.get("reason") or "unknown"
+        raise ValueError(f"市场 LLM 解读未成功: {llm.get('status')} ({reason})")
+    if not str(llm.get("analysis") or "").strip():
+        raise ValueError("市场 LLM 解读为空")
+    return llm
+
+
+def run_market_publish(date_yy):
+    """发布市场面板；LLM 失败时保留主线结论并定向重试一次。"""
     iso = datetime.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
+    command = ["python3", "scripts/market_regime.py", "run", "--date", iso]
+    result = subprocess.run(command, cwd=PROJECT_ROOT)
+    if result.returncode == 0:
+        try:
+            load_market_llm_meta(date_yy)
+            return result
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"[daily] ⚠ {exc}，将保留已生成主线并重试 LLM")
+    else:
+        print(f"[daily] ⚠ 市场面板失败 (exit {result.returncode})，将保留已有主线并重试")
+
+    retry_command = command + ["--reuse-existing-mainline"]
+    result = subprocess.run(retry_command, cwd=PROJECT_ROOT)
+    if result.returncode != 0:
+        return result
+    try:
+        load_market_llm_meta(date_yy)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"[daily] ✗ {exc}")
+        return subprocess.CompletedProcess(retry_command, 4)
+    return result
+
+
+def run_dashboard_publish(date_yy):
+    result = run_market_publish(date_yy)
+    if result.returncode != 0:
+        return result
     commands = [
-        ["python3", "scripts/market_regime.py", "run", "--date", iso],
         ["python3", "scripts/backtest.py", "--date", date_yy],
         ["python3", "scripts/dashboard_vcp.py", "--date", date_yy],
         ["python3", "scripts/dashboard_signals.py", "--date", date_yy, "--fetch-capital", "--max-mx-requests", "5"],
     ]
     for command in commands:
-        result = subprocess.run(command, cwd=PROJECT_ROOT)
+        result = run_command_with_retries(command, label=f"页面发布 {command[1]}")
         if result.returncode != 0:
             return result
     return result
@@ -169,6 +230,7 @@ def verify_pipeline_outputs(date_yy):
         root / "bloom" / "state" / f"bloom_input_{date_yy}.json",
         root / "signal_plan" / f"signal_plan_{date_yy}.json",
         root / "capital" / f"capital_observer_{date_yy}.json",
+        root / "market" / f"market_regime_{date_yy}.json",
         root / "market" / "data" / f"market_context_{date_yy}.json",
         month_dir / f"capital_context_{date_yy}.js",
         month_dir / f"market_context_{date_yy}.js",
@@ -202,6 +264,25 @@ def verify_pipeline_outputs(date_yy):
         except (OSError, json.JSONDecodeError):
             missing.append(f"capital/capital_observer_{date_yy}.json（格式无效）")
 
+    market_report_path = root / "market" / f"market_regime_{date_yy}.json"
+    if market_report_path.exists():
+        try:
+            load_market_llm_meta(date_yy)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            missing.append(str(exc))
+
+    market_context_path = root / "market" / "data" / f"market_context_{date_yy}.json"
+    if market_context_path.exists():
+        try:
+            context = json.loads(market_context_path.read_text(encoding="utf-8"))
+            market_state = context.get("market_state") or {}
+            if market_state.get("analysis_source") != "llm":
+                missing.append(f"market context 解读来源:{market_state.get('analysis_source')}")
+            if not str(market_state.get("analysis") or "").strip():
+                missing.append("market context 市场解读为空")
+        except (OSError, json.JSONDecodeError):
+            missing.append(f"market/data/market_context_{date_yy}.json（格式无效）")
+
     signals_path = month_dir / f"signals_context_{date_yy}.js"
     if signals_path.exists():
         try:
@@ -234,9 +315,9 @@ def open_dashboard():
 
 def run_zixuan(date_yy):
     """Rebuild Eastmoney's all-watchlist after Bloom has completed."""
-    return subprocess.run(
+    return run_command_with_retries(
         ["python3", "scripts/sync_zixuan.py", "--date", date_yy, "--yes"],
-        cwd=PROJECT_ROOT,
+        label="东方财富自选同步",
     )
 
 
@@ -293,7 +374,7 @@ def main():
     errors = []
 
     def stop_after(stage):
-        tracker.mark_done()
+        tracker.mark_failed(errors[-1] if errors else f"{stage} 失败")
         print(f"[daily] {stage} 失败，流水线中止。共 {len(errors)} 个错误")
         sys.exit(1)
 
@@ -445,12 +526,14 @@ def main():
             tracker.step_done("zixuan")
             print(f"[daily] ✓ zixuan done")
 
-    tracker.mark_done()
-    print(f"[daily] 流水线完成，共 {len(errors)} 个错误")
     if errors:
+        tracker.mark_failed(errors[-1])
+        print(f"[daily] 流水线中止，共 {len(errors)} 个错误")
         for e in errors:
             print(f"  ⚠️ {e}")
         sys.exit(1)
+    tracker.mark_done()
+    print("[daily] 流水线完成，共 0 个错误")
 
 
 if __name__ == "__main__":

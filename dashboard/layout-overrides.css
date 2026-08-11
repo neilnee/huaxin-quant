@@ -81,6 +81,8 @@
 .sector-status-pill.sector-stage-watch { border-color: #46566d; background: #2c3749; color: #c8d2df; }
 .sector-status-pill.sector-stage-fading { border-color: #326c55; background: #1e4133; color: #83d6ad; }
 .sector-status-pill.sector-stage-building, .sector-status-pill.sector-stage-unknown { color: #aab6c7; background: #303846; }
+.vcp-sector > div:nth-child(2) { white-space: nowrap; overflow-x: auto; }
+.vcp-sector > div:nth-child(2) > .sector-state { display: inline-flex; align-items: center; min-height: 24px; margin: 4px 3px 0 0; padding: 3px 7px; line-height: 1.2; vertical-align: middle; }
 .signal-capital-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .signal-capital-grid article { padding: 10px; border: 1px solid var(--line); border-radius: 7px; background: #101722; }
 .signal-capital-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; }

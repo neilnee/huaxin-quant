@@ -47,15 +47,15 @@
           <article><h3>短期趋势</h3><p>MA20 五日斜率 = 当前 MA20 ÷ 五个交易日前 MA20 − 1。</p><dl><div><dt>上行</dt><dd>斜率 ≥ 0.20%</dd></div><div><dt>走平</dt><dd>斜率介于 −0.20% 与 0.20%</dd></div><div><dt>下行</dt><dd>斜率 ≤ −0.20%</dd></div></dl></article>
           <article><h3>14日平均波动</h3><p>显示值为 ATR14 ÷ 收盘价。单日真实波幅取高低差、高点与昨收差、低点与昨收差三者最大值，ATR14 为其 14 日均值；标签由 ATR14、10 日实现波动、10 日振幅三项历史分位的综合风险分决定。</p><dl><div><dt>低波动</dt><dd>综合分 &lt; 40</dd></div><div><dt>中波动</dt><dd>≥ 40 且 &lt; 75</dd></div><div><dt>高波动</dt><dd>综合分 ≥ 75</dd></div></dl></article>
         </div>
-        <div class="sector-guide"><h3>板块当前状态</h3><p class="muted">排名均在各自类别内计算；“此前 5 日”不包含当前交易日。</p><div class="sector-guide-grid">
-          <div><span class="sector-state emerging">强势初现</span><p>当前 20 日排名前 20、5 日相对强度非负、上涨成员占比不低于 50%，但持续时间或短期排名尚未满足更高阶段。</p></div>
-          <div><span class="sector-state mainline">持续主线</span><p>当前 20 日排名前 20，此前 5 日至少 4 日处于前 20，且 5 日相对强度不弱于全 A、当日上涨成员占比不低于 50%。</p></div>
-          <div><span class="sector-state strengthening">新晋强化</span><p>当前 20 日排名前 20、5 日排名前 10，但此前 5 日进入前 20 少于 3 日，表示短期新近转强。</p></div>
-          <div><span class="sector-state divergence">高位分歧</span><p>当前 20 日排名前 20且此前 5 日至少 4 日处于前 20，但 5 日相对强度转负，或当日上涨成员占比低于 45%。</p></div>
-          <div><span class="sector-state pulse">轮动脉冲</span><p>5 日排名进入前 10，但 20 日排名仍在前 20之外，表示短线脉冲尚未形成中期持续性。</p></div>
-          <div><span class="sector-state fading">弱势退潮</span><p>此前已经处于持续主线或高位分歧，随后短期强度继续恶化或20日排名跌出前20；必须有从强转弱的生命周期证据。</p></div>
-          <div><span class="sector-state watch">观察中</span><p>数据完整但尚未形成明确阶段结论，仅作中性兜底，不表达正在转强或转弱。</p></div>
-          <div><span class="sector-state building">历史积累中</span><p>此前有效观察日不足 5 日，暂不做板块阶段判断；这不是强弱结论。</p></div>
+        <div class="sector-guide"><h3>板块生命周期与健康度</h3><p class="muted">排名百分位均在各自类别内计算；主生命周期与当日健康度分开，数据质量不作为强弱状态。</p><div class="sector-guide-grid">
+          <div><span class="sector-state emerging">转强</span><p>20 日排名进入类型内前 15%，但此前 5 日达到该门槛不足 4 日；持续性仍待确认。</p></div>
+          <div><span class="sector-state mainline">主线</span><p>20 日排名位于类型内前 15%，此前 5 日至少 4 日达到同一门槛；退出使用前 20% 的滞后门槛。</p></div>
+          <div><span class="sector-state fading">退潮</span><p>此前已有强势生命周期，随后连续跌出前 20% 或连续出现明显分歧。</p></div>
+          <div><span class="sector-state health-good">扩散健康</span><p>5 日相对强度非负，且当日上涨成员占比不低于 50%。</p></div>
+          <div><span class="sector-state health-cooling">扩散降温</span><p>5 日相对强度非负，但上涨成员占比处于 45%～50% 缓冲带；不直接推翻主生命周期。</p></div>
+          <div><span class="sector-state health-divergence">明显分歧</span><p>5 日相对强度为负，或当日上涨成员占比低于 45%。</p></div>
+          <div><span class="sector-state pulse">短线脉冲</span><p>5 日排名进入类型内前 10%，但 20 日排名尚未进入前 15%；只作附加标记。</p></div>
+          <div><span class="sector-state building">数据质量</span><p>READY、BUILDING、BACKFILL 独立记录；历史积累和非点时回填不再伪装成板块状态。</p></div>
         </div></div>
       </section>
     </div>

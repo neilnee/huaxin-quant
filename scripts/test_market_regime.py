@@ -24,9 +24,11 @@ from scripts.market_regime import (
     finalize_sector_rankings,
     confirm_market_state,
     link_mainline_stocks,
+    market_structure_tag,
     reported_prior_catalyst_date,
     resolve_market_snapshot,
     select_daily_mainline_news,
+    state_label,
 )
 
 
@@ -46,6 +48,15 @@ def sector(name, rel1, rel5, rel20, breadth, volume, density, kind="gn"):
 
 
 class DailyMainlineTests(unittest.TestCase):
+    def test_selective_market_uses_one_primary_state_with_secondary_tag(self):
+        report = {"state": {"confirmed_state": "SELECTIVE", "rotation_score": 36, "persistent_mainline_count": 1}}
+        self.assertEqual(state_label("SELECTIVE", report), "结构行情")
+        self.assertEqual(market_structure_tag(report), "主线集中")
+
+        report["state"]["rotation_score"] = 70
+        self.assertEqual(state_label("SELECTIVE", report), "结构行情")
+        self.assertEqual(market_structure_tag(report), "快速轮动")
+
     def test_market_index_preserves_other_published_modules(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

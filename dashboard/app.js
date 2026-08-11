@@ -174,9 +174,11 @@ function renderSignalDetail(row){
   const financialTitle=[row.financial_report_period,row.financial_source].filter(Boolean).join(" · ")||"尚无可用财务快照";
   const group=(label,content,className="")=>`<div class="signal-tag-group ${className}"><span class="signal-tag-label">${label}</span><div class="signal-tag-values">${content}</div></div>`;
   const marketHtml=`<span class="market-status-pill market-${marketTone}" title="${esc((market.risk_tags||[]).join(" · ")||"同日市场环境")}">${esc(market.label||"市场状态待确认")} · ${esc(market.tag||"环境待确认")}</span>`;
-  const sectorTone={"主线":"strong","转强":"neutral","退潮":"blocked","NONE":"blocked"}[row.sector_phase]||{STRONG:"strong",NEUTRAL:"neutral",BLOCKED:"blocked"}[row.sector_group]||"unknown";
-  const sectorTags=row.sector_phase?`${sectorPhaseTag({...row,data_status:row.sector_data_status})} ${sectorHealthTag(row)}`:sectorStateTag(row.sector_state||"状态待确认");
-  const sectorHtml=`<span class="sector-status-pill sector-${sectorTone}">${esc(row.sector_name||"板块待确认")}</span> ${sectorTags}`;
+  const sectorStatus=row.sector_data_status||"READY",sectorStage=sectorStatus==="BUILDING"||sectorStatus==="BACKFILL"?"building":{"主线":"mainline","转强":"emerging","退潮":"fading","NONE":"watch"}[row.sector_phase]||"unknown";
+  const sectorPhaseText=sectorStatus==="BUILDING"?"数据积累":sectorStatus==="BACKFILL"?"回填数据":row.sector_phase==="NONE"?"观察":row.sector_phase||row.sector_state||"状态待确认";
+  const sectorLabel=row.sector_phase?[row.sector_name||"板块待确认",sectorPhaseText,sectorHealthText(row)].join(" · "):[row.sector_name||"板块待确认",row.sector_state||"状态待确认"].join(" · ");
+  const sectorTitle=!row.sector_phase?"旧版板块状态":row.sector_health==="数据不足"?"阶段趋势数据不足":`阶段趋势 ${sectorHealthLevelText(row)}；加权方向分 ${vcpNumber(row.sector_health_score,2)}，不参与仓位折算`;
+  const sectorHtml=`<span class="sector-status-pill sector-stage-${sectorStage}" title="${esc(sectorTitle)}">${esc(sectorLabel)}</span>`;
   const financialHtml=financialTags.map(tag=>`<span class="signal-financial-pill financial-${financialTone}" title="${esc(financialTitle)}">${esc(tag)}</span>`).join("");
   const technicalHtml=flags.map(flag=>`<span class="signal-technical-pill">${esc(signalRiskLabel(flag))}</span>`).join("");
   const factor=`${Math.round(Number(row.environment_factor||0)*100)}%`;

@@ -77,7 +77,7 @@ market/stock_strength_<YYMMDD>.csv
 market/sector_heat_<YYMMDD>.csv
 ```
 
-所属板块统一采用 `stock_strength` 的申万二级行业 `sw_l2_name`；板块状态按同名 `industry_sw_l2` 行读取。页面展示板块名称、主阶段和带数字的阶段趋势标签；仓位只读取 `sector_phase`，`sector_health_level/sector_health` 只作阶段内变化提醒，不参与折算。任何输入缺失都不得回退到其他日期，`BUILDING/BACKFILL`、未知市场或未知板块按 0 仓位处理。
+所属板块统一采用 `stock_strength` 的申万二级行业 `sw_l2_name`；板块状态按同名 `industry_sw_l2` 行读取。页面把板块名称、主阶段和带数字的阶段趋势合并为一个标签，固定使用“板块 · 阶段 · +N 状态”格式，整体颜色只跟随主阶段，标签文字必须纵向居中；仓位只读取 `sector_phase`，`sector_health_level/sector_health` 只作阶段内变化提醒，不参与折算。任何输入缺失都不得回退到其他日期，`BUILDING/BACKFILL`、未知市场或未知板块按 0 仓位处理。
 
 仓位计算只允许实际买点等级 A/B；C/D 一律显示“观察”，但仍保留原始信号和回测记录。三类买点的基础仓位为：
 

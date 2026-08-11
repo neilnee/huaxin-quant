@@ -30,11 +30,19 @@ python3 scripts/market_regime.py run --date 2026-07-01 --no-llm --reuse-existing
 # 检查数据库、覆盖率和最近完整交易日
 python3 scripts/market_regime.py status
 
+# 规则升级后的隔离历史回放；先审计，再显式发布
+python3 scripts/rebuild_market_history.py
+python3 scripts/rebuild_market_history.py --publish
+
 # 直接双击打开本地页面
 # dashboard/index.html
 ```
 
 `init` 支持 `--resume`；初始化中断或局部失败后，不重复请求已完成标的。`--max-codes` 仅用于小样本接口验证，不能产生正式市场状态。
+
+历史规则升级后必须通过 `rebuild_market_history.py` 按交易日顺序回放，不得直接批量覆盖正式状态库。回放默认写入 `.tmp/market_history_refresh/` 的独立状态库并生成差异与哈希审计；只有显式 `--publish` 才更新正式环境派生数据。发布范围仅包括市场状态库、市场确定性指标与板块热度、市场 Dashboard 上下文，以及 VCP/信号页面中的环境字段。现有 Quant、Bloom 输入与状态、Signal Plan、持仓、估值、市场 LLM 解读和每日主线结论必须保持原文件或原字段不变。发布前后必须验证受保护文件哈希一致，并把旧正式状态库与关键环境文件备份到 `.tmp/market_history_backups/`。
+
+历史回放必须保留数据口径：存在同日 universe、板块成分和行业快照时使用 `point_in_time`；早于首个完整快照的日期只能标记 `current_snapshot_backfill/BACKFILL`，不得输出伪装成严格点时的阶段趋势。缺少交易日市场产物的日期不得补造市场状态。
 
 ## 数据持久化与输出
 

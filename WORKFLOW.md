@@ -62,6 +62,13 @@ python3 scripts/sync_zixuan.py --date 260709 --yes
 
 各模块也可独立运行，详见 `instructions/` 目录下各指令卡。
 
+市场或板块状态规则升级后，使用隔离历史回放刷新派生环境，不重新运行 Quant、Bloom、Signal Plan 或 LLM：
+
+```bash
+python3 scripts/rebuild_market_history.py
+python3 scripts/rebuild_market_history.py --publish
+```
+
 ## 独立执行模型三估值分析
 
 模型三按单只股票主动触发，不属于 `daily.py` 的每日固定链路，也不自动消费 Bloom。日常执行统一使用端到端总控 `run_valuation.py`；`valuate.py`、`valuation_pipeline.py`、`calc_valuation.py` 只作为内部阶段或开发调试入口。

@@ -202,7 +202,7 @@ class DashboardSignalsMarketNoticeTests(unittest.TestCase):
         self.assertEqual(notice["state"], "DEFENSIVE")
         self.assertEqual(notice["candidate_state"], "SELECTIVE")
         self.assertEqual(notice["label"], "弱势下行")
-        self.assertEqual(notice["tag"], "市场仅观察")
+        self.assertEqual(notice["tag"], "防守观望")
         self.assertEqual(notice["tone"], "blocked")
         self.assertEqual(notice["risk_tags"], ["高波动", "市场广度偏弱"])
 
@@ -218,7 +218,7 @@ class DashboardSignalsMarketNoticeTests(unittest.TestCase):
 
         self.assertEqual(notice["state"], "RECOVERY_WATCH")
         self.assertEqual(notice["candidate_state"], "SELECTIVE")
-        self.assertEqual(notice["tag"], "谨慎试错")
+        self.assertEqual(notice["tag"], "只选主线")
 
     def test_missing_same_day_context_does_not_fall_back(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -16,11 +16,11 @@ ROOT=Path(PROJECT_ROOT); RUNS=ROOT/"cache"/"quant_runs"; PLAN_RUNS=ROOT/"signal_
 PLAN_CONFIG,_=load_strategy_config("04-signal-plan.json"); POSITION_CFG=PLAN_CONFIG["position_guidance"]
 FIELDS=("code","name","structure_stage","setup_signal","action_hint","suggested_position","setup_pattern_score","setup_score","setup_quality","setup_structure_score","setup_structure_anchor_date","setup_structure_base","setup_action_score","setup_current_action_score","setup_breakout_action_score","setup_score_components","setup_reasons","setup_misses","setup_risk_flags","structure_score","structure_risk_score","structure_risk_flags","close","MA20","MA60","pivot_price","structure_pivot","support_price","invalid_price","breakout_level","last_contraction_low","pivot_distance","distance_ma20","volume","vol_ma5","vol_ma20","volume_dry_up","vol_ratio","volume_pattern","chg_5","chg_20","setup_plan_inputs","reason")
 MARKET_ADVICE={
- "OFFENSIVE":("环境支持","supportive","市场趋势与广度支持信号验证，但仍须等待个股量价条件成立并遵守失效位。"),
- "SELECTIVE":("结合板块确认","selective","市场机会偏结构化，优先确认标的所属板块强度与个股量价条件，避免只凭 VCP 形态执行。"),
- "RECOVERY_WATCH":("谨慎试错","caution","市场处于修复观察期，信号可跟踪但确认度有限，等待趋势、广度与个股量价继续改善。"),
- "CONSOLIDATING":("等待趋势确认","caution","市场方向尚未明确，VCP 主要用于建立观察顺序，等待指数趋势与个股触发条件共同确认。"),
- "DEFENSIVE":("市场仅观察","blocked","市场处于弱势环境，VCP 以结构发现和观察为主；即使量价触发，也优先等待波动、广度和趋势修复确认。"),
+ "OFFENSIVE":("广泛参与","supportive","趋势与广度支持更广泛的板块机会，但仍须等待个股量价条件成立并遵守失效位。"),
+ "SELECTIVE":("聚焦强势","selective","市场机会偏结构化，只对转强和主线板块计算条件仓位，避免只凭 VCP 形态执行。"),
+ "RECOVERY_WATCH":("只选主线","caution","市场处于修复期，只有主线板块保留低仓条件预案，其余板块继续观察。"),
+ "CONSOLIDATING":("暂停参与","caution","市场方向尚未明确，所有板块条件仓位归零，VCP 只用于建立观察顺序。"),
+ "DEFENSIVE":("防守观望","blocked","市场处于弱势环境，所有板块条件仓位归零，等待波动、广度和趋势修复。"),
 }
 MARKET_LABEL_CODES={"趋势扩散":"OFFENSIVE","结构性强势":"OFFENSIVE","结构行情":"SELECTIVE","结构分化":"SELECTIVE","修复期":"RECOVERY_WATCH","修复观察":"RECOVERY_WATCH","弱势震荡":"CONSOLIDATING","弱势收敛":"CONSOLIDATING","防御期":"DEFENSIVE","弱势下行":"DEFENSIVE"}
 SOURCE_LABELS={

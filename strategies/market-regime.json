@@ -83,7 +83,8 @@
     "entry_rank_percentile_max": 0.15,
     "exit_rank_percentile_max": 0.20,
     "short_pulse_rank_percentile_max": 0.10,
-    "exit_confirmation_days": 2
+    "exit_confirmation_days": 2,
+    "retreat_to_observation_days": 5
   },
   "sector_health": {
     "change_thresholds": {

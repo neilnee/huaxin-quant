@@ -83,6 +83,32 @@ class SectorStateTests(unittest.TestCase):
         self.assertEqual(result["sector_policy_tier"], "D")
         self.assertEqual(result["sector_state"], "弱势退潮")
 
+    def test_fading_expires_to_observation_after_five_more_weak_days(self):
+        history = prior(
+            [0.30] * 5, phases=["退潮"] * 5,
+            rank5=[0.40] * 5, rs5=[-2.0] * 5, breadth5=[35.0] * 5,
+        )
+        result = classify_sector_phase(
+            row(rank_pct_20=0.28, rank_pct_5=0.30, relative_strength_5=0.5, up_breadth_5=55),
+            history,
+        )
+        self.assertEqual(result["sector_phase"], "NONE")
+        self.assertEqual(result["sector_state"], "观察中")
+        self.assertEqual(result["sector_health"], "蓄势增强")
+
+    def test_recent_fading_remains_fading(self):
+        history = prior(
+            [0.30, 0.30, 0.30, 0.30, 0.05],
+            phases=["退潮", "退潮", "退潮", "退潮", "主线"],
+        )
+        result = classify_sector_phase(row(rank_pct_20=0.28), history)
+        self.assertEqual(result["sector_phase"], "退潮")
+
+    def test_fading_recovery_inside_top_twenty_does_not_expire(self):
+        history = prior([0.30] * 5, phases=["退潮"] * 5)
+        result = classify_sector_phase(row(rank_pct_20=0.18), history)
+        self.assertEqual(result["sector_phase"], "退潮")
+
     def test_observation_uses_improvement_language(self):
         history = prior([0.40] * 5, rank5=[0.40] * 5, rs5=[0.0] * 5, breadth5=[50.0] * 5)
         value = row(rank_pct_20=0.30, rank_pct_5=0.20, relative_strength_5=3, up_breadth_5=70)

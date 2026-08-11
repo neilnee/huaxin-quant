@@ -281,12 +281,23 @@ def classify_sector_phase(row: dict, prior: pd.DataFrame) -> dict:
         # legacy weak-state enum was much broader and would over-migrate stale
         # observations during a schema upgrade.
         fading_latest = latest_phase == "退潮"
+        retreat_to_observation_days = max(1, int(settings["retreat_to_observation_days"]))
+        retreat_history = prior.head(retreat_to_observation_days)
+        stale_fading = (
+            fading_latest
+            and not in_exit_zone
+            and len(retreat_history) == retreat_to_observation_days
+            and retreat_history.sector_phase.eq("退潮").all()
+            and retreat_history.rank_pct_20.gt(settings["exit_rank_percentile_max"]).all()
+        )
         had_lifecycle = (
             prior_entry_days >= int(settings["mainline_min_days"])
             or established_latest
             or fading_latest
         )
-        if had_lifecycle and outside_confirmed:
+        if stale_fading:
+            phase = "NONE"
+        elif had_lifecycle and outside_confirmed:
             phase = "退潮"
         elif in_entry_zone and prior_entry_days >= int(settings["mainline_min_days"]):
             phase = "主线"

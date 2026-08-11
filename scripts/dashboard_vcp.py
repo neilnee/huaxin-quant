@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(os.path.abspath(__file__)).parents[1]))
 from scripts.shared import PROJECT_ROOT
+from scripts.plan_realization import realized_events_for_date
 
 
 ROOT = Path(PROJECT_ROOT)
@@ -21,6 +22,7 @@ BLOOM_INPUT_DIR = ROOT / "bloom" / "state"
 QUANT_RUN_DIR = ROOT / "cache" / "quant_runs"
 MARKET_DATA_DB = ROOT / "cache" / "market_data" / "market_data.sqlite"
 MARKET_REGIME_DB = ROOT / "cache" / "market_regime" / "market_regime.sqlite"
+SIGNAL_PLAN_DIR = ROOT / "signal_plan"
 MARKET_OUTPUT_DIR = ROOT / "market"
 DASHBOARD_DATA_DIR = ROOT / "dashboard" / "data"
 DASHBOARD_START_DATE = "260506"
@@ -196,13 +198,35 @@ def build_context(date_yy: str) -> dict:
     quant_results = load_json(quant_path).get("results", []) if quant_path.exists() else []
     quant_by_code = {str(row.get("code", "")).zfill(6): row for row in quant_results}
     active = bloom.get("sections", {}).get("active", [])
-    industry_by_code = load_industry_context([str(row.get("code", "")).zfill(6) for row in active], bloom.get("summary", {}).get("date", ""))
-    candidates = [compact_candidate(row, quant_by_code.get(str(row.get("code", "")).zfill(6), {}), industry_by_code.get(str(row.get("code", "")).zfill(6), {})) for row in active]
-    candidates.sort(key=lambda row: (row["bloom_status"] != "TRIGGERED", row["bloom_status"] != "MATURE", -float(row["structure_score"] or 0)))
+    realized = realized_events_for_date(date_yy, SIGNAL_PLAN_DIR, QUANT_RUN_DIR, MARKET_DATA_DB)
+    realized_by_key = {
+        (str(event.get("code", "")).zfill(6), event.get("setup_type")): event
+        for event in realized
+    }
+    bloom_by_code = {str(row.get("code", "")).zfill(6): row for row in active}
+    codes = [str(row.get("code", "")).zfill(6) for row in active]
+    industry_by_code = load_industry_context(codes, bloom.get("summary", {}).get("date", ""))
+    candidates = []
+    for code in codes:
+        bloom_row = bloom_by_code.get(code, {})
+        candidate = compact_candidate(bloom_row, quant_by_code.get(code, {}), industry_by_code.get(code, {}))
+        event = realized_by_key.get((code, candidate.get("model2_setup_signal")))
+        candidate["previous_plan_hit"] = bool(event)
+        candidate["previous_plan_source_date"] = event.get("plan_date") if event else None
+        candidates.append(candidate)
+    candidates.sort(key=lambda row: (row.get("bloom_status") != "TRIGGERED", row.get("bloom_status") != "MATURE", -float(row["structure_score"] or 0)))
+    summary = dict(bloom.get("summary", {}))
+    summary["source_status_dist"] = summary.get("status_dist", {})
+    summary["status_dist"] = {
+        status: sum(row.get("bloom_status") == status for row in candidates)
+        for status in ("TRIGGERED", "MATURE", "FORMING", "EARLY", "RISK_BLOCKED", "COOLDOWN")
+    }
+    summary["plan_hit_total"] = sum(row.get("previous_plan_hit", False) for row in candidates)
+    summary["display_total"] = len(candidates)
     return {
         "meta": {"run_date": bloom.get("summary", {}).get("date"), "source": bloom_path.name,
                  "quant_source": quant_path.name if quant_path.exists() else None},
-        "summary": bloom.get("summary", {}),
+        "summary": summary,
         "candidates": candidates,
     }
 

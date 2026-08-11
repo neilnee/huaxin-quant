@@ -208,6 +208,30 @@ def priority_for_quality(quality):
     return "LOW"
 
 
+def cap_quality(quality, quality_cap):
+    if quality not in "ABCD" or not quality_cap or quality_cap not in "ABCD":
+        return quality
+    return quality_cap if "ABCD".index(quality) < "ABCD".index(quality_cap) else quality
+
+
+def next_retest_timing(inputs):
+    days_after = safe_float(inputs.get("days_after_breakout"))
+    if days_after is None:
+        return None
+    next_days = int(days_after) + 1
+    min_allowed = int(inputs.get("min_allowed_days_after_breakout", 1))
+    standard_min = int(inputs.get("standard_min_days_after_breakout", inputs.get("min_days_after_breakout", 3)))
+    standard_max = int(inputs.get("standard_max_days_after_breakout", inputs.get("max_days_after_breakout", 10)))
+    max_allowed = int(inputs.get("max_allowed_days_after_breakout", standard_max))
+    if next_days < min_allowed or next_days > max_allowed:
+        return {"timing": "OUTSIDE", "days_after_breakout": next_days, "quality_cap": None}
+    if next_days < standard_min:
+        return {"timing": "FAST", "days_after_breakout": next_days, "quality_cap": None}
+    if next_days <= standard_max:
+        return {"timing": "STANDARD", "days_after_breakout": next_days, "quality_cap": None}
+    return {"timing": "LATE", "days_after_breakout": next_days, "quality_cap": "C"}
+
+
 def max_not_none(*values):
     nums = [safe_float(v) for v in values if safe_float(v) is not None]
     return max(nums) if nums else None
@@ -445,7 +469,10 @@ def build_retest_plan(row, follow=False):
     if safe_float(inputs.get("recent_breakout_level")) is not None:
         pivot = safe_float(inputs.get("recent_breakout_level"))
     current_volume = safe_float(row.get("volume"))
-    quality = target_quality(row)
+    timing = next_retest_timing(inputs) if follow else None
+    if timing and timing["timing"] == "OUTSIDE":
+        return None
+    quality = cap_quality(target_quality(row), timing.get("quality_cap")) if timing else target_quality(row)
     plan = base_plan(
         row,
         "RETEST",
@@ -477,6 +504,13 @@ def build_retest_plan(row, follow=False):
         "plan_reason": "回踩确认买点延续有效区" if follow else "突破后回踩确认计划",
         "risk_note": "重新跌回失效价以下则回踩确认失败",
     })
+    if timing:
+        plan.update({
+            "setup_timing": timing["timing"],
+            "days_after_breakout": timing["days_after_breakout"],
+            "timing_quality_cap": timing["quality_cap"],
+        })
+        plan["formula_ref"]["next_retest_timing"] = timing
     return plan
 
 
@@ -536,7 +570,9 @@ def plans_for_row(row):
     # PULLBACK/BREAKOUT remain permanently unavailable after the breakout.
     if allowed_families == {"RETEST"}:
         if signal == "RETEST_BUY":
-            plans.append(build_retest_plan(row, follow=True))
+            plan = build_retest_plan(row, follow=True)
+            if plan:
+                plans.append(plan)
         return plans
 
     if signal == "PULLBACK_BUY" and "PULLBACK" in allowed_families:

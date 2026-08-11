@@ -1095,6 +1095,26 @@ def setup_quality(score):
     return "D"
 
 
+def weaker_quality_cap(*caps):
+    valid = [cap for cap in caps if cap and cap in "ABCD"]
+    return max(valid, key="ABCD".index) if valid else None
+
+
+def classify_retest_timing(days_after, cfg=None):
+    cfg = cfg or SETUP_CFG["retest_buy"]
+    min_allowed = int(cfg.get("min_allowed_days_after_breakout", 1))
+    standard_min = int(cfg.get("standard_min_days_after_breakout", cfg.get("min_days_after_breakout", 3)))
+    standard_max = int(cfg.get("standard_max_days_after_breakout", cfg.get("max_days_after_breakout", 10)))
+    max_allowed = int(cfg.get("max_allowed_days_after_breakout", standard_max))
+    if days_after < min_allowed or days_after > max_allowed:
+        return "OUTSIDE", None
+    if days_after < standard_min:
+        return "FAST", None
+    if days_after <= standard_max:
+        return "STANDARD", None
+    return "LATE", "C"
+
+
 def setup_hard_reject(overheat, cfg):
     hard_flags = set(cfg.get("hard_risk_flags", []))
     return any(flag in overheat["risk_flags"] for flag in hard_flags)
@@ -1159,31 +1179,82 @@ def setup_risk_adjustment(overheat):
 
 
 def finalize_setup_score(setup_signal, action_quality_score, action_reasons, action_misses, structure, overheat):
-    """Build final buy-point score from structure stage, action quality, and risk flags."""
+    """Build final buy-point score from the signal-time structure, action, and risk."""
     stage_cfg = SETUP_SCORING_CFG.get("stage_base", {})
     type_cfg = SETUP_SCORING_CFG.get("action_type_base", {})
-    stage_base = stage_cfg.get(structure.get("state"), 0)
+    context = (structure.get("setup_score_context") or {}).get(setup_signal, {})
+    structure_quality_cfg = SETUP_SCORING_CFG.get("structure_quality", {})
+    setup_structure_score = safe_float(context.get("structure_score"))
+    structure_anchor_date = context.get("anchor_date", "")
+    if setup_structure_score is None:
+        structure_base = stage_cfg.get(structure.get("state"), 0)
+        structure_source = "stage_fallback"
+    else:
+        structure_base = clamp(
+            int(round(setup_structure_score * structure_quality_cfg.get("weight", 0.6))),
+            structure_quality_cfg.get("min", 0),
+            structure_quality_cfg.get("max", 60),
+        )
+        structure_source = context.get("source", "signal_time_structure")
     type_base = type_cfg.get(setup_signal, 0)
-    action_quality_score = clamp(int(round(action_quality_score)), 0, 15)
+    current_action_score = clamp(int(round(action_quality_score)), 0, 15)
+    breakout_action_score = safe_float(context.get("breakout_action_score"))
+    if setup_signal == "RETEST_BUY" and breakout_action_score is not None:
+        weights = SETUP_SCORING_CFG.get("retest_action_weights", {})
+        breakout_weight = weights.get("breakout", 0.4)
+        retest_weight = weights.get("retest", 0.6)
+        action_quality_score = clamp(
+            int(round(breakout_action_score * breakout_weight + current_action_score * retest_weight)),
+            0,
+            15,
+        )
+    else:
+        action_quality_score = current_action_score
     setup_pattern_score = type_base + action_quality_score
     risk_adjust, risk_reasons, risk_misses = setup_risk_adjustment(overheat)
-    final_score = stage_base + type_base + action_quality_score + risk_adjust
+    final_score = structure_base + type_base + action_quality_score + risk_adjust
     final_score = clamp(int(round(final_score)), 0, 100)
 
-    reasons = [
-        f"结构基础{stage_base}",
-        f"{setup_signal}类型+{type_base}",
-        f"动作质量+{action_quality_score}",
-    ]
+    if setup_structure_score is None:
+        structure_reason = f"结构阶段兼容基础{structure_base}"
+    else:
+        weight = structure_quality_cfg.get("weight", 0.6)
+        structure_reason = f"结构锚点评分{round_or_none(setup_structure_score)}×{weight:.2f}={structure_base}"
+    reasons = [structure_reason, f"{setup_signal}类型+{type_base}"]
+    if setup_signal == "RETEST_BUY" and breakout_action_score is not None:
+        weights = SETUP_SCORING_CFG.get("retest_action_weights", {})
+        breakout_weight = weights.get("breakout", 0.4)
+        retest_weight = weights.get("retest", 0.6)
+        reasons.append(
+            f"动作质量+{action_quality_score}(突破{int(round(breakout_action_score))}×{breakout_weight:.2f}"
+            f"+回踩{current_action_score}×{retest_weight:.2f})"
+        )
+    else:
+        reasons.append(f"动作质量+{action_quality_score}")
     reasons.extend(action_reasons or [])
     reasons.extend(risk_reasons)
 
     misses = list(action_misses or [])
     misses.extend(risk_misses)
-    if stage_base <= 0:
+    if structure_base <= 0:
         misses.append("结构阶段无买点基础")
 
-    return final_score, setup_pattern_score, reasons, misses
+    score_context = {
+        "setup_structure_score": round_or_none(setup_structure_score),
+        "setup_structure_anchor_date": structure_anchor_date,
+        "setup_structure_base": structure_base,
+        "setup_action_score": action_quality_score,
+        "setup_current_action_score": current_action_score,
+        "setup_breakout_action_score": round_or_none(breakout_action_score),
+        "setup_score_components": {
+            "structure_base": structure_base,
+            "action_type_base": type_base,
+            "action_quality_score": action_quality_score,
+            "risk_adjust": risk_adjust,
+            "structure_source": structure_source,
+        },
+    }
+    return final_score, setup_pattern_score, reasons, misses, score_context
 
 
 def base_setup_result(hit=False, reason="", score=0, reasons=None, misses=None, pattern_score=None, **kwargs):
@@ -1419,7 +1490,7 @@ def detect_pullback_buy(df, structure, overheat):
         not any(flag in overheat["risk_flags"] for flag in cfg["blocked_risk_flags"]),
     ]
     action_quality_score, reasons, misses = score_pullback_setup(df, structure, volume_ok, volume_reason)
-    score, pattern_score, reasons, misses = finalize_setup_score(
+    score, pattern_score, reasons, misses, score_context = finalize_setup_score(
         "PULLBACK_BUY", action_quality_score, reasons, misses, structure, overheat
     )
     hit = all(hard_conditions) and score >= cfg["min_setup_score"]
@@ -1455,13 +1526,18 @@ def detect_pullback_buy(df, structure, overheat):
         invalid_price=invalid,
         volume_confirmation=volume_reason,
         plan_inputs=plan_inputs,
+        **score_context,
     )
 
 
 def detect_breakout_buy(df, structure, overheat):
     latest = df.iloc[-1]
     cfg = SETUP_CFG["breakout_buy"]
-    if structure.get("post_breakout_state") != "PRE_BREAKOUT":
+    first_breakout_day = (
+        structure.get("post_breakout_state") == "POST_BREAKOUT_HOT"
+        and structure.get("breakout_days") == 0
+    )
+    if structure.get("post_breakout_state") != "PRE_BREAKOUT" and not first_breakout_day:
         return base_setup_result(False, "原VCP已突破，禁止重复BREAKOUT_BUY")
     if setup_hard_reject(overheat, cfg):
         return base_setup_result(False, "风险硬排除")
@@ -1513,7 +1589,7 @@ def detect_breakout_buy(df, structure, overheat):
         not any(flag in overheat["risk_flags"] for flag in cfg["blocked_risk_flags"]),
     ]
     action_quality_score, reasons, misses = score_breakout_setup(df, structure, pivot)
-    score, pattern_score, reasons, misses = finalize_setup_score(
+    score, pattern_score, reasons, misses, score_context = finalize_setup_score(
         "BREAKOUT_BUY", action_quality_score, reasons, misses, structure, overheat
     )
     hit = all(hard_conditions) and score >= cfg["min_setup_score"]
@@ -1540,6 +1616,7 @@ def detect_breakout_buy(df, structure, overheat):
         support_price=pivot,
         invalid_price=pivot * cfg["invalid_support_ratio"],
         plan_inputs=plan_inputs,
+        **score_context,
     )
 
 
@@ -1645,6 +1722,7 @@ def detect_retest_buy(df, structure, overheat, code=None):
         return base_setup_result(False, "近期无有效突破")
 
     days_after = len(df) - breakout["idx"] - 1
+    setup_timing, timing_quality_cap = classify_retest_timing(days_after, cfg)
     ma10 = safe_float(latest.get("MA10"))
     plan_inputs = {
         "allowed": True,
@@ -1662,16 +1740,19 @@ def detect_retest_buy(df, structure, overheat, code=None):
         "ideal_volume_max": breakout["volume"] * 0.70,
         "confirm_price": max(breakout["level"], ma10) if ma10 is not None else breakout["level"],
         "invalid_price": breakout["level"] * cfg["invalid_support_ratio"],
-        "min_days_after_breakout": cfg["min_days_after_breakout"],
-        "max_days_after_breakout": cfg["max_days_after_breakout"],
-        "max_allowed_days_after_breakout": cfg.get("max_allowed_days_after_breakout", cfg["max_days_after_breakout"]),
+        "setup_timing": setup_timing,
+        "min_allowed_days_after_breakout": cfg.get("min_allowed_days_after_breakout", 1),
+        "standard_min_days_after_breakout": cfg.get("standard_min_days_after_breakout", cfg.get("min_days_after_breakout", 3)),
+        "standard_max_days_after_breakout": cfg.get("standard_max_days_after_breakout", cfg.get("max_days_after_breakout", 10)),
+        "max_allowed_days_after_breakout": cfg.get("max_allowed_days_after_breakout", cfg.get("standard_max_days_after_breakout", cfg.get("max_days_after_breakout", 10))),
         "blocked_risk_flags": cfg["blocked_risk_flags"],
         "structure_volume_alignment": volume_alignment,
     }
-    if days_after < 1 or days_after > cfg.get("max_allowed_days_after_breakout", cfg["max_days_after_breakout"]):
+    if setup_timing == "OUTSIDE":
         return base_setup_result(
             False,
             "突破后天数不在允许范围",
+            setup_timing=setup_timing,
             breakout_level=breakout["level"],
             plan_inputs=plan_inputs,
         )
@@ -1713,10 +1794,17 @@ def detect_retest_buy(df, structure, overheat, code=None):
         not any(flag in overheat["risk_flags"] for flag in cfg["blocked_risk_flags"]),
     ]
     action_quality_score, reasons, misses = score_retest_setup(df, breakout)
-    score, pattern_score, reasons, misses = finalize_setup_score(
+    score, pattern_score, reasons, misses, score_context = finalize_setup_score(
         "RETEST_BUY", action_quality_score, reasons, misses, structure, overheat
     )
-    quality_cap = "B" if volume_alignment == "CAUTION" else None
+    volume_quality_cap = "B" if volume_alignment == "CAUTION" else None
+    quality_cap = weaker_quality_cap(volume_quality_cap, timing_quality_cap)
+    timing_labels = {
+        "FAST": f"快速回踩窗口（突破后第{days_after}日）",
+        "STANDARD": f"标准回踩窗口（突破后第{days_after}日）",
+        "LATE": f"迟到回踩窗口（突破后第{days_after}日，质量最高C）",
+    }
+    reasons.append(timing_labels[setup_timing])
     hit = all(hard_conditions) and score >= cfg["min_setup_score"]
     if pullback_low < breakout["level"] * cfg["max_pullback_below_breakout_ratio"]:
         misses.append("回踩有效跌破突破位")
@@ -1747,11 +1835,13 @@ def detect_retest_buy(df, structure, overheat, code=None):
         quality_cap=quality_cap,
         hard_block=selling_blocked,
         setup_risk_flags=["FAILED_RETEST_SELLING"] if selling_blocked else [],
+        setup_timing=setup_timing,
         structure_volume_alignment=volume_alignment,
         breakout_level=breakout["level"],
         support_price=breakout["level"],
         invalid_price=breakout["level"] * cfg["invalid_support_ratio"],
         plan_inputs=plan_inputs,
+        **score_context,
     )
 
 
@@ -1815,6 +1905,55 @@ def score_setup(df, structure, pullback, retest, overheat):
             "position": position_score,
         }
     }
+
+
+def setup_anchor_snapshot(df, event_idx):
+    """Score the VCP visible immediately before a setup event."""
+    if event_idx is None or event_idx <= 0:
+        return None
+    anchor_df = df.iloc[:event_idx].copy()
+    if anchor_df.empty or pd.isna(anchor_df.iloc[-1].get("MA20")):
+        return None
+    anchor_structure = detect_vcp_structure(anchor_df)
+    anchor_overheat = detect_overheat(anchor_df)
+    anchor_score = score_setup(anchor_df, anchor_structure, {}, {}, anchor_overheat)
+    return {
+        "structure_score": anchor_score["structure_score"],
+        "anchor_date": str(anchor_df.iloc[-1].get("date", ""))[:10],
+        "source": "pre_event_vcp",
+        "structure_stage": anchor_structure.get("state", ""),
+    }
+
+
+def build_setup_score_context(df, structure, current_score):
+    """Select the structure time anchor required by each buy-point lifecycle."""
+    latest_date = str(df.iloc[-1].get("date", ""))[:10]
+    context = {
+        "PULLBACK_BUY": {
+            "structure_score": current_score.get("structure_score", 0),
+            "anchor_date": latest_date,
+            "source": "current_vcp",
+            "structure_stage": structure.get("state", ""),
+        }
+    }
+
+    breakout_context = setup_anchor_snapshot(df, len(df) - 1)
+    if breakout_context:
+        context["BREAKOUT_BUY"] = breakout_context
+
+    breakout = structure.get("breakout") or {}
+    breakout_idx = breakout.get("idx")
+    retest_context = setup_anchor_snapshot(df, breakout_idx)
+    if retest_context:
+        breakout_level = safe_float(breakout.get("level"))
+        if breakout_level and breakout_idx is not None:
+            breakout_df = df.iloc[:breakout_idx + 1]
+            breakout_action_score, _, _ = score_breakout_setup(
+                breakout_df, structure, breakout_level
+            )
+            retest_context["breakout_action_score"] = breakout_action_score
+        context["RETEST_BUY"] = retest_context
+    return context
 
 
 def structure_stage_from_internal(state):
@@ -1943,9 +2082,17 @@ def screen(df, code=None):
             "setup_pattern_score": 0,
             "setup_score": 0,
             "setup_quality": "D",
+            "setup_structure_score": None,
+            "setup_structure_anchor_date": "",
+            "setup_structure_base": 0,
+            "setup_action_score": 0,
+            "setup_current_action_score": 0,
+            "setup_breakout_action_score": None,
+            "setup_score_components": {},
             "setup_reasons": [],
             "setup_misses": ["数据不足"],
             "setup_risk_flags": [],
+            "setup_timing": "",
             "structure_volume_alignment": "",
             "support_price": None, "invalid_price": None, "breakout_level": None,
             "reason": f"MA20=NaN，仅{len(df)}个有效交易日", "structure_risk_flags": [],
@@ -1992,6 +2139,7 @@ def screen(df, code=None):
             )
     score = score_setup(df, structure, {}, {}, overheat)
     structure["structure_score_estimate"] = score["structure_score"]
+    structure["setup_score_context"] = build_setup_score_context(df, structure, score)
     pullback = detect_pullback_buy(df, structure, overheat)
     breakout = detect_breakout_buy(df, structure, overheat)
     retest = detect_retest_buy(df, structure, overheat, code=code)
@@ -2020,9 +2168,17 @@ def screen(df, code=None):
         "setup_pattern_score": setup_detail.get("setup_pattern_score", setup_detail.get("setup_score", 0)),
         "setup_score": setup_detail.get("setup_score", 0),
         "setup_quality": setup_detail.get("setup_quality", "D"),
+        "setup_structure_score": setup_detail.get("setup_structure_score"),
+        "setup_structure_anchor_date": setup_detail.get("setup_structure_anchor_date", ""),
+        "setup_structure_base": setup_detail.get("setup_structure_base", 0),
+        "setup_action_score": setup_detail.get("setup_action_score", 0),
+        "setup_current_action_score": setup_detail.get("setup_current_action_score", 0),
+        "setup_breakout_action_score": setup_detail.get("setup_breakout_action_score"),
+        "setup_score_components": setup_detail.get("setup_score_components", {}),
         "setup_reasons": setup_detail.get("setup_reasons", []),
         "setup_misses": setup_detail.get("setup_misses", []),
         "setup_risk_flags": setup_detail.get("setup_risk_flags", []),
+        "setup_timing": setup_detail.get("setup_timing", ""),
         "structure_volume_alignment": setup_detail.get("structure_volume_alignment", ""),
         "support_price": round_or_none(support),
         "invalid_price": round_or_none(invalid),
@@ -2067,7 +2223,9 @@ def screen(df, code=None):
 CSV_COLUMNS = [
     "股票代码", "股票名称", "structure_type", "structure_stage", "setup_signal",
     "action_hint", "suggested_position", "model2_include", "structure_score", "structure_risk_score",
-    "setup_pattern_score", "setup_score", "setup_quality", "setup_reasons", "setup_misses", "setup_risk_flags", "structure_volume_alignment",
+    "setup_pattern_score", "setup_score", "setup_quality", "setup_structure_score", "setup_structure_anchor_date",
+    "setup_structure_base", "setup_action_score", "setup_current_action_score", "setup_breakout_action_score", "setup_score_components",
+    "setup_reasons", "setup_misses", "setup_risk_flags", "setup_timing", "structure_volume_alignment",
     "structure_risk_flags", "support_price", "invalid_price", "breakout_level",
     "contraction_count", "contraction_pcts", "contraction_days", "volume_pattern",
     "pivot_price", "structure_pivot", "market_pivot", "pivot_distance", "last_contraction_low",
@@ -2143,9 +2301,17 @@ def write_csv(results, quant_path):
                 r["setup_pattern_score"],
                 r["setup_score"],
                 r["setup_quality"],
+                r["setup_structure_score"] if r.get("setup_structure_score") is not None else "",
+                r.get("setup_structure_anchor_date", ""),
+                r.get("setup_structure_base", 0),
+                r.get("setup_action_score", 0),
+                r.get("setup_current_action_score", 0),
+                r["setup_breakout_action_score"] if r.get("setup_breakout_action_score") is not None else "",
+                json.dumps(r.get("setup_score_components", {}), ensure_ascii=False, separators=(",", ":")),
                 ";".join(r["setup_reasons"]),
                 ";".join(r["setup_misses"]),
                 ";".join(r.get("setup_risk_flags", [])),
+                r.get("setup_timing", ""),
                 r.get("structure_volume_alignment", ""),
                 ";".join(r["structure_risk_flags"]),
                 r["support_price"] if r["support_price"] is not None else "",

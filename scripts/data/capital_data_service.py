@@ -12,6 +12,7 @@ from scripts.data.capital_data_sources import (
     EastmoneyIndustrySource,
     MiaoxiangCapitalSource,
     RequestBudgetExceeded,
+    contract_field_matches_metric,
     normalize_stock_code,
     source_hash,
     utc_timestamp,
@@ -686,17 +687,23 @@ class CapitalDataService:
 
     def _contract_error(self, entity_type: str, entity_code: str, contracts: dict) -> str | None:
         with connect_capital_db(self.capital_db_path) as conn:
-            existing = {row["metric_name"]: row["source_field_code"] for row in conn.execute(
-                "SELECT metric_name,source_field_code FROM source_contracts WHERE entity_type=? AND entity_code=?",
+            existing = {row["metric_name"]: dict(row) for row in conn.execute(
+                "SELECT metric_name,source_field_code,source_field_name FROM source_contracts WHERE entity_type=? AND entity_code=?",
                 (entity_type, entity_code),
             )}
         for (code, metric), contract in contracts.items():
             if code != entity_code or metric not in existing:
                 continue
-            if existing[metric] != contract["source_field_code"]:
+            previous = existing[metric]
+            previous_name = previous["source_field_name"]
+            incoming_name = contract["source_field_name"]
+            previous_matches = contract_field_matches_metric(entity_type, metric, previous_name)
+            incoming_matches = contract_field_matches_metric(entity_type, metric, incoming_name)
+            if not previous_matches or not incoming_matches:
                 return (
-                    f"妙想字段契约变化: {metric} {existing[metric]}"
-                    f" -> {contract['source_field_code']}"
+                    f"妙想字段语义契约变化: {metric} "
+                    f"{previous['source_field_code']}[{previous_name}] -> "
+                    f"{contract['source_field_code']}[{incoming_name}]"
                 )
         return None
 

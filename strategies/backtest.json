@@ -1,5 +1,5 @@
 {
-  "strategy_version": "strategy_backtest_v3",
+  "strategy_version": "strategy_backtest_v5",
   "event_rules": {
     "setup_families": ["PULLBACK", "BREAKOUT", "RETEST"],
     "failed_lifecycle_states": ["POST_BREAKOUT_FAILED", "POST_BREAKOUT_EXPIRED"]
@@ -7,8 +7,68 @@
   "evaluation": {
     "window_min_days": 5,
     "window_max_days": 20,
+    "default_sample_window": "90D",
+    "sample_windows": [
+      {"id": "20D", "label": "近20个交易日", "max_age_trade_days": 20},
+      {"id": "90D", "label": "近90个交易日", "max_age_trade_days": 90},
+      {"id": "ALL", "label": "全部历史", "max_age_trade_days": null}
+    ],
     "horizons": [5, 10, 20],
     "breakout_pivot_ratio": 1.01,
     "win_return_threshold_pct": 0.0
+  },
+  "condition_evaluation": {
+    "capital_observation_start_date": "2026-08-07",
+    "capital_lookback_trade_days": 5,
+    "sample_thresholds": {
+      "preliminary": 10,
+      "stable": 30
+    },
+    "conditions": [
+      {
+        "id": "strong_market_confirmation",
+        "category": "market",
+        "label": "市场强势确认",
+        "field": "market_state_label",
+        "operator": "in",
+        "values": ["趋势扩散", "结构性强势"],
+        "baseline_values": ["趋势扩散", "结构性强势", "震荡轮动", "结构分化", "修复观察"],
+        "weak_values": ["弱势收敛", "弱势下行"],
+        "unavailable_values": ["环境待确认", "市场状态待确认"]
+      },
+      {
+        "id": "strong_sector_confirmation",
+        "category": "sector",
+        "label": "板块强势确认",
+        "field": "sector_state",
+        "operator": "in",
+        "values": ["持续主线", "新晋强化", "强势初现"],
+        "baseline_values": ["持续主线", "新晋强化", "强势初现", "轮动脉冲", "高位分歧"],
+        "weak_values": ["观察中", "历史积累中", "弱势退潮"],
+        "unavailable_values": ["环境待确认"]
+      },
+      {
+        "id": "strong_main_capital_confirmation",
+        "category": "capital",
+        "label": "主力资金强势确认",
+        "field": "main_order_state",
+        "operator": "in",
+        "values": ["INFLOW"],
+        "baseline_values": ["INFLOW", "BALANCED"],
+        "weak_values": ["OUTFLOW"],
+        "unavailable_values": ["INSUFFICIENT"]
+      },
+      {
+        "id": "strong_margin_confirmation",
+        "category": "capital",
+        "label": "融资资金强势确认",
+        "field": "margin_state",
+        "operator": "in",
+        "values": ["LEVERAGING"],
+        "baseline_values": ["LEVERAGING", "STABLE"],
+        "weak_values": ["DELEVERAGING"],
+        "unavailable_values": ["INSUFFICIENT", "NOT_APPLICABLE"]
+      }
+    ]
   }
 }

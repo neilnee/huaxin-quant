@@ -305,5 +305,14 @@ class MiaoxiangCapitalSource:
         return resolved
 
 
+def contract_field_matches_metric(entity_type: str, metric: str, field_name: str) -> bool:
+    """Return whether a source label still has the controlled metric semantics."""
+    aliases = SECTOR_FIELD_ALIASES if entity_type == "sector" else STOCK_FIELD_ALIASES if entity_type == "stock" else None
+    if aliases is None or metric not in aliases or not str(field_name or "").strip():
+        return False
+    resolved = MiaoxiangCapitalSource._resolve_fields({"candidate": field_name}, aliases)
+    return resolved.get(metric) == "candidate"
+
+
 def utc_timestamp() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")

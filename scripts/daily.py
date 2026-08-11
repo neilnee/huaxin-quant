@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Daily pipeline: 数据更新 → Pool → Quant → Bloom → Signal Plan → 信号财务提示 → 页面发布 → 打开面板 → 东方财富自选同步。
+Daily pipeline: 数据更新 → Pool → Quant → Bloom → Signal Plan → 信号财务提示
+→ 完整资金观测 → 页面发布（含信号股资金补查）→ 打开面板 → 东方财富自选同步。
 
 Launches each stage via subprocess, writes step-level progress to a shared
 JSON file consumed by monitor.py. This script is non-interactive and designed
@@ -121,6 +122,28 @@ def run_signal_fundamentals(date_yy):
     )
 
 
+def run_capital_observer(date_yy):
+    iso = datetime.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
+    return subprocess.run(
+        ["python3", "scripts/capital_observer.py", "run", "--date", iso, "--fetch"],
+        cwd=PROJECT_ROOT,
+    )
+
+
+def load_capital_observer_meta(date_yy):
+    path = Path(PROJECT_ROOT) / "capital" / f"capital_observer_{date_yy}.json"
+    if not path.exists():
+        raise FileNotFoundError(path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    meta = payload.get("meta") or {}
+    expected_date = datetime.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
+    if meta.get("trade_date") != expected_date:
+        raise ValueError(f"资金观测日期不一致: {meta.get('trade_date')} != {expected_date}")
+    if meta.get("fetch_enabled") is not True:
+        raise ValueError("当日完整资金观测未启用资金补取")
+    return meta
+
+
 def run_dashboard_publish(date_yy):
     iso = datetime.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
     commands = [
@@ -145,7 +168,9 @@ def verify_pipeline_outputs(date_yy):
         root / "cache" / "quant_runs" / f"quant_{date_yy}.json",
         root / "bloom" / "state" / f"bloom_input_{date_yy}.json",
         root / "signal_plan" / f"signal_plan_{date_yy}.json",
+        root / "capital" / f"capital_observer_{date_yy}.json",
         root / "market" / "data" / f"market_context_{date_yy}.json",
+        month_dir / f"capital_context_{date_yy}.js",
         month_dir / f"market_context_{date_yy}.js",
         month_dir / f"vcp_context_{date_yy}.js",
         month_dir / f"signals_context_{date_yy}.js",
@@ -161,13 +186,43 @@ def verify_pipeline_outputs(date_yy):
             missing.append("dashboard/data/index.js（格式无效）")
         else:
             index = json.loads(match.group(1))
-            for module in ("market", "vcp", "signals", "backtest"):
+            for module in ("capital", "market", "vcp", "signals", "backtest"):
                 if date_yy not in index.get(module, {}).get("available", []):
                     missing.append(f"dashboard index {module}:{date_yy}")
+
+    capital_path = root / "capital" / f"capital_observer_{date_yy}.json"
+    if capital_path.exists():
+        try:
+            meta = (json.loads(capital_path.read_text(encoding="utf-8")).get("meta") or {})
+            expected_date = datetime.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
+            if meta.get("trade_date") != expected_date:
+                missing.append(f"capital observer 日期:{meta.get('trade_date')}")
+            if meta.get("fetch_enabled") is not True:
+                missing.append("capital observer 未启用资金补取")
+        except (OSError, json.JSONDecodeError):
+            missing.append(f"capital/capital_observer_{date_yy}.json（格式无效）")
+
+    signals_path = month_dir / f"signals_context_{date_yy}.js"
+    if signals_path.exists():
+        try:
+            assignment = re.search(
+                rf"\[{re.escape(json.dumps(date_yy))}\]\s*=\s*(\{{.*\}});\s*$",
+                signals_path.read_text(encoding="utf-8"),
+                re.S,
+            )
+            if not assignment:
+                raise ValueError("assignment missing")
+            signals = json.loads(assignment.group(1))
+            if (signals.get("meta") or {}).get("capital_fetch_enabled") is not True:
+                missing.append("signals context 未启用信号股资金补查")
+            if any("capital_support" not in row for row in signals.get("signals", [])):
+                missing.append("signals context 存在缺少 capital_support 的信号")
+        except (OSError, ValueError, json.JSONDecodeError):
+            missing.append(f"dashboard signals:{date_yy}（格式无效）")
     if missing:
         print("[daily] 页面/产物完整性核验失败：" + "；".join(missing))
         return False
-    print(f"[daily] ✓ 完整性核验通过：{date_yy} 四类日期页面数据均已发布")
+    print(f"[daily] ✓ 完整性核验通过：{date_yy} 资金/市场/VCP/信号/回测日期数据均已发布")
     return True
 
 
@@ -228,7 +283,7 @@ def main():
 
     progress_path = _progress_path(date_yy)
     tracker = ProgressTracker(progress_path)
-    tracker.init(["data_update", "pool", "quant", "bloom", "signal_plan", "signal_fundamentals", "dashboard", "verify", "open_dashboard", "zixuan"])
+    tracker.init(["data_update", "pool", "quant", "bloom", "signal_plan", "signal_fundamentals", "capital_observer", "dashboard", "verify", "open_dashboard", "zixuan"])
     tracker.set_date(date_yy)
 
     print(f"[daily] 流水线启动 {date_yy}")
@@ -318,9 +373,36 @@ def main():
         tracker.step_done("signal_fundamentals")
         print("[daily] ✓ signal fundamentals done")
 
-    # ── Step 7: Dashboard packages ──
+    # ── Step 7: Full daily capital observation ──
+    tracker.step_start("capital_observer")
+    print("[daily] → 当天完整资金观测")
+    result = run_capital_observer(date_yy)
+    if result.returncode != 0:
+        errors.append(f"capital_observer: exit {result.returncode}")
+        tracker.step_done("capital_observer", error=f"exit {result.returncode}")
+        stop_after("资金观测")
+    try:
+        capital_meta = load_capital_observer_meta(date_yy)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        errors.append(f"capital_observer: {exc}")
+        tracker.step_done("capital_observer", error=str(exc))
+        stop_after("资金观测")
+    tracker.step_update(
+        "capital_observer",
+        observer_status=capital_meta.get("status"),
+        requests_used=capital_meta.get("requests_used"),
+        request_budget=capital_meta.get("request_budget"),
+        error_count=len(capital_meta.get("errors") or []),
+    )
+    tracker.step_done("capital_observer")
+    if capital_meta.get("status") == "partial":
+        print("[daily] ⚠ 资金观测部分完成，已保留当日产物与错误明细")
+    else:
+        print("[daily] ✓ capital observer done")
+
+    # ── Step 8: Dashboard packages, including signal-stock capital fetch ──
     tracker.step_start("dashboard")
-    print("[daily] → 生成数据分析面板")
+    print("[daily] → 生成数据分析面板（含信号股资金补查）")
     result = run_dashboard_publish(date_yy)
     if result.returncode != 0:
         errors.append(f"dashboard: exit {result.returncode}")
@@ -329,7 +411,7 @@ def main():
     tracker.step_done("dashboard")
     print("[daily] ✓ dashboard done")
 
-    # ── Step 8: Verify all date-scoped outputs ──
+    # ── Step 9: Verify all date-scoped outputs ──
     tracker.step_start("verify")
     if not verify_pipeline_outputs(date_yy):
         errors.append("verify: missing date-scoped output")
@@ -337,7 +419,7 @@ def main():
         stop_after("完整性核验")
     tracker.step_done("verify")
 
-    # ── Step 9: Open dashboard ──
+    # ── Step 10: Open dashboard ──
     tracker.step_start("open_dashboard")
     print("[daily] → 打开数据分析面板")
     result = open_dashboard()
@@ -348,7 +430,7 @@ def main():
         tracker.step_done("open_dashboard")
         print("[daily] ✓ dashboard opened")
 
-    # ── Step 10: Eastmoney all-watchlist rebuild ──
+    # ── Step 11: Eastmoney all-watchlist rebuild ──
     if not _env_flag("ENABLE_ZIXUAN_SYNC"):
         tracker.step_done("zixuan")
         print("[daily] - zixuan disabled (set ENABLE_ZIXUAN_SYNC=true in .env to enable)")

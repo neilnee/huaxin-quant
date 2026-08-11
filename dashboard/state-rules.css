@@ -5,5 +5,9 @@
 .rules-current ul { margin: 0; padding-left: 18px; color: #c8d2df; }.rule-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .rule-metrics div { padding: 8px; border-radius: 6px; background: #1d293a; }.rule-metrics span { display: block; color: var(--muted); font-size: 11px; }.rule-metrics b { display: block; margin-top: 2px; font-size: 15px; }
 .rules-all { margin-top: 18px; }.rules-all table { font-size: 12px; }.rules-all th, .rules-all td { white-space: normal; vertical-align: top; }.rules-all th:nth-child(-n+2), .rules-all td:nth-child(-n+2) { text-align: left; }.rules-all .active-rule { background: #223148; }
+.rules-all th:first-child, .rules-all td:first-child { width: 112px; }
+.rules-all th:nth-child(3), .rules-all td:nth-child(3) { width: 92px; white-space: nowrap; }
+.state-rule-name { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.state-rule-name .tag { flex: 0 0 auto; line-height: 1.2; }
 .score-rules { margin-top: 18px; }.score-rules > div { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 8px; }.score-rules article { padding: 12px; border: 1px solid var(--line); border-radius: 7px; background: #141c29; }.score-rules h4 { margin: 0 0 6px; font-size: 14px; }.score-rules p { margin: 0; color: #c8d2df; font-size: 12px; }.score-rules span { display: block; margin-top: 7px; color: var(--accent); font-size: 12px; }
 @media (max-width: 900px) { .rules-current { grid-template-columns: 1fr; }.rule-metrics, .score-rules > div { grid-template-columns: repeat(2, 1fr); } }

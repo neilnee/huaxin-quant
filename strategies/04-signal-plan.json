@@ -1,5 +1,5 @@
 {
-  "strategy_version": "model4_signal_plan_v5",
+  "strategy_version": "model4_signal_plan_v6",
   "description": "Signal Plan parameters. This model-4 signal layer consumes Model 2 quant JSON and emits next-session concrete price/volume setup plans.",
   "inputs": {
     "quant_run_dir": "cache/quant_runs"
@@ -55,19 +55,13 @@
       "BREAKOUT_BUY": {"A": [40, 50], "B": [20, 30]},
       "RETEST_BUY": {"A": [60, 80], "B": [40, 50]}
     },
-    "sector_groups": {
-      "STRONG": ["持续主线", "新晋强化", "强势初现"],
-      "NEUTRAL": ["轮动脉冲", "高位分歧"],
-      "BLOCKED": ["观察中", "历史积累中", "弱势退潮"]
+    "phase_factors": {
+      "OFFENSIVE": {"NONE": 0.5, "转强": 0.8, "主线": 1.0, "退潮": 0.0},
+      "SELECTIVE": {"NONE": 0.0, "转强": 0.6, "主线": 1.0, "退潮": 0.0},
+      "RECOVERY_WATCH": {"NONE": 0.0, "转强": 0.0, "主线": 0.5, "退潮": 0.0},
+      "CONSOLIDATING": {"NONE": 0.0, "转强": 0.0, "主线": 0.0, "退潮": 0.0},
+      "DEFENSIVE": {"NONE": 0.0, "转强": 0.0, "主线": 0.0, "退潮": 0.0}
     },
-    "environment_factors": {
-      "OFFENSIVE": {"STRONG": 1.0, "NEUTRAL": 0.7, "BLOCKED": 0.0},
-      "SELECTIVE": {"STRONG": 1.0, "NEUTRAL": 0.5, "BLOCKED": 0.0},
-      "RECOVERY_WATCH": {"STRONG": 0.7, "NEUTRAL": 0.3, "BLOCKED": 0.0},
-      "CONSOLIDATING": {"STRONG": 0.0, "NEUTRAL": 0.0, "BLOCKED": 0.0},
-      "DEFENSIVE": {"STRONG": 0.0, "NEUTRAL": 0.0, "BLOCKED": 0.0}
-    },
-    "unknown_sector_group": "BLOCKED",
     "unknown_environment_factor": 0.0,
     "rounding_step_pct": 5
   },

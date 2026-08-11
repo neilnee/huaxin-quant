@@ -313,7 +313,7 @@ dashboard/data/<YYYYMM>/vcp_context_<YYMMDD>.js
 
 `dashboard_signals.py` 在每日工作流中必须以 `--fetch-capital` 启动，并按当日触发股与 Signal Plan 股票代码去重补查个股主力和融资资金。该补查使用独立于完整资金观测的请求预算；发布数据包必须记录 `capital_fetch_enabled`、实际请求数和错误列表，每条信号必须保留 `capital_support`，数据缺失时明确降级而不得省略。每日完整性核验必须确认同日信号数据包确实启用了资金补查。
 
-VCP 页面补充申万二级行业与板块状态时，优先读取同日 `market/stock_strength_<YYMMDD>.csv` 和 `market/sector_heat_<YYMMDD>.csv`；同日文件缺失时才读取数据库中的同日快照。不得回退到其他日期。历史降级口径沿用 Market Regime 产物的 `history_basis`，不得把当前成分回填伪装成严格点时数据。
+VCP 页面补充申万二级行业与板块状态时，优先读取同日 `market/stock_strength_<YYMMDD>.csv` 和 `market/sector_heat_<YYMMDD>.csv`；同日文件缺失时才读取数据库中的同日快照。不得回退到其他日期。历史降级口径沿用 Market Regime 产物的 `history_basis`，不得把当前成分回填伪装成严格点时数据。所属板块卡片中的主阶段、阶段趋势和短线脉冲附加标记必须使用同一尺寸的胶囊标签，并在同一水平行内纵向居中展示，不得因卡片通用 `span` 样式变成纵向排列；各标签继续保留自身语义颜色。
 
 信号发现页的个股详情必须保持以下层次：“当日触发/次日计划”与“发现来源”标签并列，不再单独显示“发现来源”标题；“市场板块”同行展示市场环境与申万二级板块组合标签，不再在顶部网格重复显示板块和板块状态；顶部网格只保留买点类型和结构阶段。次日触发条件紧跟在仓位预案之后，随后依次展示个股资金验证和量价参考。
 

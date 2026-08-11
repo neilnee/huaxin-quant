@@ -70,13 +70,16 @@ def connect_state_db() -> sqlite3.Connection:
         member_count INTEGER NOT NULL, rank_20 INTEGER NOT NULL, rank_5 INTEGER NOT NULL,
         return_1 REAL NOT NULL, return_5 REAL NOT NULL, return_10 REAL NOT NULL, return_20 REAL NOT NULL,
         relative_strength_5 REAL NOT NULL, relative_strength_20 REAL NOT NULL,
-        median_return_1 REAL NOT NULL, advance_ratio REAL NOT NULL, volume_activity REAL NOT NULL,
+        median_return_1 REAL NOT NULL, advance_ratio REAL NOT NULL, advance_ratio_5 REAL, volume_activity REAL NOT NULL,
         above_ma20_ratio REAL NOT NULL, above_ma60_ratio REAL NOT NULL, new_high_ratio REAL NOT NULL,
         strong_stock_density REAL NOT NULL, sector_state TEXT NOT NULL,
         history_basis TEXT NOT NULL DEFAULT 'point_in_time',
         PRIMARY KEY (trade_date, block_kind, block_name)
     )""")
     columns = {row[1] for row in conn.execute("PRAGMA table_info(sector_daily_metrics)")}
+    added_rank_percentiles = "rank_pct_20" not in columns
+    added_breadth_5 = "advance_ratio_5" not in columns
+    added_health_model = "sector_health_level" not in columns
     if "history_basis" not in columns:
         conn.execute("ALTER TABLE sector_daily_metrics ADD COLUMN history_basis TEXT NOT NULL DEFAULT 'point_in_time'")
     daily_columns = {
@@ -84,10 +87,34 @@ def connect_state_db() -> sqlite3.Connection:
         "relative_strength_1": "REAL NOT NULL DEFAULT 0",
         "daily_strong_density": "REAL NOT NULL DEFAULT 0",
         "daily_score": "REAL NOT NULL DEFAULT 0",
+        "advance_ratio_5": "REAL",
+        "rank_pct_20": "REAL NOT NULL DEFAULT 1",
+        "rank_pct_5": "REAL NOT NULL DEFAULT 1",
+        "sector_phase": "TEXT NOT NULL DEFAULT 'NONE'",
+        "sector_health": "TEXT NOT NULL DEFAULT '数据不足'",
+        "sector_health_level": "INTEGER NOT NULL DEFAULT 0",
+        "sector_health_score": "REAL NOT NULL DEFAULT 0",
+        "short_pulse": "INTEGER NOT NULL DEFAULT 0",
+        "sector_policy_tier": "TEXT NOT NULL DEFAULT 'D'",
+        "data_status": "TEXT NOT NULL DEFAULT 'BUILDING'",
     }
     for name, definition in daily_columns.items():
         if name not in columns:
             conn.execute(f"ALTER TABLE sector_daily_metrics ADD COLUMN {name} {definition}")
+    if added_rank_percentiles:
+        conn.execute("""UPDATE sector_daily_metrics AS target SET rank_pct_20 =
+            1.0 * rank_20 / (SELECT count(*) FROM sector_daily_metrics AS peers
+                WHERE peers.trade_date=target.trade_date AND peers.block_kind=target.block_kind),
+            rank_pct_5 = 1.0 * rank_5 / (SELECT count(*) FROM sector_daily_metrics AS peers
+                WHERE peers.trade_date=target.trade_date AND peers.block_kind=target.block_kind),
+            sector_health = '数据不足',
+            data_status = CASE WHEN history_basis='current_snapshot_backfill' THEN 'BACKFILL' ELSE 'READY' END""")
+    if added_breadth_5:
+        # Daily breadth cannot be converted into five-day member breadth.
+        # Historical health stays unknown until point-in-time rows accumulate.
+        conn.execute("UPDATE sector_daily_metrics SET advance_ratio_5=NULL, sector_health='数据不足'")
+    if added_health_model:
+        conn.execute("UPDATE sector_daily_metrics SET sector_health='数据不足', sector_health_level=0, sector_health_score=0")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sector_daily_lookup ON sector_daily_metrics(block_kind, block_name, trade_date)")
     conn.execute("""CREATE TABLE IF NOT EXISTS market_state_history (
         trade_date TEXT PRIMARY KEY, raw_state TEXT NOT NULL, confirmed_state TEXT NOT NULL,
@@ -121,7 +148,7 @@ def percentile_score(value: float, values: pd.Series) -> float:
 
 
 def finalize_sector_rankings(records: list[dict]) -> list[dict]:
-    """Attach independent 1/5/20-day ranks without changing medium-term states."""
+    """Attach independent 1/5/20-day ranks and comparable rank percentiles."""
     settings = CONFIG["daily_mainline"]
     weights = settings["weights"]
     sector_rows = []
@@ -132,6 +159,10 @@ def finalize_sector_rankings(records: list[dict]) -> list[dict]:
             row["rank"] = rank
         for rank, row in enumerate(sorted(rows, key=lambda item: item["relative_strength_5"], reverse=True), 1):
             row["rank_5"] = rank
+        total = max(1, len(rows))
+        for row in rows:
+            row["rank_pct_20"] = round(row["rank_20"] / total, 6)
+            row["rank_pct_5"] = round(row["rank_5"] / total, 6)
         rel1_values = pd.Series([row["relative_strength_1"] for row in rows], dtype=float)
         volume_values = pd.Series([row["volume_activity"] for row in rows], dtype=float)
         density_values = pd.Series([row["daily_strong_density"] for row in rows], dtype=float)
@@ -149,30 +180,152 @@ def finalize_sector_rankings(records: list[dict]) -> list[dict]:
     return sector_rows
 
 
-def classify_sector_state(row: dict, prior: pd.DataFrame) -> str:
-    """Classify one sector without using a directional label as fallback."""
-    if len(prior) < 5:
+HEALTH_LABELS = {
+    "NONE": {2: "蓄势增强", 1: "温和改善", 0: "震荡观察", -1: "观察走弱", -2: "弱势恶化"},
+    "转强": {2: "转强加速", 1: "转强延续", 0: "转强停滞", -1: "转强受阻", -2: "转强失败"},
+    "主线": {2: "扩散增强", 1: "主线健康", 0: "主线稳定", -1: "主线降温", -2: "高位分歧"},
+    "退潮": {2: "强力修复", 1: "温和修复", 0: "弱势企稳", -1: "退潮延续", -2: "退潮加速"},
+}
+
+
+def sector_health(phase: str, row: dict, prior: pd.DataFrame, data_status: str) -> dict:
+    """Describe direction inside an already-decided phase; never decide the phase."""
+    if data_status != "READY" or prior.empty:
+        return {"sector_health": "数据不足", "sector_health_level": 0, "sector_health_score": 0.0}
+    latest = prior.iloc[0]
+    settings = CONFIG["sector_health"]
+    thresholds = settings["change_thresholds"]
+    weights = settings["phase_weights"][phase]
+    signals = []
+    for field, weight in weights.items():
+        current = row.get(field)
+        previous = latest.get(field)
+        if current is None or previous is None or pd.isna(current) or pd.isna(previous):
+            continue
+        improvement = float(previous) - float(current) if field.startswith("rank_pct_") else float(current) - float(previous)
+        threshold = float(thresholds[field])
+        direction = 1 if improvement >= threshold else -1 if improvement <= -threshold else 0
+        signals.append((direction, float(weight)))
+    if not signals:
+        return {"sector_health": "数据不足", "sector_health_level": 0, "sector_health_score": 0.0}
+    score = sum(direction * weight for direction, weight in signals) / sum(weight for _, weight in signals)
+    levels = settings["level_thresholds"]
+    if score >= levels["strong_improvement"]:
+        level = 2
+    elif score >= levels["improvement"]:
+        level = 1
+    elif score <= levels["strong_deterioration"]:
+        level = -2
+    elif score <= levels["deterioration"]:
+        level = -1
+    else:
+        level = 0
+    return {
+        "sector_health": HEALTH_LABELS[phase][level],
+        "sector_health_level": level,
+        "sector_health_score": round(float(score), 4),
+    }
+
+
+def sector_policy_tier(phase: str, data_status: str) -> str:
+    """Keep the shadow policy stage-only; phase health is descriptive."""
+    if data_status != "READY":
+        return "D"
+    return "A" if phase == "主线" else "B" if phase == "转强" else "D"
+
+
+def legacy_sector_state(phase: str, short_pulse: bool, data_status: str) -> str:
+    """Map only lifecycle facts to the legacy enum consumed by the signal layer."""
+    if data_status != "READY":
         return "历史积累中"
-    top20_days = int((prior.rank_20 <= 20).sum())
-    prior_states = set(prior.sector_state.dropna()) if "sector_state" in prior else set()
-    latest_state = str(prior.iloc[0].sector_state) if "sector_state" in prior else ""
-    in_top20 = row["rank_20"] <= 20
-    short_weak = row["relative_strength_5"] < 0 or row["up_breadth"] < 45
-    if in_top20 and top20_days >= 4 and row["relative_strength_5"] >= 0 and row["up_breadth"] >= 50:
-        return "持续主线"
-    if (latest_state == "高位分歧" and short_weak) or (
-        not in_top20 and prior_states & {"持续主线", "高位分歧"}
-    ):
+    if phase == "退潮":
         return "弱势退潮"
-    if in_top20 and top20_days >= 4 and short_weak:
-        return "高位分歧"
-    if in_top20 and row["rank_5"] <= 10 and top20_days < 3:
-        return "新晋强化"
-    if row["rank_5"] <= 10 and not in_top20:
-        return "轮动脉冲"
-    if in_top20 and row["relative_strength_5"] >= 0 and row["up_breadth"] >= 50:
+    if phase == "主线":
+        return "持续主线"
+    if phase == "转强":
         return "强势初现"
+    if short_pulse:
+        return "轮动脉冲"
     return "观察中"
+
+
+def classify_sector_phase(row: dict, prior: pd.DataFrame) -> dict:
+    """Decide lifecycle first, then describe direction within that phase."""
+    settings = CONFIG["sector_phase"]
+    history_days = int(settings["history_days"])
+    data_status = "BACKFILL" if row.get("history_basis") == "current_snapshot_backfill" else "READY"
+    short_pulse = bool(
+        row["rank_pct_5"] <= settings["short_pulse_rank_percentile_max"]
+        and row["rank_pct_20"] > settings["entry_rank_percentile_max"]
+    )
+    if len(prior) < history_days:
+        data_status = "BUILDING" if data_status == "READY" else data_status
+        phase = "NONE"
+    else:
+        prior = prior.head(history_days)
+        prior_entry_days = int((prior.rank_pct_20 <= settings["entry_rank_percentile_max"]).sum())
+        latest = prior.iloc[0]
+        latest_phase = str(latest.get("sector_phase") or "NONE")
+        latest_legacy = str(latest.get("sector_state") or "")
+        in_entry_zone = row["rank_pct_20"] <= settings["entry_rank_percentile_max"]
+        in_exit_zone = row["rank_pct_20"] <= settings["exit_rank_percentile_max"]
+        exit_days = max(1, int(settings["exit_confirmation_days"]))
+        prior_exit = list(prior.rank_pct_20.head(exit_days - 1))
+        outside_confirmed = (
+            not in_exit_zone
+            and len(prior_exit) == exit_days - 1
+            and all(float(value) > settings["exit_rank_percentile_max"] for value in prior_exit)
+        )
+        established_latest = latest_phase == "主线" or latest_legacy in {"持续主线", "高位分歧"}
+        # Only the new lifecycle field may carry a fading phase forward.  The
+        # legacy weak-state enum was much broader and would over-migrate stale
+        # observations during a schema upgrade.
+        fading_latest = latest_phase == "退潮"
+        retreat_to_observation_days = max(1, int(settings["retreat_to_observation_days"]))
+        retreat_history = prior.head(retreat_to_observation_days)
+        stale_fading = (
+            fading_latest
+            and not in_exit_zone
+            and len(retreat_history) == retreat_to_observation_days
+            and retreat_history.sector_phase.eq("退潮").all()
+            and retreat_history.rank_pct_20.gt(settings["exit_rank_percentile_max"]).all()
+        )
+        had_lifecycle = (
+            prior_entry_days >= int(settings["mainline_min_days"])
+            or established_latest
+            or fading_latest
+        )
+        if stale_fading:
+            phase = "NONE"
+        elif had_lifecycle and outside_confirmed:
+            phase = "退潮"
+        elif in_entry_zone and prior_entry_days >= int(settings["mainline_min_days"]):
+            phase = "主线"
+        elif established_latest and in_exit_zone:
+            phase = "主线"
+        elif in_entry_zone:
+            phase = "转强"
+        elif established_latest:
+            phase = "主线"
+        elif fading_latest:
+            phase = "退潮"
+        else:
+            phase = "NONE"
+    health = sector_health(phase, row, prior, data_status)
+    tier = sector_policy_tier(phase, data_status)
+    return {
+        "sector_phase": phase,
+        **health,
+        "short_pulse": short_pulse,
+        "sector_policy_tier": tier,
+        "data_status": data_status,
+        "sector_state": legacy_sector_state(phase, short_pulse, data_status),
+    }
+
+
+def classify_sector_state(row: dict, prior: pd.DataFrame) -> str:
+    """Compatibility wrapper for callers that still require the legacy enum."""
+    return classify_sector_phase(row, prior)["sector_state"]
 
 
 def indicators(frame: pd.DataFrame) -> pd.DataFrame:
@@ -216,12 +369,30 @@ def sector_rows_for_date(universe: pd.DataFrame, blocks: pd.DataFrame, trade_dat
             "return_10": round(float(group.ret10.median() * 100), 3), "return_20": round(float(group.ret20.median() * 100), 3),
             "relative_strength_1": round(float(rel1 * 100), 3),
             "relative_strength_5": round(float(rel5 * 100), 3), "relative_strength_20": round(float(rel20 * 100), 3),
-            "volume_activity": round(float(group.volume_ratio.median()), 3), "up_breadth": round(float((group.ret1 > 0).mean() * 100), 2),
+            "volume_activity": round(float(group.volume_ratio.median()), 3),
+            "up_breadth": round(float((group.ret1 > 0).mean() * 100), 2),
+            "up_breadth_5": round(float((group.ret5 > 0).mean() * 100), 2),
             "daily_strong_density": round(float((group.rps1_market >= 90).mean() * 100), 2),
             "median_return_1": round(float(group.ret1.median() * 100), 3), "above_ma20_ratio": round(float((group.close > group.ma20).mean() * 100), 2),
             "above_ma60_ratio": round(float((group.close > group.ma60).mean() * 100), 2), "new_high_ratio": round(float(group.new_high60.mean() * 100), 2),
             "strong_stock_density": round(float(strong * 100), 2), "sector_state": "基线回填", "history_basis": history_basis})
-    return finalize_sector_rankings(records)
+    rows = finalize_sector_rankings(records)
+    for row in rows:
+        pulse = bool(
+            row["rank_pct_5"] <= CONFIG["sector_phase"]["short_pulse_rank_percentile_max"]
+            and row["rank_pct_20"] > CONFIG["sector_phase"]["entry_rank_percentile_max"]
+        )
+        row.update({
+            "sector_phase": "NONE",
+            "sector_health": "数据不足",
+            "sector_health_level": 0,
+            "sector_health_score": 0.0,
+            "short_pulse": pulse,
+            "sector_policy_tier": "D",
+            "data_status": "BACKFILL",
+            "sector_state": "历史积累中",
+        })
+    return rows
 
 
 def ensure_sector_baseline(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as_of: str) -> int:
@@ -288,6 +459,7 @@ def classify_market_state(
     above20: int,
     above60: int,
     advance_ratio: float,
+    local_opportunity: bool,
 ) -> str:
     thresholds = CONFIG["state_thresholds"]
     if breadth_score <= thresholds["defensive"]["breadth_max"] or (
@@ -299,6 +471,7 @@ def classify_market_state(
         trend_score >= thresholds["offensive"]["trend_min"]
         and breadth_score >= thresholds["offensive"]["breadth_min"]
         and volatility_score <= thresholds["offensive"]["volatility_max"]
+        and rotation_score <= thresholds["offensive"]["rotation_max"]
     ):
         return "OFFENSIVE"
     if above20 >= 3 and above60 <= 2 and advance_ratio >= 50:
@@ -310,7 +483,43 @@ def classify_market_state(
         and advance_ratio >= thresholds["consolidating"]["advance_ratio_min"]
     ):
         return "CONSOLIDATING"
-    return "SELECTIVE"
+    if local_opportunity and above60 >= thresholds["selective"]["above_ma60_benchmarks_min"]:
+        return "SELECTIVE"
+    return "CONSOLIDATING"
+
+
+def selective_opportunity_evidence(sector_rows: list[dict], persistent_mainlines: list[str]) -> dict:
+    """Require observable local sector strength before opening the selective regime."""
+    settings = CONFIG["state_thresholds"]["selective"]
+    strong_phases = set(settings["strong_phases"])
+    ready_strong = [
+        row for row in sector_rows
+        if row.get("data_status") == "READY" and row.get("sector_phase") in strong_phases
+        and row.get("relative_strength_20") is not None
+        and row.get("relative_strength_5") is not None
+        and row.get("above_ma20_ratio") is not None
+        and float(row.get("relative_strength_20") or 0) >= float(settings["relative_strength_20_min"])
+        and float(row.get("relative_strength_5") or 0) >= float(settings["relative_strength_5_min"])
+        and float(row.get("above_ma20_ratio") or 0) >= float(settings["above_ma20_ratio_min"])
+    ]
+    industry_count = sum(row.get("block_type") in {"industry_sw_l1", "industry_sw_l2"} for row in ready_strong)
+    concept_count = sum(row.get("block_type") == "gn" for row in ready_strong)
+    eligible_ids = {f"{row.get('block_type')}:{row.get('block_name')}" for row in ready_strong}
+    persistent_types = set(settings["persistent_mainline_block_types"])
+    qualified_persistent = sorted(
+        item for item in persistent_mainlines
+        if item in eligible_ids and item.split(":", 1)[0] in persistent_types
+    )
+    persistent = len(qualified_persistent) >= int(settings["minimum_persistent_mainlines"])
+    cross_level_min = int(settings["minimum_cross_level_strong_each"])
+    cross_level = industry_count >= cross_level_min and concept_count >= cross_level_min
+    return {
+        "qualified": bool(persistent or cross_level),
+        "basis": "persistent_mainline" if persistent else "cross_level_strength" if cross_level else "none",
+        "persistent_mainlines": qualified_persistent,
+        "strong_industry_count": industry_count,
+        "strong_concept_count": concept_count,
+    }
 
 
 def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as_of: str, allow_snapshot_fallback: bool = False) -> tuple[dict, list[dict], list[dict], list[dict]]:
@@ -389,7 +598,9 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
             "return_10": round(float(group.ret10.median() * 100), 3), "return_20": round(float(group.ret20.median() * 100), 3),
             "relative_strength_1": round(float(rel1 * 100), 3),
             "relative_strength_5": round(float(rel5 * 100), 3), "relative_strength_20": round(float(rel20 * 100), 3),
-            "volume_activity": round(float(group.volume_ratio.median()), 3), "up_breadth": round(float((group.ret1 > 0).mean() * 100), 2),
+            "volume_activity": round(float(group.volume_ratio.median()), 3),
+            "up_breadth": round(float((group.ret1 > 0).mean() * 100), 2),
+            "up_breadth_5": round(float((group.ret5 > 0).mean() * 100), 2),
             "daily_strong_density": round(float((group.rps1_market >= 90).mean() * 100), 2),
             "median_return_1": round(float(group.ret1.median() * 100), 3), "above_ma20_ratio": round(float((group.close > group.ma20).mean() * 100), 2),
             "above_ma60_ratio": round(float((group.close > group.ma60).mean() * 100), 2), "new_high_ratio": round(float(group.new_high60.mean() * 100), 2),
@@ -403,15 +614,18 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
         if old:
             overlaps.append(len(top_sets[kind] & old) / 10)
     rotation = round((1 - float(np.mean(overlaps))) * 100, 2) if overlaps else 50.0
-    history = pd.read_sql_query("""SELECT trade_date,block_kind,block_name,rank_20,relative_strength_5,advance_ratio AS up_breadth,sector_state
+    history = pd.read_sql_query("""SELECT trade_date,block_kind,block_name,rank_20,rank_5,rank_pct_20,rank_pct_5,
+        relative_strength_5,advance_ratio AS up_breadth,advance_ratio_5 AS up_breadth_5,
+        sector_state,sector_phase,sector_health,data_status
         FROM sector_daily_metrics WHERE trade_date<? ORDER BY trade_date DESC LIMIT 30000""", state_conn, params=(as_of,))
     for row in sector_rows:
         prior = history[(history.block_kind == row["block_type"]) & (history.block_name == row["block_name"])].head(5)
-        row["sector_state"] = classify_sector_state(row, prior)
+        row.update(classify_sector_phase(row, prior))
     trend_score, volatility_score = float(np.median(trend_scores)), float(np.median(vol_scores))
     above20 = sum(item["above_ma20"] for item in benchmark_metrics.values())
     above60 = sum(item["above_ma60"] for item in benchmark_metrics.values())
     persistent_mainlines = continuous_core_mainlines(state_conn, as_of, sector_rows)
+    selective_evidence = selective_opportunity_evidence(sector_rows, persistent_mainlines)
     state = classify_market_state(
         trend_score,
         volatility_score,
@@ -420,6 +634,7 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
         above20,
         above60,
         breadth["advance_ratio"],
+        selective_evidence["qualified"],
     )
     security_context = pd.read_sql_query("""SELECT s.code,s.name,si.sw_industry_code
         FROM securities s LEFT JOIN stock_industries si ON s.code=si.code AND si.snapshot_date=?""", conn, params=(snapshot_date,))
@@ -464,7 +679,7 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
         within = float((same_concept.ret20 <= row.ret20).mean() * 100)
         heat = concept_heat.get(name, {})
         concept_rows.append({"date": as_of, "code": code, "name": row.get("name", ""), "concept_name": name, "concept_relative_strength_20": heat.get("relative_strength_20"), "concept_rank": heat.get("rank_20"), "stock_return_20": round(float(row.ret20 * 100), 3), "rps20_within_concept": round(within, 2), "stock_vs_concept_return_20": round(float((row.ret20 - same_concept.ret20.mean()) * 100), 3)})
-    report = {"meta": {"run_date": as_of, "strategy_version": CONFIG["strategy_version"], "data_status": "VALID", "config": str(CONFIG_PATH), "reference_snapshot_date": snapshot_date, "history_basis": history_basis}, "state": {"current": state, "raw_state": state, "trend_score": round(trend_score, 2), "volatility_score": round(volatility_score, 2), "breadth_score": round(float(breadth_score), 2), "rotation_score": rotation, "persistent_mainline_count": len(persistent_mainlines), "persistent_mainlines": persistent_mainlines}, "benchmarks": benchmark_metrics, "breadth": breadth, "rotation": {"top10_sets": {k: sorted(v) for k, v in top_sets.items()}}, "sector_leaders": sector_leaders, "daily_sector_leaders": daily_sector_leaders}
+    report = {"meta": {"run_date": as_of, "strategy_version": CONFIG["strategy_version"], "data_status": "VALID", "config": str(CONFIG_PATH), "reference_snapshot_date": snapshot_date, "history_basis": history_basis}, "state": {"current": state, "raw_state": state, "trend_score": round(trend_score, 2), "volatility_score": round(volatility_score, 2), "breadth_score": round(float(breadth_score), 2), "rotation_score": rotation, "persistent_mainline_count": len(selective_evidence["persistent_mainlines"]), "persistent_mainlines": selective_evidence["persistent_mainlines"], "local_opportunity": selective_evidence["qualified"], "local_opportunity_basis": selective_evidence["basis"], "strong_industry_count": selective_evidence["strong_industry_count"], "strong_concept_count": selective_evidence["strong_concept_count"]}, "benchmarks": benchmark_metrics, "breadth": breadth, "rotation": {"top10_sets": {k: sorted(v) for k, v in top_sets.items()}}, "sector_leaders": sector_leaders, "daily_sector_leaders": daily_sector_leaders}
     return report, sector_rows, stock_rows, concept_rows
 
 
@@ -483,7 +698,8 @@ def write_markdown(report: dict, sectors: list[dict], stocks: list[dict], as_of:
     lines = [
         f"# 市场状态与板块热度日报｜{as_of}",
         "",
-        f"**市场状态：{state['current']}**  ",
+        f"**市场状态：{state_label(state['current'], report)}"
+        + (f" · {market_structure_tag(report)}" if market_structure_tag(report) else "") + "**  ",
         f"数据覆盖：{breadth['valid_count']}/{breadth['universe_size']}（{breadth['coverage_ratio']:.2%}）",
         "",
         "## 市场四维",
@@ -525,9 +741,9 @@ def write_markdown(report: dict, sectors: list[dict], stocks: list[dict], as_of:
         top = [row for row in sectors if row["block_type"] == kind][:5]
         if not top:
             continue
-        lines.extend(["", f"## {label}相对强度 Top 5", "", "| 排名 | 板块 | 20日相对强度 | 5日相对强度 | 上涨扩散 |", "|---:|---|---:|---:|---:|"])
+        lines.extend(["", f"## {label}相对强度 Top 5", "", "| 排名 | 板块 | 20日相对强度 | 5日相对强度 | 5日上涨扩散 | 今日参与度 |", "|---:|---|---:|---:|---:|---:|"])
         for row in top:
-            lines.append(f"| {row['rank_20']} | {row['block_name']} | {row['relative_strength_20']:.2f}% | {row['relative_strength_5']:.2f}% | {row['up_breadth']:.2f}% |")
+            lines.append(f"| {row['rank_20']} | {row['block_name']} | {row['relative_strength_20']:.2f}% | {row['relative_strength_5']:.2f}% | {row['up_breadth_5']:.2f}% | {row['up_breadth']:.2f}% |")
     lines.extend(["", "## 全市场强度 Top 10", "", "| 代码 | 股票 | 强度分 | RPS20 | 申万二级 |", "|---|---|---:|---:|---|"])
     for row in sorted(stocks, key=lambda item: item["strength_score"], reverse=True)[:10]:
         lines.append(f"| {row['code']} | {row['name']} | {row['strength_score']:.2f} | {row['rps20_market']:.2f} | {row['sw_l2_name']} |")
@@ -537,17 +753,23 @@ def write_markdown(report: dict, sectors: list[dict], stocks: list[dict], as_of:
 
 def state_label(state: str, report: dict) -> str:
     if state == "DEFENSIVE":
-        return "弱势下行"
+        return "防御期"
     if state == "CONSOLIDATING":
-        return "弱势收敛"
+        return "弱势震荡"
     if state == "OFFENSIVE":
         return "趋势扩散"
     if state == "RECOVERY_WATCH":
-        return "修复观察"
+        return "修复期"
+    return "结构行情"
+
+
+def market_structure_tag(report: dict) -> str | None:
+    if report["state"].get("confirmed_state") != "SELECTIVE":
+        return None
     if report["state"]["rotation_score"] >= CONFIG["state_thresholds"]["selective"]["rotation_min"]:
-        return "震荡轮动"
+        return "快速轮动"
     if report["state"].get("persistent_mainline_count", 0) > 0:
-        return "结构性强势"
+        return "主线集中"
     return "结构分化"
 
 
@@ -594,9 +816,11 @@ def market_state_view(report: dict) -> dict:
                     f"全 A 上涨占比 {breadth['advance_ratio']:.2f}%，中期趋势尚未形成广泛支撑。"
                     f"波动风险分 {report['state']['volatility_score']:.2f}，参与上应优先控制节奏与仓位。")
     elif confirmed == "CONSOLIDATING":
-        analysis = (f"普跌压力有所缓解，全 A 上涨占比回到 {breadth['advance_ratio']:.2f}%，"
-                    f"但仅 {above20}/6 个宽基站上 MA20，趋势分 {report['state']['trend_score']:.2f}。"
-                    f"波动风险分仍为 {report['state']['volatility_score']:.2f}，指数趋势修复尚待确认。")
+        local_text = ("板块层虽有局部强势，但市场弱势条件仍优先。"
+                      if report["state"].get("local_opportunity") else "板块层尚未确认连续行业主线或跨层级强势。")
+        analysis = (f"市场尚未满足趋势扩散或修复条件，{above20}/6 个宽基站上 MA20，"
+                    f"全 A 上涨占比 {breadth['advance_ratio']:.2f}%。{local_text}"
+                    f"当前按弱势震荡管理，不开放可执行信号。")
     elif confirmed == "OFFENSIVE":
         analysis = (f"宽基趋势与市场广度同步改善，{above20}/6 个宽基站上 MA20，"
                     f"全 A 上涨占比 {breadth['advance_ratio']:.2f}%。波动风险分 {report['state']['volatility_score']:.2f}，"
@@ -619,7 +843,14 @@ def market_state_view(report: dict) -> dict:
     if raw != confirmed:
         transition = f"潜在变化：{state_label(raw, report)}信号，第 {report['state']['candidate_days']}/{report['state']['confirmation_days']} 个确认日"
     llm_analysis = str(report.get("llm", {}).get("analysis", "")).strip()
-    return {"label": state_label(confirmed, report), "raw_label": raw, "duration_days": report["state"]["duration_days"],
+    return {"label": state_label(confirmed, report), "raw_label": raw,
+        "confirmed_state": confirmed, "candidate_state": raw, "structure_tag": market_structure_tag(report),
+        "local_opportunity": bool(report["state"].get("local_opportunity")),
+        "local_opportunity_basis": report["state"].get("local_opportunity_basis", "none"),
+        "persistent_mainline_count": report["state"].get("persistent_mainline_count", 0),
+        "strong_industry_count": report["state"].get("strong_industry_count", 0),
+        "strong_concept_count": report["state"].get("strong_concept_count", 0),
+        "duration_days": report["state"]["duration_days"],
         "risk_tags": risks or ["暂无额外风险标签"], "analysis": llm_analysis or analysis,
         "analysis_source": "llm" if llm_analysis else "rule_fallback", "transition": transition}
 
@@ -633,15 +864,12 @@ def market_state_explainer(report: dict) -> dict:
     thresholds = CONFIG["state_thresholds"]
     defensive_breadth = state["breadth_score"] <= thresholds["defensive"]["breadth_max"]
     defensive_risk = state["volatility_score"] >= thresholds["defensive"]["volatility_min"] and state["rotation_score"] >= thresholds["defensive"]["rotation_min"]
-    offensive = state["trend_score"] >= thresholds["offensive"]["trend_min"] and state["breadth_score"] >= thresholds["offensive"]["breadth_min"] and state["volatility_score"] <= thresholds["offensive"]["volatility_max"]
+    offensive = (state["trend_score"] >= thresholds["offensive"]["trend_min"]
+        and state["breadth_score"] >= thresholds["offensive"]["breadth_min"]
+        and state["volatility_score"] <= thresholds["offensive"]["volatility_max"]
+        and state["rotation_score"] <= thresholds["offensive"]["rotation_max"])
     recovery = above20 >= 3 and above60 <= 2 and breadth["advance_ratio"] >= 50
-    consolidating = (not defensive_breadth and not defensive_risk
-        and state["volatility_score"] >= thresholds["consolidating"]["volatility_min"]
-        and state["trend_score"] < thresholds["consolidating"]["trend_max"]
-        and above20 <= thresholds["consolidating"]["above_ma20_benchmarks_max"]
-        and breadth["advance_ratio"] >= thresholds["consolidating"]["advance_ratio_min"])
-    fast_rotation = state["rotation_score"] >= thresholds["selective"]["rotation_min"]
-    has_mainline = state.get("persistent_mainline_count", 0) > 0
+    has_local_opportunity = bool(state.get("local_opportunity"))
     return {
         "current": {
             "label": state_label(state["confirmed_state"], report),
@@ -651,6 +879,7 @@ def market_state_explainer(report: dict) -> dict:
                 {"label": "广度分", "value": state["breadth_score"]}, {"label": "轮动分", "value": state["rotation_score"]},
                 {"label": "站上 MA20 宽基", "value": f"{above20}/6"}, {"label": "全 A 上涨占比", "value": f"{breadth['advance_ratio']:.2f}%"},
                 {"label": "连续主线", "value": state.get("persistent_mainline_count", 0)},
+                {"label": "局部机会", "value": "已确认" if has_local_opportunity else "未确认"},
             ],
             "matched": [
                 "广度分不高于 45，满足弱势广度条件" if defensive_breadth else "广度分高于弱势广度阈值",
@@ -658,13 +887,11 @@ def market_state_explainer(report: dict) -> dict:
             ],
         },
         "states": [
-            {"name": "弱势下行", "rule": "广度分 ≤ 45；或波动风险分 ≥ 75 且轮动分 ≥ 65", "confirm": "2/3 日", "meaning": "趋势与广度偏弱，优先关注风险是否收敛。", "active": state["confirmed_state"] == "DEFENSIVE"},
-            {"name": "弱势收敛", "rule": "未触发弱势下行，波动风险分 ≥ 70、趋势分 < 50、站上 MA20 宽基 ≤ 2/6、全 A 上涨占比 ≥ 50%", "confirm": "2/3 日", "meaning": "普跌压力缓解，但指数趋势尚未修复。", "active": state["confirmed_state"] == "CONSOLIDATING", "matched": consolidating},
-            {"name": "趋势扩散", "rule": "趋势分 ≥ 65、广度分 ≥ 60、波动风险分 ≤ 60", "confirm": "3/3 日", "meaning": "宽基趋势与市场广度同步改善。", "active": state["confirmed_state"] == "OFFENSIVE", "matched": offensive},
-            {"name": "修复观察", "rule": "至少 3/6 宽基站上 MA20、至多 2/6 站上 MA60、全 A 上涨占比 ≥ 50", "confirm": "3/3 日", "meaning": "短期修复出现，但中期趋势尚待确认。", "active": state["confirmed_state"] == "RECOVERY_WATCH", "matched": recovery},
-            {"name": "结构性强势", "rule": "选择性结构中轮动分 < 60，且核心类别至少一条主线连续 2 日保持", "confirm": "随 SELECTIVE 2/3 日", "meaning": "整体未形成一致趋势，机会集中在有持续性的局部结构。", "active": state["confirmed_state"] == "SELECTIVE" and not fast_rotation and has_mainline},
-            {"name": "震荡轮动", "rule": "选择性结构中轮动分 ≥ 60（Top10 平均重合度 ≤ 40%）", "confirm": "随 SELECTIVE 2/3 日", "meaning": "板块更替较快，持续性较弱。", "active": state["confirmed_state"] == "SELECTIVE" and fast_rotation},
-            {"name": "结构分化", "rule": "选择性结构中轮动分 < 60，但尚无连续主线证据", "confirm": "随 SELECTIVE 2/3 日", "meaning": "市场强弱分化，但局部方向的持续性证据仍不足。", "active": state["confirmed_state"] == "SELECTIVE" and not fast_rotation and not has_mainline},
+            {"name": "防御期", "rule": "广度分 ≤ 45；或波动风险分 ≥ 75 且轮动分 ≥ 65", "confirm": "2/3 日", "meaning": "趋势与广度偏弱，不开放可执行信号。", "active": state["confirmed_state"] == "DEFENSIVE"},
+            {"name": "弱势震荡", "rule": "命中弱势震荡条件；或未触发其他状态且缺少局部机会证据", "confirm": "2/3 日", "meaning": "趋势未修复且没有可确认的局部强势结构，不开放可执行信号。", "active": state["confirmed_state"] == "CONSOLIDATING", "matched": state["raw_state"] == "CONSOLIDATING"},
+            {"name": "趋势扩散", "rule": "趋势分 ≥ 65、广度分 ≥ 60、波动风险分 ≤ 60、轮动分 ≤ 45", "confirm": "3/3 日", "meaning": "宽基趋势与市场广度同步改善，且板块更替不过快。", "active": state["confirmed_state"] == "OFFENSIVE", "matched": offensive},
+            {"name": "修复期", "rule": "至少 3/6 宽基站上 MA20、至多 2/6 站上 MA60、全 A 上涨占比 ≥ 50", "confirm": "3/3 日", "meaning": "短期修复出现，但中期趋势尚待确认。", "active": state["confirmed_state"] == "RECOVERY_WATCH", "matched": recovery},
+            {"name": "结构行情", "rule": "至少3/6宽基站上MA60；强板块须20/5日相对强度≥0且MA20覆盖≥60%，并存在连续行业主线或行业—概念跨层级强势", "confirm": "2/3 日", "meaning": "中期市场基础仍在，局部强板块已经得到验证。", "active": state["confirmed_state"] == "SELECTIVE", "matched": state["raw_state"] == "SELECTIVE" and has_local_opportunity and above60 >= thresholds["selective"]["above_ma60_benchmarks_min"]},
         ],
         "score_rules": [
             {"name": "趋势分", "rule": "六个宽基分别计算：是否站上 MA20、MA20 五日斜率的历史分位、MA20 是否高于 MA60、20 日收益的历史分位；每个宽基取四项均值，全体取中位数。", "direction": "越高代表趋势越强。"},
@@ -1295,8 +1522,11 @@ def build_market_context(report: dict, sectors: list[dict], stocks: list[dict], 
     kinds = ("industry_sw_l1", "industry_sw_l2", "gn", "fg")
     rankings = {kind: [row for row in sectors if row["block_type"] == kind][:20] for kind in kinds}
     selected = {(kind, row["block_name"]) for kind, rows in rankings.items() for row in rows}
-    history = pd.read_sql_query("""SELECT trade_date,block_kind,block_name,rank_1,rank_20,rank_5,return_1,return_5,return_20,
-        relative_strength_1,relative_strength_5,relative_strength_20,daily_score,advance_ratio,volume_activity,above_ma20_ratio,sector_state,history_basis
+    history = pd.read_sql_query("""SELECT trade_date,block_kind,block_name,rank_1,rank_20,rank_5,rank_pct_20,rank_pct_5,
+        return_1,return_5,return_20,relative_strength_1,relative_strength_5,relative_strength_20,daily_score,
+        advance_ratio,advance_ratio_5 AS up_breadth_5,volume_activity,above_ma20_ratio,sector_state,sector_phase,
+        sector_health,sector_health_level,sector_health_score,short_pulse,
+        sector_policy_tier,data_status,history_basis
         FROM sector_daily_metrics WHERE trade_date<=? ORDER BY trade_date""", state_conn, params=(as_of,))
     sector_history = {kind: [] for kind in kinds}
     for kind, name in sorted(selected):
@@ -1406,14 +1636,20 @@ def persist_sector_metrics(conn: sqlite3.Connection, as_of: str, sectors: list[d
         )
     conn.executemany(
         """INSERT INTO sector_daily_metrics(trade_date,block_kind,block_name,member_count,rank_1,rank_20,rank_5,
+            rank_pct_20,rank_pct_5,
             return_1,return_5,return_10,return_20,relative_strength_1,relative_strength_5,relative_strength_20,median_return_1,
-            advance_ratio,volume_activity,above_ma20_ratio,above_ma60_ratio,new_high_ratio,strong_stock_density,
-            daily_strong_density,daily_score,sector_state,history_basis) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            advance_ratio,advance_ratio_5,volume_activity,above_ma20_ratio,above_ma60_ratio,new_high_ratio,strong_stock_density,
+            daily_strong_density,daily_score,sector_state,sector_phase,sector_health,sector_health_level,sector_health_score,
+            short_pulse,sector_policy_tier,data_status,history_basis) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         [(as_of, row["block_type"], row["block_name"], row["member_count"], row["rank_1"], row["rank_20"], row["rank_5"],
+          row["rank_pct_20"], row["rank_pct_5"],
           row["return_1"], row["return_5"], row["return_10"], row["return_20"], row["relative_strength_1"],
-          row["relative_strength_5"], row["relative_strength_20"], row["median_return_1"], row["up_breadth"], row["volume_activity"],
+          row["relative_strength_5"], row["relative_strength_20"], row["median_return_1"], row["up_breadth"], row["up_breadth_5"], row["volume_activity"],
           row["above_ma20_ratio"], row["above_ma60_ratio"], row["new_high_ratio"], row["strong_stock_density"],
-          row["daily_strong_density"], row["daily_score"], row["sector_state"], row["history_basis"])
+          row["daily_strong_density"], row["daily_score"], row.get("sector_state", "历史积累中"),
+          row.get("sector_phase", "NONE"), row.get("sector_health", "数据不足"), row.get("sector_health_level", 0),
+          row.get("sector_health_score", 0.0), int(bool(row.get("short_pulse"))),
+          row.get("sector_policy_tier", "D"), row.get("data_status", "BUILDING"), row["history_basis"])
          for row in sectors],
     )
     conn.commit()
@@ -1465,7 +1701,9 @@ def main() -> int:
             "status": "skipped", "reason": "disabled_by_flag", "analysis": ""
         }
         candidates = daily_mainline_candidates(report, sectors)
-        if args.no_llm:
+        if args.reuse_existing_mainline and existing_report.get("daily_mainline"):
+            report["daily_mainline"] = existing_report["daily_mainline"]
+        elif args.no_llm:
             report["daily_mainline"] = existing_report.get("daily_mainline") or daily_mainline_fallback(candidates, {"status": "skipped"}, "disabled_by_flag")
         else:
             news = fetch_daily_mainline_news(as_of, candidates)

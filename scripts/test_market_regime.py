@@ -23,10 +23,14 @@ from scripts.market_regime import (
     expand_mainline_block_ids,
     finalize_sector_rankings,
     confirm_market_state,
+    classify_market_state,
     link_mainline_stocks,
+    market_structure_tag,
+    selective_opportunity_evidence,
     reported_prior_catalyst_date,
     resolve_market_snapshot,
     select_daily_mainline_news,
+    state_label,
 )
 
 
@@ -46,6 +50,62 @@ def sector(name, rel1, rel5, rel20, breadth, volume, density, kind="gn"):
 
 
 class DailyMainlineTests(unittest.TestCase):
+    def test_selective_market_requires_local_opportunity(self):
+        args = dict(
+            trend_score=55, volatility_score=50, breadth_score=55, rotation_score=50,
+            above20=4, above60=4, advance_ratio=48,
+        )
+        self.assertEqual(classify_market_state(**args, local_opportunity=True), "SELECTIVE")
+        self.assertEqual(classify_market_state(**args, local_opportunity=False), "CONSOLIDATING")
+
+    def test_selective_market_requires_medium_term_index_base(self):
+        args = dict(
+            trend_score=32, volatility_score=84, breadth_score=52, rotation_score=36,
+            above20=5, above60=2, advance_ratio=29, local_opportunity=True,
+        )
+        self.assertEqual(classify_market_state(**args), "CONSOLIDATING")
+        args["above60"] = 3
+        self.assertEqual(classify_market_state(**args), "SELECTIVE")
+
+    def test_offensive_market_rejects_fast_rotation(self):
+        args = dict(
+            trend_score=70, volatility_score=50, breadth_score=65,
+            above20=6, above60=6, advance_ratio=70, local_opportunity=True,
+        )
+        self.assertEqual(classify_market_state(**args, rotation_score=40), "OFFENSIVE")
+        self.assertEqual(classify_market_state(**args, rotation_score=50), "SELECTIVE")
+
+    def test_cross_level_strength_is_local_opportunity_evidence(self):
+        rows = [
+            {"block_type": "industry_sw_l2", "block_name": "医疗服务", "sector_phase": "转强", "data_status": "READY", "relative_strength_20": 2, "relative_strength_5": 1, "above_ma20_ratio": 70},
+            {"block_type": "gn", "block_name": "创新药", "sector_phase": "主线", "data_status": "READY", "relative_strength_20": 3, "relative_strength_5": 2, "above_ma20_ratio": 75},
+        ]
+        evidence = selective_opportunity_evidence(rows, [])
+        self.assertTrue(evidence["qualified"])
+        self.assertEqual(evidence["basis"], "cross_level_strength")
+
+    def test_single_level_strength_does_not_open_selective_market(self):
+        rows = [
+            {"block_type": "gn", "block_name": "创新药", "sector_phase": "转强", "data_status": "READY", "relative_strength_20": 2, "relative_strength_5": 1, "above_ma20_ratio": 70},
+            {"block_type": "gn", "block_name": "医疗改革", "sector_phase": "主线", "data_status": "READY", "relative_strength_20": 3, "relative_strength_5": 2, "above_ma20_ratio": 75},
+        ]
+        self.assertFalse(selective_opportunity_evidence(rows, [])["qualified"])
+
+    def test_persistent_concept_alone_does_not_open_selective_market(self):
+        rows = [
+            {"block_type": "gn", "block_name": "创新药", "sector_phase": "主线", "data_status": "READY", "relative_strength_20": 3, "relative_strength_5": 2, "above_ma20_ratio": 75},
+        ]
+        self.assertFalse(selective_opportunity_evidence(rows, ["gn:创新药"])["qualified"])
+
+    def test_selective_market_uses_one_primary_state_with_secondary_tag(self):
+        report = {"state": {"confirmed_state": "SELECTIVE", "rotation_score": 36, "persistent_mainline_count": 1}}
+        self.assertEqual(state_label("SELECTIVE", report), "结构行情")
+        self.assertEqual(market_structure_tag(report), "主线集中")
+
+        report["state"]["rotation_score"] = 70
+        self.assertEqual(state_label("SELECTIVE", report), "结构行情")
+        self.assertEqual(market_structure_tag(report), "快速轮动")
+
     def test_market_index_preserves_other_published_modules(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

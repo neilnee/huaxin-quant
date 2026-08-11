@@ -137,6 +137,23 @@ class ProgressTracker:
 
         self._locked_update(mutate)
 
+    def mark_failed(self, reason):
+        """Mark the entire pipeline as failed and retain the blocking reason."""
+
+        def mutate(data):
+            started_str = data.get("started_at")
+            if started_str:
+                try:
+                    started = datetime.fromisoformat(started_str)
+                    data["total_elapsed_s"] = round((datetime.now() - started).total_seconds())
+                except (ValueError, TypeError):
+                    pass
+            data["status"] = "failed"
+            data["failure_reason"] = str(reason)
+            data["updated_at"] = datetime.now().isoformat()
+
+        self._locked_update(mutate)
+
     # ── static reader ──
 
     @staticmethod

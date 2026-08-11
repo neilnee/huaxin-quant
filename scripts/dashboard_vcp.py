@@ -128,7 +128,10 @@ def load_industry_context(codes: list[str], run_date: str) -> dict[str, dict]:
         state_conn = sqlite3.connect(f"file:{MARKET_REGIME_DB}?mode=ro", uri=True)
         state_conn.row_factory = sqlite3.Row
         sector_rows = state_conn.execute(
-            """SELECT block_name, sector_state, rank_20, relative_strength_20
+            """SELECT block_name, sector_state, sector_phase, sector_health, sector_health_level,
+                       sector_health_score, short_pulse,
+                       sector_policy_tier, data_status, rank_20, rank_pct_20, relative_strength_20,
+                       advance_ratio AS up_breadth, advance_ratio_5 AS up_breadth_5
                  FROM sector_daily_metrics
                  WHERE trade_date=? AND block_kind='industry_sw_l2'""",
             (run_date,),

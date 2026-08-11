@@ -16,12 +16,13 @@ ROOT=Path(PROJECT_ROOT); RUNS=ROOT/"cache"/"quant_runs"; PLAN_RUNS=ROOT/"signal_
 PLAN_CONFIG,_=load_strategy_config("04-signal-plan.json"); POSITION_CFG=PLAN_CONFIG["position_guidance"]
 FIELDS=("code","name","structure_stage","setup_signal","action_hint","suggested_position","setup_pattern_score","setup_score","setup_quality","setup_structure_score","setup_structure_anchor_date","setup_structure_base","setup_action_score","setup_current_action_score","setup_breakout_action_score","setup_score_components","setup_reasons","setup_misses","setup_risk_flags","structure_score","structure_risk_score","structure_risk_flags","close","MA20","MA60","pivot_price","structure_pivot","support_price","invalid_price","breakout_level","last_contraction_low","pivot_distance","distance_ma20","volume","vol_ma5","vol_ma20","volume_dry_up","vol_ratio","volume_pattern","chg_5","chg_20","setup_plan_inputs","reason")
 MARKET_ADVICE={
- "OFFENSIVE":("环境支持","supportive","市场趋势与广度支持信号验证，但仍须等待个股量价条件成立并遵守失效位。"),
- "SELECTIVE":("结合板块确认","selective","市场机会偏结构化，优先确认标的所属板块强度与个股量价条件，避免只凭 VCP 形态执行。"),
- "RECOVERY_WATCH":("谨慎试错","caution","市场处于修复观察期，信号可跟踪但确认度有限，等待趋势、广度与个股量价继续改善。"),
- "CONSOLIDATING":("等待趋势确认","caution","市场方向尚未明确，VCP 主要用于建立观察顺序，等待指数趋势与个股触发条件共同确认。"),
- "DEFENSIVE":("市场仅观察","blocked","市场处于弱势环境，VCP 以结构发现和观察为主；即使量价触发，也优先等待波动、广度和趋势修复确认。"),
+ "OFFENSIVE":("广泛参与","supportive","趋势与广度支持更广泛的板块机会，但仍须等待个股量价条件成立并遵守失效位。"),
+ "SELECTIVE":("聚焦强势","selective","市场机会偏结构化，只对转强和主线板块计算条件仓位，避免只凭 VCP 形态执行。"),
+ "RECOVERY_WATCH":("只选主线","caution","市场处于修复期，只有主线板块保留低仓条件预案，其余板块继续观察。"),
+ "CONSOLIDATING":("暂停参与","caution","市场方向尚未明确，所有板块条件仓位归零，VCP 只用于建立观察顺序。"),
+ "DEFENSIVE":("防守观望","blocked","市场处于弱势环境，所有板块条件仓位归零，等待波动、广度和趋势修复。"),
 }
+MARKET_LABEL_CODES={"趋势扩散":"OFFENSIVE","结构性强势":"OFFENSIVE","结构行情":"SELECTIVE","结构分化":"SELECTIVE","修复期":"RECOVERY_WATCH","修复观察":"RECOVERY_WATCH","弱势震荡":"CONSOLIDATING","弱势收敛":"CONSOLIDATING","防御期":"DEFENSIVE","弱势下行":"DEFENSIVE"}
 SOURCE_LABELS={
  "CORE_QUALITY":("核心质量池","core"),
  "EXPANSION_RS":("RS扩展池","expansion"),
@@ -61,14 +62,10 @@ def market_notice(date):
  if not path.exists(): return fallback
  try: state=json.loads(path.read_text(encoding="utf-8")).get("market_state") or {}
  except (OSError,json.JSONDecodeError): return fallback
- raw=str(state.get("raw_label") or "").upper()
- if raw not in MARKET_ADVICE: return {**fallback,"source":path.name}
- tag,tone,advice=MARKET_ADVICE[raw]
- return {"state":raw,"label":state.get("label") or raw,"tag":tag,"tone":tone,"advice":advice,"risk_tags":state.get("risk_tags") or [],"source":path.name}
-def sector_group(state):
- for group,states in POSITION_CFG["sector_groups"].items():
-  if state in states: return group
- return POSITION_CFG["unknown_sector_group"]
+ confirmed=str(state.get("confirmed_state") or MARKET_LABEL_CODES.get(str(state.get("label") or "").strip()) or "").upper()
+ if confirmed not in MARKET_ADVICE: return {**fallback,"source":path.name}
+ tag,tone,advice=MARKET_ADVICE[confirmed]
+ return {"state":confirmed,"candidate_state":str(state.get("candidate_state") or state.get("raw_label") or "").upper() or None,"label":state.get("label") or confirmed,"tag":tag,"tone":tone,"advice":advice,"risk_tags":state.get("risk_tags") or [],"source":path.name}
 def sector_notices(date):
  stock_path=MARKET_DIR/f"stock_strength_{date}.csv"; sector_path=MARKET_DIR/f"sector_heat_{date}.csv"
  if not stock_path.exists() or not sector_path.exists(): return {}
@@ -81,11 +78,11 @@ def sector_notices(date):
   for row in csv.DictReader(handle):
    code=pool_code(row.get("code")); name=str(row.get("sw_l2_name") or "").strip(); sector=sectors.get(name,{})
    if not code: continue
-   state=str(sector.get("sector_state") or "").strip()
-   notices[code]={"sector_name":name or "板块待确认","sector_state":state or "状态待确认","sector_group":sector_group(state),"sector_rank_20":pool_number(sector.get("rank_20")),"sector_history_basis":sector.get("history_basis") or None}
+   phase=str(sector.get("sector_phase") or "").strip()
+   notices[code]={"sector_name":name or "板块待确认","sector_state":str(sector.get("sector_state") or "").strip() or "状态待确认","sector_phase":phase or None,"sector_health":str(sector.get("sector_health") or "").strip() or "数据不足","sector_health_level":pool_number(sector.get("sector_health_level")),"sector_health_score":pool_number(sector.get("sector_health_score")),"sector_policy_tier":str(sector.get("sector_policy_tier") or "").strip() or None,"sector_data_status":str(sector.get("data_status") or "").strip() or None,"sector_rank_20":pool_number(sector.get("rank_20")),"sector_history_basis":sector.get("history_basis") or None}
  return notices
 def default_sector_notice():
- return {"sector_name":"板块待确认","sector_state":"状态待确认","sector_group":POSITION_CFG["unknown_sector_group"],"sector_rank_20":None,"sector_history_basis":None}
+ return {"sector_name":"板块待确认","sector_state":"状态待确认","sector_phase":None,"sector_health":"数据不足","sector_health_level":None,"sector_health_score":None,"sector_policy_tier":None,"sector_data_status":None,"sector_rank_20":None,"sector_history_basis":None}
 def position_range(setup_signal,quality,factor):
  base=(POSITION_CFG["base_position_pct"].get(setup_signal) or {}).get(quality)
  if not base: return None,None,None
@@ -100,23 +97,27 @@ def position_range_text(values):
  if low==high: return f"{high}%"
  return f"{low}%-{high}%"
 def position_guidance(row,market,sector):
- state=market.get("state") or "UNKNOWN"; group=sector.get("sector_group") or POSITION_CFG["unknown_sector_group"]
- factor=float((POSITION_CFG["environment_factors"].get(state) or {}).get(group,POSITION_CFG["unknown_environment_factor"]))
- common={"market_state":state,"environment_factor":factor,"position_strategy_version":PLAN_CONFIG["strategy_version"]}
+ state=market.get("state") or "UNKNOWN"; phase=sector.get("sector_phase")
+ ready=sector.get("sector_data_status") in {None,"READY"} and phase in {"NONE","转强","主线","退潮"}
+ factor=float((POSITION_CFG["phase_factors"].get(state) or {}).get(phase,POSITION_CFG["unknown_environment_factor"])) if ready else 0.0
+ phase_label="观察" if phase=="NONE" else phase or "板块待确认"
+ common={"market_state":state,"sector_phase":phase,"environment_factor":factor,"position_strategy_version":PLAN_CONFIG["strategy_version"]}
  signal=row.get("setup_signal")
  if row.get("signal_kind")=="PLAN":
   base_a,adjusted_a,_=position_range(signal,"A",factor); base_b,adjusted_b,_=position_range(signal,"B",factor)
   if state in {"CONSOLIDATING","DEFENSIVE"}: status,advice,reason="OBSERVE_MARKET","观察（市场弱势）","弱势收敛或弱势下行不配置仓位"
-  elif state not in POSITION_CFG["environment_factors"]: status,advice,reason="OBSERVE_MARKET","观察（市场待确认）","缺少同日有效市场状态"
-  elif group=="BLOCKED": status,advice,reason="OBSERVE_SECTOR",f"观察（{sector.get('sector_state') or '板块待确认'}）","板块状态不具备仓位条件"
+  elif state not in POSITION_CFG["phase_factors"]: status,advice,reason="OBSERVE_MARKET","观察（市场待确认）","缺少同日有效市场确认状态"
+  elif not ready: status,advice,reason="OBSERVE_SECTOR","观察（板块待确认）","缺少同日有效板块阶段"
+  elif factor<=0: status,advice,reason="OBSERVE_SECTOR",f"观察（{phase_label}）",f"当前市场阶段不开放{phase_label}板块仓位"
   else: status,advice,reason="PLAN_CONDITIONAL",f"A {position_range_text(adjusted_a)} / B {position_range_text(adjusted_b)}","实际触发后按触发日买点等级与环境重算"
   return {**common,"position_status":status,"position_advice":advice,"position_reason":reason,"base_position_a":base_a,"base_position_b":base_b,"plan_position_a":adjusted_a,"plan_position_b":adjusted_b,"base_position":None,"adjusted_position":None}
  quality=str(row.get("setup_quality") or "")
  base,adjusted,_=position_range(signal,quality,factor)
  if quality not in POSITION_CFG["eligible_setup_qualities"]: status,advice,reason="OBSERVE_QUALITY",f"观察（{quality or '未评级'}级）","仅 A/B 级买点进入仓位计算"
  elif state in {"CONSOLIDATING","DEFENSIVE"}: status,advice,reason="OBSERVE_MARKET","观察（市场弱势）","弱势收敛或弱势下行不配置仓位"
- elif state not in POSITION_CFG["environment_factors"]: status,advice,reason="OBSERVE_MARKET","观察（市场待确认）","缺少同日有效市场状态"
- elif group=="BLOCKED": status,advice,reason="OBSERVE_SECTOR",f"观察（{sector.get('sector_state') or '板块待确认'}）","板块状态不具备仓位条件"
+ elif state not in POSITION_CFG["phase_factors"]: status,advice,reason="OBSERVE_MARKET","观察（市场待确认）","缺少同日有效市场确认状态"
+ elif not ready: status,advice,reason="OBSERVE_SECTOR","观察（板块待确认）","缺少同日有效板块阶段"
+ elif factor<=0: status,advice,reason="OBSERVE_SECTOR",f"观察（{phase_label}）",f"当前市场阶段不开放{phase_label}板块仓位"
  elif not base: status,advice,reason="OBSERVE_QUALITY","观察（仓位规则缺失）","买点类型与等级未匹配基础仓位"
  else: status,advice,reason="ACTIONABLE",position_range_text(adjusted),f"基础{position_range_text(base)} × 环境{int(round(factor*100))}%"
  return {**common,"position_status":status,"position_advice":advice,"position_reason":reason,"base_position":base,"adjusted_position":adjusted,"base_position_a":None,"base_position_b":None,"plan_position_a":None,"plan_position_b":None}

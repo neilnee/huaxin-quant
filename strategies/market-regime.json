@@ -1,5 +1,5 @@
 {
-  "strategy_version": "market_regime_v4",
+  "strategy_version": "market_regime_v5",
   "description": "Independent market regime and TDX block heat parameters. It does not read or modify Model 2 Quant outputs.",
   "benchmarks": {
     "shanghai_composite": "000001",
@@ -83,8 +83,26 @@
     "entry_rank_percentile_max": 0.15,
     "exit_rank_percentile_max": 0.20,
     "short_pulse_rank_percentile_max": 0.10,
-    "healthy_breadth_5_min": 50,
-    "divergent_breadth_5_max": 40,
-    "divergence_exit_days": 2
+    "exit_confirmation_days": 2
+  },
+  "sector_health": {
+    "change_thresholds": {
+      "rank_pct_20": 0.03,
+      "rank_pct_5": 0.05,
+      "relative_strength_5": 1.5,
+      "up_breadth_5": 8.0
+    },
+    "level_thresholds": {
+      "strong_improvement": 0.55,
+      "improvement": 0.15,
+      "deterioration": -0.15,
+      "strong_deterioration": -0.55
+    },
+    "phase_weights": {
+      "NONE": {"rank_pct_20": 0.30, "rank_pct_5": 0.30, "relative_strength_5": 0.20, "up_breadth_5": 0.20},
+      "转强": {"rank_pct_20": 0.30, "rank_pct_5": 0.25, "relative_strength_5": 0.25, "up_breadth_5": 0.20},
+      "主线": {"rank_pct_20": 0.15, "rank_pct_5": 0.20, "relative_strength_5": 0.30, "up_breadth_5": 0.35},
+      "退潮": {"rank_pct_20": 0.30, "rank_pct_5": 0.20, "relative_strength_5": 0.25, "up_breadth_5": 0.25}
+    }
   }
 }

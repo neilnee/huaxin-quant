@@ -79,6 +79,7 @@ def connect_state_db() -> sqlite3.Connection:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(sector_daily_metrics)")}
     added_rank_percentiles = "rank_pct_20" not in columns
     added_breadth_5 = "advance_ratio_5" not in columns
+    added_health_model = "sector_health_level" not in columns
     if "history_basis" not in columns:
         conn.execute("ALTER TABLE sector_daily_metrics ADD COLUMN history_basis TEXT NOT NULL DEFAULT 'point_in_time'")
     daily_columns = {
@@ -91,6 +92,8 @@ def connect_state_db() -> sqlite3.Connection:
         "rank_pct_5": "REAL NOT NULL DEFAULT 1",
         "sector_phase": "TEXT NOT NULL DEFAULT 'NONE'",
         "sector_health": "TEXT NOT NULL DEFAULT '数据不足'",
+        "sector_health_level": "INTEGER NOT NULL DEFAULT 0",
+        "sector_health_score": "REAL NOT NULL DEFAULT 0",
         "short_pulse": "INTEGER NOT NULL DEFAULT 0",
         "sector_policy_tier": "TEXT NOT NULL DEFAULT 'D'",
         "data_status": "TEXT NOT NULL DEFAULT 'BUILDING'",
@@ -104,15 +107,14 @@ def connect_state_db() -> sqlite3.Connection:
                 WHERE peers.trade_date=target.trade_date AND peers.block_kind=target.block_kind),
             rank_pct_5 = 1.0 * rank_5 / (SELECT count(*) FROM sector_daily_metrics AS peers
                 WHERE peers.trade_date=target.trade_date AND peers.block_kind=target.block_kind),
-            sector_health = CASE
-                WHEN relative_strength_5 >= 0 AND advance_ratio >= 50 THEN '扩散健康'
-                WHEN relative_strength_5 >= 0 AND advance_ratio >= 45 THEN '扩散降温'
-                ELSE '明显分歧' END,
+            sector_health = '数据不足',
             data_status = CASE WHEN history_basis='current_snapshot_backfill' THEN 'BACKFILL' ELSE 'READY' END""")
     if added_breadth_5:
         # Daily breadth cannot be converted into five-day member breadth.
         # Historical health stays unknown until point-in-time rows accumulate.
         conn.execute("UPDATE sector_daily_metrics SET advance_ratio_5=NULL, sector_health='数据不足'")
+    if added_health_model:
+        conn.execute("UPDATE sector_daily_metrics SET sector_health='数据不足', sector_health_level=0, sector_health_score=0")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sector_daily_lookup ON sector_daily_metrics(block_kind, block_name, trade_date)")
     conn.execute("""CREATE TABLE IF NOT EXISTS market_state_history (
         trade_date TEXT PRIMARY KEY, raw_state TEXT NOT NULL, confirmed_state TEXT NOT NULL,
@@ -178,39 +180,68 @@ def finalize_sector_rankings(records: list[dict]) -> list[dict]:
     return sector_rows
 
 
-def sector_health(row: dict) -> str:
-    settings = CONFIG["sector_phase"]
-    breadth_5 = row.get("up_breadth_5")
-    if breadth_5 is None or pd.isna(breadth_5):
-        return "数据不足"
-    if row["relative_strength_5"] >= 0 and breadth_5 >= settings["healthy_breadth_5_min"]:
-        return "扩散健康"
-    if row["relative_strength_5"] < 0 and breadth_5 < settings["divergent_breadth_5_max"]:
-        return "明显分歧"
-    return "扩散降温"
+HEALTH_LABELS = {
+    "NONE": {2: "蓄势增强", 1: "温和改善", 0: "震荡观察", -1: "观察走弱", -2: "弱势恶化"},
+    "转强": {2: "转强加速", 1: "转强延续", 0: "转强停滞", -1: "转强受阻", -2: "转强失败"},
+    "主线": {2: "扩散增强", 1: "主线健康", 0: "主线稳定", -1: "主线降温", -2: "高位分歧"},
+    "退潮": {2: "强力修复", 1: "温和修复", 0: "弱势企稳", -1: "退潮延续", -2: "退潮加速"},
+}
 
 
-def sector_policy_tier(phase: str, health: str, short_pulse: bool, data_status: str) -> str:
-    """Expose a stable shadow tier without changing the current signal policy."""
-    if data_status != "READY" or health == "数据不足":
+def sector_health(phase: str, row: dict, prior: pd.DataFrame, data_status: str) -> dict:
+    """Describe direction inside an already-decided phase; never decide the phase."""
+    if data_status != "READY" or prior.empty:
+        return {"sector_health": "数据不足", "sector_health_level": 0, "sector_health_score": 0.0}
+    latest = prior.iloc[0]
+    settings = CONFIG["sector_health"]
+    thresholds = settings["change_thresholds"]
+    weights = settings["phase_weights"][phase]
+    signals = []
+    for field, weight in weights.items():
+        current = row.get(field)
+        previous = latest.get(field)
+        if current is None or previous is None or pd.isna(current) or pd.isna(previous):
+            continue
+        improvement = float(previous) - float(current) if field.startswith("rank_pct_") else float(current) - float(previous)
+        threshold = float(thresholds[field])
+        direction = 1 if improvement >= threshold else -1 if improvement <= -threshold else 0
+        signals.append((direction, float(weight)))
+    if not signals:
+        return {"sector_health": "数据不足", "sector_health_level": 0, "sector_health_score": 0.0}
+    score = sum(direction * weight for direction, weight in signals) / sum(weight for _, weight in signals)
+    levels = settings["level_thresholds"]
+    if score >= levels["strong_improvement"]:
+        level = 2
+    elif score >= levels["improvement"]:
+        level = 1
+    elif score <= levels["strong_deterioration"]:
+        level = -2
+    elif score <= levels["deterioration"]:
+        level = -1
+    else:
+        level = 0
+    return {
+        "sector_health": HEALTH_LABELS[phase][level],
+        "sector_health_level": level,
+        "sector_health_score": round(float(score), 4),
+    }
+
+
+def sector_policy_tier(phase: str, data_status: str) -> str:
+    """Keep the shadow policy stage-only; phase health is descriptive."""
+    if data_status != "READY":
         return "D"
-    if phase == "主线" and health == "扩散健康":
-        return "A"
-    if (phase == "主线" and health == "扩散降温") or (phase == "转强" and health == "扩散健康"):
-        return "B"
-    if phase == "主线" or (phase == "转强" and health == "扩散降温") or (short_pulse and health == "扩散健康"):
-        return "C"
-    return "D"
+    return "A" if phase == "主线" else "B" if phase == "转强" else "D"
 
 
-def legacy_sector_state(phase: str, health: str, short_pulse: bool, data_status: str) -> str:
-    """Map the split model to the legacy enum consumed by the current signal layer."""
+def legacy_sector_state(phase: str, short_pulse: bool, data_status: str) -> str:
+    """Map only lifecycle facts to the legacy enum consumed by the signal layer."""
     if data_status != "READY":
         return "历史积累中"
     if phase == "退潮":
         return "弱势退潮"
     if phase == "主线":
-        return "持续主线" if health == "扩散健康" else "高位分歧"
+        return "持续主线"
     if phase == "转强":
         return "强势初现"
     if short_pulse:
@@ -219,10 +250,9 @@ def legacy_sector_state(phase: str, health: str, short_pulse: bool, data_status:
 
 
 def classify_sector_phase(row: dict, prior: pd.DataFrame) -> dict:
-    """Split lifecycle, health, short-term pulse and data quality into separate facts."""
+    """Decide lifecycle first, then describe direction within that phase."""
     settings = CONFIG["sector_phase"]
     history_days = int(settings["history_days"])
-    health = sector_health(row)
     data_status = "BACKFILL" if row.get("history_basis") == "current_snapshot_backfill" else "READY"
     short_pulse = bool(
         row["rank_pct_5"] <= settings["short_pulse_rank_percentile_max"]
@@ -239,47 +269,46 @@ def classify_sector_phase(row: dict, prior: pd.DataFrame) -> dict:
         latest_legacy = str(latest.get("sector_state") or "")
         in_entry_zone = row["rank_pct_20"] <= settings["entry_rank_percentile_max"]
         in_exit_zone = row["rank_pct_20"] <= settings["exit_rank_percentile_max"]
-        divergence_days = max(1, int(settings["divergence_exit_days"]))
-        prior_health = list(prior.get("sector_health", pd.Series(dtype=str)).head(divergence_days - 1))
-        divergence_confirmed = (
-            health == "明显分歧"
-            and len(prior_health) == divergence_days - 1
-            and all(str(value) == "明显分歧" for value in prior_health)
-        )
+        exit_days = max(1, int(settings["exit_confirmation_days"]))
+        prior_exit = list(prior.rank_pct_20.head(exit_days - 1))
         outside_confirmed = (
             not in_exit_zone
-            and float(latest.get("rank_pct_20", 1.0)) > settings["exit_rank_percentile_max"]
+            and len(prior_exit) == exit_days - 1
+            and all(float(value) > settings["exit_rank_percentile_max"] for value in prior_exit)
         )
         established_latest = latest_phase == "主线" or latest_legacy in {"持续主线", "高位分歧"}
         # Only the new lifecycle field may carry a fading phase forward.  The
         # legacy weak-state enum was much broader and would over-migrate stale
-        # observations on the first v3 run.
+        # observations during a schema upgrade.
         fading_latest = latest_phase == "退潮"
         had_lifecycle = (
             prior_entry_days >= int(settings["mainline_min_days"])
             or established_latest
             or fading_latest
         )
-        if had_lifecycle and (outside_confirmed or divergence_confirmed):
+        if had_lifecycle and outside_confirmed:
             phase = "退潮"
         elif in_entry_zone and prior_entry_days >= int(settings["mainline_min_days"]):
             phase = "主线"
-        elif established_latest and in_exit_zone and not divergence_confirmed:
+        elif established_latest and in_exit_zone:
             phase = "主线"
-        elif in_entry_zone and health != "明显分歧":
+        elif in_entry_zone:
             phase = "转强"
         elif established_latest:
             phase = "主线"
+        elif fading_latest:
+            phase = "退潮"
         else:
             phase = "NONE"
-    tier = sector_policy_tier(phase, health, short_pulse, data_status)
+    health = sector_health(phase, row, prior, data_status)
+    tier = sector_policy_tier(phase, data_status)
     return {
         "sector_phase": phase,
-        "sector_health": health,
+        **health,
         "short_pulse": short_pulse,
         "sector_policy_tier": tier,
         "data_status": data_status,
-        "sector_state": legacy_sector_state(phase, health, short_pulse, data_status),
+        "sector_state": legacy_sector_state(phase, short_pulse, data_status),
     }
 
 
@@ -338,14 +367,15 @@ def sector_rows_for_date(universe: pd.DataFrame, blocks: pd.DataFrame, trade_dat
             "strong_stock_density": round(float(strong * 100), 2), "sector_state": "基线回填", "history_basis": history_basis})
     rows = finalize_sector_rankings(records)
     for row in rows:
-        health = sector_health(row)
         pulse = bool(
             row["rank_pct_5"] <= CONFIG["sector_phase"]["short_pulse_rank_percentile_max"]
             and row["rank_pct_20"] > CONFIG["sector_phase"]["entry_rank_percentile_max"]
         )
         row.update({
             "sector_phase": "NONE",
-            "sector_health": health,
+            "sector_health": "数据不足",
+            "sector_health_level": 0,
+            "sector_health_score": 0.0,
             "short_pulse": pulse,
             "sector_policy_tier": "D",
             "data_status": "BACKFILL",
@@ -1437,7 +1467,8 @@ def build_market_context(report: dict, sectors: list[dict], stocks: list[dict], 
     selected = {(kind, row["block_name"]) for kind, rows in rankings.items() for row in rows}
     history = pd.read_sql_query("""SELECT trade_date,block_kind,block_name,rank_1,rank_20,rank_5,rank_pct_20,rank_pct_5,
         return_1,return_5,return_20,relative_strength_1,relative_strength_5,relative_strength_20,daily_score,
-        advance_ratio,advance_ratio_5 AS up_breadth_5,volume_activity,above_ma20_ratio,sector_state,sector_phase,sector_health,short_pulse,
+        advance_ratio,advance_ratio_5 AS up_breadth_5,volume_activity,above_ma20_ratio,sector_state,sector_phase,
+        sector_health,sector_health_level,sector_health_score,short_pulse,
         sector_policy_tier,data_status,history_basis
         FROM sector_daily_metrics WHERE trade_date<=? ORDER BY trade_date""", state_conn, params=(as_of,))
     sector_history = {kind: [] for kind in kinds}
@@ -1551,15 +1582,16 @@ def persist_sector_metrics(conn: sqlite3.Connection, as_of: str, sectors: list[d
             rank_pct_20,rank_pct_5,
             return_1,return_5,return_10,return_20,relative_strength_1,relative_strength_5,relative_strength_20,median_return_1,
             advance_ratio,advance_ratio_5,volume_activity,above_ma20_ratio,above_ma60_ratio,new_high_ratio,strong_stock_density,
-            daily_strong_density,daily_score,sector_state,sector_phase,sector_health,short_pulse,sector_policy_tier,data_status,
-            history_basis) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            daily_strong_density,daily_score,sector_state,sector_phase,sector_health,sector_health_level,sector_health_score,
+            short_pulse,sector_policy_tier,data_status,history_basis) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         [(as_of, row["block_type"], row["block_name"], row["member_count"], row["rank_1"], row["rank_20"], row["rank_5"],
           row["rank_pct_20"], row["rank_pct_5"],
           row["return_1"], row["return_5"], row["return_10"], row["return_20"], row["relative_strength_1"],
           row["relative_strength_5"], row["relative_strength_20"], row["median_return_1"], row["up_breadth"], row["up_breadth_5"], row["volume_activity"],
           row["above_ma20_ratio"], row["above_ma60_ratio"], row["new_high_ratio"], row["strong_stock_density"],
           row["daily_strong_density"], row["daily_score"], row.get("sector_state", "历史积累中"),
-          row.get("sector_phase", "NONE"), row.get("sector_health", sector_health(row)), int(bool(row.get("short_pulse"))),
+          row.get("sector_phase", "NONE"), row.get("sector_health", "数据不足"), row.get("sector_health_level", 0),
+          row.get("sector_health_score", 0.0), int(bool(row.get("short_pulse"))),
           row.get("sector_policy_tier", "D"), row.get("data_status", "BUILDING"), row["history_basis"])
          for row in sectors],
     )

@@ -790,7 +790,8 @@ def market_state_view(report: dict) -> dict:
     if raw != confirmed:
         transition = f"潜在变化：{state_label(raw, report)}信号，第 {report['state']['candidate_days']}/{report['state']['confirmation_days']} 个确认日"
     llm_analysis = str(report.get("llm", {}).get("analysis", "")).strip()
-    return {"label": state_label(confirmed, report), "raw_label": raw, "structure_tag": market_structure_tag(report),
+    return {"label": state_label(confirmed, report), "raw_label": raw,
+        "confirmed_state": confirmed, "candidate_state": raw, "structure_tag": market_structure_tag(report),
         "duration_days": report["state"]["duration_days"],
         "risk_tags": risks or ["暂无额外风险标签"], "analysis": llm_analysis or analysis,
         "analysis_source": "llm" if llm_analysis else "rule_fallback", "transition": transition}

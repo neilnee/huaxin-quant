@@ -174,13 +174,14 @@ function renderSignalDetail(row){
   const financialTitle=[row.financial_report_period,row.financial_source].filter(Boolean).join(" · ")||"尚无可用财务快照";
   const group=(label,content,className="")=>`<div class="signal-tag-group ${className}"><span class="signal-tag-label">${label}</span><div class="signal-tag-values">${content}</div></div>`;
   const marketHtml=`<span class="market-status-pill market-${marketTone}" title="${esc((market.risk_tags||[]).join(" · ")||"同日市场环境")}">${esc(market.label||"市场状态待确认")} · ${esc(market.tag||"环境待确认")}</span>`;
-  const sectorTone={STRONG:"strong",NEUTRAL:"neutral",BLOCKED:"blocked"}[row.sector_group]||"unknown";
-  const sectorHtml=`<span class="sector-status-pill sector-${sectorTone}">${esc(row.sector_name||"板块待确认")} · ${esc(row.sector_state||"状态待确认")}</span>`;
+  const sectorTone={"主线":"strong","转强":"neutral","退潮":"blocked","NONE":"blocked"}[row.sector_phase]||{STRONG:"strong",NEUTRAL:"neutral",BLOCKED:"blocked"}[row.sector_group]||"unknown";
+  const sectorTags=row.sector_phase?`${sectorPhaseTag({...row,data_status:row.sector_data_status})} ${sectorHealthTag(row)}`:sectorStateTag(row.sector_state||"状态待确认");
+  const sectorHtml=`<span class="sector-status-pill sector-${sectorTone}">${esc(row.sector_name||"板块待确认")}</span> ${sectorTags}`;
   const financialHtml=financialTags.map(tag=>`<span class="signal-financial-pill financial-${financialTone}" title="${esc(financialTitle)}">${esc(tag)}</span>`).join("");
   const technicalHtml=flags.map(flag=>`<span class="signal-technical-pill">${esc(signalRiskLabel(flag))}</span>`).join("");
   const factor=`${Math.round(Number(row.environment_factor||0)*100)}%`;
   const rangeText=values=>Array.isArray(values)&&values.length===2?(Number(values[1])<=0?"观察":Number(values[0])<=0?`≤${vcpNumber(values[1],0)}%`:`${vcpNumber(values[0],0)}%-${vcpNumber(values[1],0)}%`):"—";
-  const breakdown=row.signal_kind==="PLAN"?`若A级触发 ${rangeText(row.plan_position_a)} · 若B级触发 ${rangeText(row.plan_position_b)} · 当前环境系数 ${factor}`:`${row.base_position?`买点基础 ${rangeText(row.base_position)} · `:""}当前环境系数 ${factor}`;
+  const breakdown=row.signal_kind==="PLAN"?`若A级触发 ${rangeText(row.plan_position_a)} · 若B级触发 ${rangeText(row.plan_position_b)} · 市场×板块阶段系数 ${factor}`:`${row.base_position?`买点基础 ${rangeText(row.base_position)} · `:""}市场×板块阶段系数 ${factor}`;
   const capital=row.capital_support||{};
   const capitalHtml=`<div class="signal-capital-grid"><article><div class="signal-capital-head"><span>主力资金动向</span>${capitalState(capital.main_order_state,"main")}</div><div class="signal-capital-values"><div><span>最新主力净流入率</span><b>${capitalPct(capital.main_net_inflow_ratio)}</b></div><div><span>近3日主力流入天数</span><b>${capital.main_observation_days_3d?`${capital.main_positive_days_3d}/${capital.main_observation_days_3d}日`:"—"}</b></div></div></article><article><div class="signal-capital-head"><span>融资杠杆动向</span>${capitalState(capital.margin_state,"margin")}</div><div class="signal-capital-values"><div><span>近5日融资余额变化</span><b>${capitalPct(capital.financing_balance_change)}</b></div><div><span>最新融资净买入额</span><b>${capitalAmount(capital.financing_net_buy)}</b></div></div></article></div>`;
   const summary = row.signal_kind === "PLAN"

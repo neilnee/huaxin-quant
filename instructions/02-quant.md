@@ -5,7 +5,7 @@
 - **核心目标**: 在模型一基本面候选池中，寻找 VCP 蓄力结构和可交易触发，输出可复现、可回测、可供模型三/四复用的结构化量价结果。
 - **核心哲学**: 基本面先过滤烂公司，模型二只判断资金行为和价格位置。脚本负责确定性计算，LLM 只做可选解释，不参与结构阶段或交易触发判定。
 - **输入**: `pool/pool_<YYMMDD>.csv`，或命令行指定 `--code/--codes`
-- **输出**: `quant/quant_<YYMMDD>.csv` + `cache/quant_runs/quant_<YYMMDD>.json`
+- **输出**: 策略数据库中的 Quant 全量快照，以及由该快照发布的 `quant/quant_<YYMMDD>.csv` + `cache/quant_runs/quant_<YYMMDD>.json`
 - **配套脚本**: `scripts/quant_filter.py`
 - **策略配置**: `strategies/02-quant.json`
 
@@ -1116,6 +1116,8 @@ setup_plan_inputs.retest:
 | 多股 | `quant/multi_<YYMMDD>.csv` | `cache/quant_runs/multi_<YYMMDD>.json` |
 
 只有全量模式允许覆盖 `cache/quant_runs/quant_<YYMMDD>.json`。测试、单股、多股模式不得覆盖全量 JSON，避免 Bloom 消费到测试结果。
+
+全量模式必须先把完整 `results` 写入 `cache/strategy/strategy_data.sqlite`，再从已提交的数据发布 CSV 和 JSON。数据库写入不改变筛选、评分、排序或 LLM 输入；文件仅作为兼容输出。存储与迁移规则见 `instructions/strategy-data.md`。
 
 单股模式必须打印终端摘要，并同样写入 JSON。
 

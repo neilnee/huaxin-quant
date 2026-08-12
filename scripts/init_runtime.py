@@ -32,6 +32,7 @@ RUNTIME_DIRS = [
     "cache/valuation_runs",
     "cache/market_data",
     "cache/capital_flow",
+    "cache/strategy",
     "pool",
     "quant",
     "bloom",

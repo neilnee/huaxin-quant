@@ -5,9 +5,16 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+
+from scripts.data.strategy_data_store import (
+    connect as connect_strategy_db,
+    load_document as load_strategy_document,
+    save_buy_point_events,
+)
 
 
 SETUP_FAMILIES = {"PULLBACK", "BREAKOUT", "RETEST"}
@@ -159,9 +166,17 @@ def realized_plan_event(
 
 
 def load_quant_rows(path: Path) -> tuple[dict, dict[str, dict]]:
-    if not path.exists():
-        return {}, {}
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    match = re.fullmatch(r"quant_(\d{6})\.json", path.name)
+    payload = None
+    default_dir = Path(__file__).resolve().parents[1] / "cache" / "quant_runs"
+    if match and path.parent.resolve() == default_dir.resolve():
+        trade_date = datetime.strptime(match.group(1), "%y%m%d").strftime("%Y-%m-%d")
+        with connect_strategy_db() as conn:
+            payload = load_strategy_document(conn, "quant", trade_date)
+    if payload is None:
+        if not path.exists():
+            return {}, {}
+        payload = json.loads(path.read_text(encoding="utf-8"))
     rows = {
         str(row.get("code") or "").zfill(6): row
         for row in payload.get("results", [])
@@ -196,13 +211,19 @@ def realized_events_for_date(date_value: str, plan_dir: Path, quant_dir: Path, m
     if plan_date is None:
         return []
     plan_path = plan_dir / f"signal_plan_{date_yy(plan_date)}.json"
-    if not plan_path.exists():
+    default_plan_dir = Path(__file__).resolve().parents[1] / "signal_plan"
+    plan_payload = None
+    if plan_dir.resolve() == default_plan_dir.resolve():
+        with connect_strategy_db() as conn:
+            plan_payload = load_strategy_document(conn, "signal_plan", plan_date)
+    if plan_payload is None and not plan_path.exists():
         return []
     source_payload, source_rows = load_quant_rows(quant_dir / f"quant_{date_yy(plan_date)}.json")
     entry_payload, entry_rows = load_quant_rows(quant_dir / f"quant_{date_value}.json")
     if not entry_rows:
         return []
-    plan_payload = json.loads(plan_path.read_text(encoding="utf-8"))
+    if plan_payload is None:
+        plan_payload = json.loads(plan_path.read_text(encoding="utf-8"))
     strategy_version = entry_payload.get("meta", {}).get("strategy_version", "")
     seen: set[tuple[str, str, str, str]] = set()
     events = []
@@ -219,4 +240,6 @@ def realized_events_for_date(date_value: str, plan_dir: Path, quant_dir: Path, m
             continue
         seen.add(key)
         events.append(event)
+    with connect_strategy_db() as conn:
+        save_buy_point_events(conn, events)
     return events

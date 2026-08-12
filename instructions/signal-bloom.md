@@ -309,6 +309,8 @@ bloom/state/snapshots/bloom_state_before_<YYYYMMDD>.csv
 dashboard/data/<YYYYMM>/vcp_context_<YYMMDD>.js
 ```
 
+Bloom 日快照和事件账本必须先写入 `cache/strategy/strategy_data.sqlite`，再从数据库发布 `bloom_input`、当前状态 CSV、事件 JSONL 和报告。Bloom 读取历史状态时以数据库为权威来源；同日首次写入前快照继续保留，专用于重复运行的昨日状态基准。该变更只调整持久化，不改变生命周期判定，详细契约见 `instructions/strategy-data.md`。
+
 `dashboard_vcp.py` 仅读取当日 `bloom_input` 与同日模型二 JSON，按月发布 VCP 结构页所需的独立数据包；`--all` 可重建全部已有 Bloom 日期。它不得改写 Bloom 状态、模型二输出或触发交易动作。
 
 `dashboard_signals.py` 在每日工作流中必须以 `--fetch-capital` 启动，并按当日触发股与 Signal Plan 股票代码去重补查个股主力和融资资金。该补查使用独立于完整资金观测的请求预算；发布数据包必须记录 `capital_fetch_enabled`、实际请求数和错误列表，每条信号必须保留 `capital_support`，数据缺失时明确降级而不得省略。每日完整性核验必须确认同日信号数据包确实启用了资金补查。

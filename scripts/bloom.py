@@ -34,6 +34,14 @@ from scripts.io_utils import (
     atomic_write_json,
     atomic_write_text,
 )
+from scripts.data.strategy_data_store import (
+    connect as connect_strategy_db,
+    document_dates as strategy_document_dates,
+    load_all_bloom_events,
+    load_bloom_state,
+    load_document as load_strategy_document,
+    save_bloom,
+)
 
 
 BLOOM_STRATEGY_FILE = "04-bloom.json"
@@ -409,6 +417,12 @@ def base_status(row):
 
 
 def read_state():
+    with connect_strategy_db() as conn:
+        dates = strategy_document_dates(conn, "bloom")
+        if dates:
+            rows = load_bloom_state(conn, dates[-1])
+            if rows:
+                return rows
     path = BLOOM_STATE_PATH if BLOOM_STATE_PATH.exists() else LEGACY_STATE_PATH
     if not path.exists():
         return {}
@@ -1563,7 +1577,16 @@ def main():
         sys.exit(1)
 
     date_yy = normalize_date_arg(args.date)
-    quant_path = quant_run_for_date(date_yy) if date_yy else latest_quant_run()
+    with connect_strategy_db() as strategy_conn:
+        database_dates = strategy_document_dates(strategy_conn, "quant")
+    database_stamps = {value.replace("-", "")[2:] for value in database_dates}
+    if date_yy and date_yy in database_stamps:
+        quant_path = QUANT_RUNS_DIR / f"quant_{date_yy}.json"
+    elif not date_yy and database_dates:
+        date_yy = database_dates[-1].replace("-", "")[2:]
+        quant_path = QUANT_RUNS_DIR / f"quant_{date_yy}.json"
+    else:
+        quant_path = quant_run_for_date(date_yy) if date_yy else latest_quant_run()
     if not quant_path:
         print("错误: 未找到模型二 quant run JSON")
         sys.exit(1)
@@ -1573,9 +1596,23 @@ def main():
         sys.exit(1)
     date_yy = match.group(1)
 
-    payload = load_json(quant_path)
-    prev_path = previous_quant_run(date_yy)
-    previous_payload = load_json(prev_path) if prev_path else None
+    trade_date = datetime.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
+    with connect_strategy_db() as strategy_conn:
+        payload = load_strategy_document(strategy_conn, "quant", trade_date)
+    if payload is None:
+        payload = load_json(quant_path)
+    previous_database_dates = [value for value in database_dates if value < trade_date]
+    prev_path = (
+        QUANT_RUNS_DIR / f"quant_{previous_database_dates[-1].replace('-', '')[2:]}.json"
+        if previous_database_dates else previous_quant_run(date_yy)
+    )
+    previous_payload = None
+    if prev_path:
+        previous_date = datetime.strptime(prev_path.stem.rsplit("_", 1)[-1], "%y%m%d").strftime("%Y-%m-%d")
+        with connect_strategy_db() as strategy_conn:
+            previous_payload = load_strategy_document(strategy_conn, "quant", previous_date)
+        if previous_payload is None:
+            previous_payload = load_json(prev_path)
 
     try:
         bloom, new_state, events = build_bloom(payload, previous_payload, date_yy,
@@ -1587,10 +1624,28 @@ def main():
 
     if not args.no_state_update:
         snapshot_path = write_state_snapshot_before(bloom["summary"]["date"])
-        write_state(new_state)
-        write_events(bloom["summary"]["date"], events)
     else:
         snapshot_path = None
+
+    with connect_strategy_db() as strategy_conn:
+        save_bloom(
+            strategy_conn,
+            bloom,
+            new_state if not args.no_state_update else None,
+            events if not args.no_state_update else None,
+            source_path=f"bloom/state/bloom_input_{date_yy}.json",
+        )
+        bloom = load_strategy_document(strategy_conn, "bloom", bloom["summary"]["date"])
+        if not args.no_state_update:
+            new_state = load_bloom_state(strategy_conn, bloom["summary"]["date"])
+            all_events = load_all_bloom_events(strategy_conn)
+
+    if not args.no_state_update:
+        write_state(new_state)
+        atomic_write_text(
+            BLOOM_EVENTS_PATH,
+            "".join(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n" for event in all_events),
+        )
 
     input_path = write_bloom_input(date_yy, bloom)
     report_path = write_markdown(date_yy, build_markdown(bloom))

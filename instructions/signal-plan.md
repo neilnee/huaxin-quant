@@ -389,6 +389,8 @@ signal_plan/signal_plan_<YYMMDD>.json
 signal_plan/signal_plan_<YYMMDD>.md
 ```
 
+Signal Plan 必须先写入 `cache/strategy/strategy_data.sqlite`，再从数据库当前版本发布上述文件；输入 Quant 也优先读取同库快照。该存储顺序不改变任何计划生成条件，详细契约见 `instructions/strategy-data.md`。
+
 每条计划标准字段：
 
 ```text

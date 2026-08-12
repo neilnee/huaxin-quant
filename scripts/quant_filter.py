@@ -47,6 +47,7 @@ import requests
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.shared import PROJECT_ROOT, VALUATION_INDEX_PATH, expected_trade_date
 from scripts.data.market_data_service import MarketDataService
+from scripts.data.strategy_data_store import connect as connect_strategy_db, load_document, save_quant
 from scripts.strategy_config import load_strategy_config
 
 
@@ -2641,12 +2642,11 @@ def main():
         print("提示：强制从主备源刷新候选标的近期日线")
 
     results, stats = process_codes(codes, today_yy, run_date, use_cache=use_cache, progress_file=args.progress_file)
-    csv_results = [r for r in results if should_write_to_quant(r, include_reject=args.include_reject)]
-    csv_results.sort(key=lambda x: x["structure_score"], reverse=True)
-
+    llm_results = [r for r in results if should_write_to_quant(r, include_reject=args.include_reject)]
+    llm_results.sort(key=lambda x: x["structure_score"], reverse=True)
     llm_payload = {"status": "skipped", "reason": "not_requested", "reviews": []}
     if args.with_llm:
-        llm_payload = maybe_call_llm(csv_results, args.llm_top)
+        llm_payload = maybe_call_llm(llm_results, args.llm_top)
 
     payload = {
         "meta": {
@@ -2662,6 +2662,13 @@ def main():
         "llm": llm_payload,
         "results": results,
     }
+
+    if mode == "全量":
+        with connect_strategy_db() as strategy_conn:
+            save_quant(strategy_conn, payload, os.path.relpath(json_path, PROJECT_ROOT))
+            payload = load_document(strategy_conn, "quant", run_date)
+    csv_results = [r for r in payload["results"] if should_write_to_quant(r, include_reject=args.include_reject)]
+    csv_results.sort(key=lambda x: x["structure_score"], reverse=True)
 
     print_summary(len(codes), stats["pull_ok"], stats["pull_fail"], stats["data_insufficient"],
                   results, stats["cache_hits"], stats["api_calls"], stats["tdx_calls"])

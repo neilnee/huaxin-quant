@@ -23,6 +23,7 @@ from scripts.data.capital_data_store import DB_PATH as CAPITAL_DB_PATH, connect_
 from scripts.data.market_data_store import DB_PATH as MARKET_DB_PATH
 from scripts.shared import PROJECT_ROOT, expected_trade_date, normalize_date_arg
 from scripts.strategy_config import load_strategy_config
+from scripts.dashboard_index import update_dashboard_module
 
 
 ROOT = Path(PROJECT_ROOT)
@@ -505,15 +506,8 @@ def _load_dashboard_index() -> dict:
 
 
 def _write_dashboard_index() -> None:
-    index = _load_dashboard_index()
     dates = sorted(path.stem.rsplit("_", 1)[-1] for path in DASHBOARD_DATA_DIR.glob("*/capital_context_*.js"))
-    if dates:
-        index["capital"] = {"latest": dates[-1], "available": dates}
-    DASHBOARD_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    (DASHBOARD_DATA_DIR / "index.js").write_text(
-        "window.QUANT_DASHBOARD_INDEX = " + json.dumps(index, ensure_ascii=False) + ";\n",
-        encoding="utf-8",
-    )
+    update_dashboard_module(DASHBOARD_DATA_DIR, "capital", dates)
 
 
 def write_outputs(context: dict) -> dict:

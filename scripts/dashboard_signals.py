@@ -11,6 +11,7 @@ from scripts.capital_observer import classify_stock_capital
 from scripts.data.capital_data_service import CapitalDataService
 from scripts.data.capital_data_sources import MiaoxiangCapitalSource, RequestBudget
 from scripts.plan_realization import realized_events_for_date
+from scripts.dashboard_index import update_dashboard_module
 
 ROOT=Path(PROJECT_ROOT); RUNS=ROOT/"cache"/"quant_runs"; PLAN_RUNS=ROOT/"signal_plan"; POOL_DIR=ROOT/"pool"; SIGNAL_FIN_DIR=ROOT/"cache"/"signal_fundamentals"; MARKET_DB=ROOT/"cache"/"market_data"/"market_data.sqlite"; MARKET_DIR=ROOT/"market"; MARKET_CONTEXT_DIR=MARKET_DIR/"data"; OUT=ROOT/"dashboard"/"data"; START="260506"
 PLAN_CONFIG,_=load_strategy_config("04-signal-plan.json"); POSITION_CFG=PLAN_CONFIG["position_guidance"]
@@ -46,12 +47,9 @@ def load_dashboard_index():
  match=re.search(r"=\s*(\{.*\});\s*$",path.read_text(encoding="utf-8"),re.S)
  return json.loads(match.group(1)) if match else {}
 def write_dashboard_index():
- index=load_dashboard_index()
  for kind in ("signals","vcp"):
   dates=published_dates(kind)
-  if dates: index[kind]={"latest":dates[-1],"available":dates}
- index.setdefault("market",{"latest":None,"available":[]})
- (OUT/"index.js").write_text("window.QUANT_DASHBOARD_INDEX = "+json.dumps(index,ensure_ascii=False)+";\n",encoding="utf-8")
+  if dates: update_dashboard_module(OUT,kind,dates,defaults=("market",))
 def format_plan_volume(value, direction):
  if value is None: return "—"
  suffix="以下" if direction=="max" else "以上"

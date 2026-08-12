@@ -20,6 +20,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.shared import PROJECT_ROOT
 from scripts.data.market_data_service import MarketDataService
+from scripts.io_utils import FileLock, LockBusyError, atomic_write_csv
 from scripts.strategy_config import load_strategy_config
 
 
@@ -36,6 +37,7 @@ IMPORTS_DIR = POSITION_ROOT / CONFIG["dirs"]["imports"]
 PERFORMANCE_DIR = POSITION_ROOT / CONFIG["dirs"].get("performance", "performance")
 PLAN_PATH = POSITION_ROOT / CONFIG["files"]["plan"]
 LOTS_PATH = POSITION_ROOT / CONFIG["files"]["lots_current"]
+POSITION_LOCK_PATH = POSITION_ROOT / ".position.lock"
 
 PLAN_FIELDS = CONFIG["schemas"]["position_plan"]
 TRADE_FIELDS = CONFIG["schemas"]["trade_ledger"]
@@ -118,10 +120,7 @@ def ensure_dirs():
 def ensure_csv(path, fieldnames):
     if path.exists():
         return False
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
+    atomic_write_csv(path, fieldnames, [])
     return True
 
 
@@ -133,26 +132,19 @@ def read_csv_rows(path):
 
 
 def write_csv(path, fieldnames, rows):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({field: row.get(field, "") for field in fieldnames})
+    atomic_write_csv(path, fieldnames, rows)
 
 
 def append_rows(path, fieldnames, rows):
-    created = ensure_csv(path, fieldnames)
-    existing_ids = {row.get("trade_id") for row in read_csv_rows(path)}
-    with path.open("a", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        if created:
-            f.seek(0, os.SEEK_END)
-        for row in rows:
-            if row["trade_id"] in existing_ids:
-                raise ValueError(f"duplicate trade_id in {path}: {row['trade_id']}")
-            writer.writerow({field: row.get(field, "") for field in fieldnames})
-            existing_ids.add(row["trade_id"])
+    existing = read_csv_rows(path)
+    existing_ids = {row.get("trade_id") for row in existing}
+    additions = []
+    for row in rows:
+        if row["trade_id"] in existing_ids:
+            raise ValueError(f"duplicate trade_id in {path}: {row['trade_id']}")
+        additions.append(row)
+        existing_ids.add(row["trade_id"])
+    atomic_write_csv(path, fieldnames, [*existing, *additions])
 
 
 def normalize_asset_type(value):
@@ -958,7 +950,11 @@ def build_parser():
 
 def main():
     args = build_parser().parse_args()
-    args.func(args)
+    try:
+        with FileLock(POSITION_LOCK_PATH, blocking=False, purpose=f"position:{args.command}"):
+            args.func(args)
+    except LockBusyError as exc:
+        raise SystemExit(f"position ledger is busy: {exc}") from exc
 
 
 if __name__ == "__main__":

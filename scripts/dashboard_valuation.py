@@ -13,6 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(os.path.abspath(__file__)).parents[1]))
 from scripts.shared import PROJECT_ROOT, VALUATION_INDEX_PATH
+from scripts.dashboard_index import update_dashboard_module
 
 
 ROOT = Path(PROJECT_ROOT)
@@ -615,12 +616,14 @@ def load_index():
 
 
 def write_index():
-    index = load_index()
     dates = sorted(item.stem.rsplit("_", 1)[-1] for item in DATA_DIR.glob("*/valuation_context_*.js"))
-    index["valuation"] = {"latest": dates[-1] if dates else None, "available": dates, "catalog": "data/valuation/catalog.js"}
-    for kind in ("market", "vcp", "signals"):
-        index.setdefault(kind, {"latest": None, "available": []})
-    (DATA_DIR / "index.js").write_text("window.QUANT_DASHBOARD_INDEX = " + json.dumps(index, ensure_ascii=False) + ";\n", encoding="utf-8")
+    update_dashboard_module(
+        DATA_DIR,
+        "valuation",
+        dates,
+        extra={"catalog": "data/valuation/catalog.js"},
+        defaults=("market", "vcp", "signals"),
+    )
 
 
 def publish(date: str) -> Path:

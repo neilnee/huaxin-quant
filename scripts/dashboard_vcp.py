@@ -15,6 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(os.path.abspath(__file__)).parents[1]))
 from scripts.shared import PROJECT_ROOT
 from scripts.plan_realization import realized_events_for_date
+from scripts.dashboard_index import update_dashboard_module
 
 
 ROOT = Path(PROJECT_ROOT)
@@ -83,21 +84,10 @@ def load_pool_sources(date_yy: str) -> dict[str, dict]:
 
 
 def write_dashboard_index() -> None:
-    index_path = DASHBOARD_DATA_DIR / "index.js"
-    index = {}
-    if index_path.exists():
-        match = re.search(r"=\s*(\{.*\});\s*$", index_path.read_text(encoding="utf-8"), re.S)
-        if match:
-            index = json.loads(match.group(1))
     for kind in ("signals", "vcp"):
         dates = sorted(path.stem.rsplit("_", 1)[-1] for path in DASHBOARD_DATA_DIR.glob(f"*/{kind}_context_*.js"))
         if dates:
-            index[kind] = {"latest": dates[-1], "available": dates}
-    index.setdefault("market", {"latest": None, "available": []})
-    index_path.write_text(
-        "window.QUANT_DASHBOARD_INDEX = " + json.dumps(index, ensure_ascii=False) + ";\n",
-        encoding="utf-8",
-    )
+            update_dashboard_module(DASHBOARD_DATA_DIR, kind, dates, defaults=("market",))
 
 
 def display_vcp_text(value):

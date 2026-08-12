@@ -27,6 +27,13 @@ from scripts.dashboard_vcp import publish as publish_vcp_dashboard
 from scripts.dashboard_signals import publish as publish_signals_dashboard
 from scripts.strategy_config import load_strategy_config
 from scripts.progress_utils import ProgressTracker
+from scripts.io_utils import (
+    FileLock,
+    LockBusyError,
+    atomic_write_csv,
+    atomic_write_json,
+    atomic_write_text,
+)
 
 
 BLOOM_STRATEGY_FILE = "04-bloom.json"
@@ -40,6 +47,7 @@ BLOOM_EVENTS_PATH = Path(PROJECT_ROOT) / CONFIG["inputs"]["events_path"]
 BLOOM_INPUT_DIR = Path(PROJECT_ROOT) / CONFIG["outputs"]["review_input_dir"]
 BLOOM_REPORT_DIR = Path(PROJECT_ROOT) / CONFIG["outputs"]["daily_report_dir"]
 BLOOM_STATE_SNAPSHOT_DIR = BLOOM_STATE_PATH.parent / "snapshots"
+BLOOM_LOCK_PATH = BLOOM_STATE_PATH.parent / ".bloom.lock"
 
 LEGACY_STATE_PATH = Path(PROJECT_ROOT) / "bloom" / "bloom_state.csv"
 
@@ -467,11 +475,7 @@ def write_state(rows):
         -safe_float(r.get("structure_score")),
         r.get("code", ""),
     ))
-    with open(BLOOM_STATE_PATH, "w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=STATE_FIELDS)
-        writer.writeheader()
-        for row in ordered:
-            writer.writerow({field: row.get(field, "") for field in STATE_FIELDS})
+    atomic_write_csv(BLOOM_STATE_PATH, STATE_FIELDS, ordered)
 
 
 def remove_events_for_date(date_iso):
@@ -494,9 +498,11 @@ def remove_events_for_date(date_iso):
 
 def write_events(date_iso, events):
     kept = remove_events_for_date(date_iso)
-    with open(BLOOM_EVENTS_PATH, "w", encoding="utf-8") as f:
-        for event in kept + events:
-            f.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+    content = "".join(
+        json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n"
+        for event in kept + events
+    )
+    atomic_write_text(BLOOM_EVENTS_PATH, content)
 
 
 def score_change(prev_row, row):
@@ -1282,8 +1288,7 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False, progres
 
 def write_bloom_input(date_yy, bloom):
     path = BLOOM_INPUT_DIR / f"bloom_input_{date_yy}.json"
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(bloom, f, ensure_ascii=False, indent=2)
+    atomic_write_json(path, bloom)
     return path
 
 
@@ -1517,8 +1522,7 @@ def build_markdown(bloom):
 
 def write_markdown(date_yy, markdown):
     path = BLOOM_REPORT_DIR / f"bloom_{date_yy}.md"
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(markdown)
+    atomic_write_text(path, markdown)
     return path
 
 
@@ -1551,6 +1555,12 @@ def main():
     args = parser.parse_args()
 
     ensure_dirs()
+    bloom_lock = FileLock(BLOOM_LOCK_PATH, blocking=False, purpose="bloom state publication")
+    try:
+        bloom_lock.acquire()
+    except LockBusyError as exc:
+        print(f"错误: Bloom 状态正在由另一个进程更新: {exc}")
+        sys.exit(1)
 
     date_yy = normalize_date_arg(args.date)
     quant_path = quant_run_for_date(date_yy) if date_yy else latest_quant_run()
@@ -1605,6 +1615,7 @@ def main():
     print(f"summary: {bloom['summary']}")
 
     llm_status = (bloom.get("summary", {}).get("llm") or {}).get("status")
+    bloom_lock.release()
     if llm_status == "failed":
         sys.exit(3)
 

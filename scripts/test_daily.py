@@ -1,4 +1,5 @@
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -82,7 +83,7 @@ class DailyCapitalWorkflowTests(unittest.TestCase):
         self.assertEqual(
             command,
             [
-                "python3",
+                sys.executable,
                 "scripts/capital_observer.py",
                 "run",
                 "--date",
@@ -160,6 +161,12 @@ class DailyCapitalWorkflowTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(run.call_count, 2)
 
+    def test_stage_timeout_has_stable_exit_code(self):
+        command = [sys.executable, "scripts/example.py"]
+        with patch.object(daily.subprocess, "run", side_effect=daily.subprocess.TimeoutExpired(command, 1)):
+            result = daily.run_stage(command, timeout=1)
+        self.assertEqual(result.returncode, 124)
+
     def test_progress_tracker_records_failed_root_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "progress.json"
@@ -169,6 +176,31 @@ class DailyCapitalWorkflowTests(unittest.TestCase):
             progress = ProgressTracker.read(path)
         self.assertEqual(progress["status"], "failed")
         self.assertEqual(progress["failure_reason"], "dashboard: exit 4")
+
+    def test_progress_tracker_records_degraded_and_skipped_steps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "progress.json"
+            tracker = ProgressTracker(path)
+            tracker.init(["bloom", "zixuan"])
+            tracker.step_start("bloom")
+            tracker.step_degraded("bloom", "LLM unavailable")
+            tracker.step_skipped("zixuan", "disabled")
+            tracker.mark_degraded()
+            progress = ProgressTracker.read(path)
+        self.assertEqual(progress["status"], "degraded")
+        self.assertEqual(progress["steps"]["bloom"]["status"], "degraded")
+        self.assertEqual(progress["steps"]["zixuan"]["status"], "skipped")
+
+    def test_monitor_renders_degraded_pipeline_as_successful_terminal(self):
+        markdown = monitor._build_progress_markdown({
+            "date": self.DATE,
+            "status": "degraded",
+            "started_at": "2026-08-10T15:00:00",
+            "total_elapsed_s": 12,
+            "steps": {"bloom": {"status": "degraded", "reason": "LLM unavailable"}},
+        })
+        self.assertIn("⚠️ 已降级完成", markdown)
+        self.assertIn("LLM unavailable", markdown)
 
     def test_monitor_renders_failed_pipeline_as_terminal(self):
         markdown = monitor._build_progress_markdown({

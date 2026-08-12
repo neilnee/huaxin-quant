@@ -85,6 +85,8 @@ def _status_icon(status):
         "waiting": "⏳",
         "running": "🔄",
         "done": "✅",
+        "skipped": "➖",
+        "degraded": "⚠️",
         "error": "❌",
     }
     return icons.get(status, "❓")
@@ -136,7 +138,7 @@ def _build_progress_markdown(progress):
     steps = progress.get("steps", {})
     started_at = progress.get("started_at", "")
     root_status = progress.get("status", "running")
-    headline = "❌ 已中止" if root_status == "failed" else "✅ 已完成" if root_status == "done" else "⏳ 生成中"
+    headline = "❌ 已中止" if root_status == "failed" else "⚠️ 已降级完成" if root_status == "degraded" else "✅ 已完成" if root_status == "done" else "⏳ 生成中"
     lines = [
         f"# 每日流程 {date_yy}",
         "",
@@ -164,9 +166,10 @@ def _build_progress_markdown(progress):
                 detail += f" — {cur_stage}"
             if cur_code:
                 detail += f" [{cur_code} {cur_name}]" if cur_name else f" [{cur_code}]"
-        elif status == "done":
+        elif status in {"done", "skipped", "degraded"}:
             elapsed = _step_time(step)
-            detail = elapsed
+            reason = step.get("reason", "")
+            detail = " — ".join(value for value in (elapsed, reason) if value)
         elif status == "error":
             detail = step.get("error", "未知错误")
         else:
@@ -174,7 +177,7 @@ def _build_progress_markdown(progress):
 
         lines.append(f"| {icon} {label} | {status} | {detail} |")
 
-    if root_status in {"done", "failed"}:
+    if root_status in {"done", "degraded", "failed"}:
         total_s = progress.get("total_elapsed_s", 0)
         if not total_s:
             started = datetime.fromisoformat(started_at) if started_at else None
@@ -188,7 +191,7 @@ def _build_progress_markdown(progress):
     else:
         total_str = _step_time({"started_at": started_at}) if started_at else ""
     footer = (f"*流水线已中止：{progress.get('failure_reason', '未知原因')}*"
-              if root_status == "failed" else "*流水线已完成。*" if root_status == "done"
+              if root_status == "failed" else "*流水线已降级完成。*" if root_status == "degraded" else "*流水线已完成。*" if root_status == "done"
               else "*流水线运行中。运行 `python3 scripts/monitor.py` 查看实时进度。*")
     lines.extend([
         "",
@@ -232,7 +235,7 @@ def main():
 
             status = progress.get("status", "unknown")
 
-            if status in {"done", "failed"}:
+            if status in {"done", "degraded", "failed"}:
                 progress_path = _progress_markdown_path(date_yy)
                 progress_path.write_text(_build_progress_markdown(progress), encoding="utf-8")
 
@@ -242,11 +245,11 @@ def main():
                 )
                 total = _step_time({"status": "done", "started_at": progress.get("started_at"),
                                     "elapsed_s": progress.get("total_elapsed_s")})
-                icon = "✅" if status == "done" else "❌"
-                label = "完成" if status == "done" else "中止"
+                icon = "❌" if status == "failed" else "⚠️" if status == "degraded" else "✅"
+                label = "中止" if status == "failed" else "降级完成" if status == "degraded" else "完成"
                 print(f"[monitor] {icon} 流水线{label} — 总耗时 {total}，{error_count} 个错误")
                 print(f"[monitor] 进度记录: {progress_path}")
-                if status == "failed" or error_count:
+                if status == "failed":
                     sys.exit(1)
                 break
 

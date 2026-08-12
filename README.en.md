@@ -109,6 +109,8 @@ cp .env.example .env
 python3 scripts/init_runtime.py
 ```
 
+The initializer creates the current local cache, report, market, capital, backtest, Dashboard data, and `position/` ledger directories. It no longer creates the retired `signals/` position templates.
+
 A complete daily run uses the configured data adapters:
 
 | Variable | Purpose |
@@ -183,6 +185,12 @@ python3 scripts/run_valuation.py --code 300442 --name 润泽科技
 
 # Unit tests
 python3 -m unittest discover -s scripts -p 'test_*.py'
+```
+
+Run the unified offline engineering checks (syntax, tests, strategy JSON, Dashboard JavaScript, and Git whitespace) with:
+
+```bash
+python3 scripts/check.py
 ```
 
 ## Repository layout

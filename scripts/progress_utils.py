@@ -121,6 +121,34 @@ class ProgressTracker:
 
         self._locked_update(mutate)
 
+    def step_skipped(self, step, reason=None):
+        self._finish_step(step, "skipped", reason)
+
+    def step_degraded(self, step, reason):
+        self._finish_step(step, "degraded", reason)
+
+    def _finish_step(self, step, status, reason=None):
+        now = datetime.now().isoformat()
+
+        def mutate(data):
+            steps = data.setdefault("steps", {})
+            if step not in steps:
+                steps[step] = self._empty_step(started_at=now)
+            value = steps[step]
+            value["status"] = status
+            value["finished_at"] = now
+            value["error"] = None
+            value["reason"] = str(reason) if reason else None
+            if value.get("started_at"):
+                try:
+                    started = datetime.fromisoformat(value["started_at"])
+                    value["elapsed_s"] = round((datetime.now() - started).total_seconds())
+                except (ValueError, TypeError):
+                    pass
+            data["updated_at"] = now
+
+        self._locked_update(mutate)
+
     def mark_done(self):
         """Mark the entire pipeline as done, computing total_elapsed_s."""
 
@@ -133,6 +161,22 @@ class ProgressTracker:
                 except (ValueError, TypeError):
                     pass
             data["status"] = "done"
+            data["updated_at"] = datetime.now().isoformat()
+
+        self._locked_update(mutate)
+
+    def mark_degraded(self):
+        """Mark a completed pipeline that contains only non-blocking degradation."""
+
+        def mutate(data):
+            started_str = data.get("started_at")
+            if started_str:
+                try:
+                    started = datetime.fromisoformat(started_str)
+                    data["total_elapsed_s"] = round((datetime.now() - started).total_seconds())
+                except (ValueError, TypeError):
+                    pass
+            data["status"] = "degraded"
             data["updated_at"] = datetime.now().isoformat()
 
         self._locked_update(mutate)

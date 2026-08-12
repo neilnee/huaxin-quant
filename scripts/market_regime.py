@@ -22,6 +22,7 @@ from scripts.data.market_data_service import MarketDataService, resolve_as_of
 from scripts.data.market_data_store import connect_db, create_schema
 from scripts.shared import PROJECT_ROOT
 from scripts.strategy_config import load_strategy_config
+from scripts.dashboard_index import update_dashboard_module
 
 
 CONFIG, CONFIG_PATH = load_strategy_config("market-regime.json")
@@ -1560,18 +1561,14 @@ def build_market_context(report: dict, sectors: list[dict], stocks: list[dict], 
 
 
 def write_dashboard_index(market_latest: str | None, market_available: list[str]) -> None:
-    index = {"market": {"latest": market_latest, "available": market_available}}
-    # Every publisher owns only its module.  Rebuild the other known module
-    # indexes from their published packages so a market refresh cannot erase
-    # an independently published valuation index.
+    update_dashboard_module(DASHBOARD_DATA_DIR, "market", market_available)
+    # Rebuild known module indexes from their published packages so a market
+    # refresh also repairs stale entries without erasing independent modules.
     for kind in ("capital", "signals", "vcp", "backtest", "valuation"):
         dates = sorted(path.stem.rsplit("_", 1)[-1] for path in DASHBOARD_DATA_DIR.glob(f"*/{kind}_context_*.js"))
         if dates:
-            index[kind] = {"latest": dates[-1], "available": dates}
-    (DASHBOARD_DATA_DIR / "index.js").write_text(
-        "window.QUANT_DASHBOARD_INDEX = " + json.dumps(index, ensure_ascii=False) + ";\n",
-        encoding="utf-8",
-    )
+            extra = {"catalog": "data/valuation/catalog.js"} if kind == "valuation" else None
+            update_dashboard_module(DASHBOARD_DATA_DIR, kind, dates, extra=extra)
 
 
 def write_dashboard_data(report: dict, sectors: list[dict], stocks: list[dict], state_conn: sqlite3.Connection, as_of: str) -> None:

@@ -109,6 +109,8 @@ cp .env.example .env
 python3 scripts/init_runtime.py
 ```
 
+初始化脚本会创建当前流水线所需的本地缓存、报告、市场、资金、回测、Dashboard 数据和 `position/` 账本目录；不会再创建已经退出正式架构的旧 `signals/` 持仓模板。
+
 完整日流程需要按实际数据适配器配置 `.env`：
 
 | 配置 | 用途 |
@@ -183,6 +185,12 @@ python3 scripts/run_valuation.py --code 300442 --name 润泽科技
 
 # 单元测试
 python3 -m unittest discover -s scripts -p 'test_*.py'
+```
+
+也可以运行统一的离线工程检查（语法、单测、策略 JSON、Dashboard JavaScript 和 Git 空白检查）：
+
+```bash
+python3 scripts/check.py
 ```
 
 ## 项目结构

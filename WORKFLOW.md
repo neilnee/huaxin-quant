@@ -10,6 +10,8 @@
 python3 scripts/daily.py &
 ```
 
+每日总控使用 `.tmp/locks/daily.lock` 防止两个运行实例同时改写共享状态。若已有实例运行，第二次启动会直接失败并显示锁持有者信息。每个子阶段默认最多运行 6 小时，可通过 `.env` 的 `HUAXIN_STAGE_TIMEOUT_SECONDS` 调整；超时按阻断失败处理。
+
 带选项：
 
 ```bash
@@ -38,6 +40,8 @@ monitor 每 2 秒刷新一次，进度记录写入 `.tmp/daily_progress_<YYMMDD>
 
 - **运行中**：显示阶段状态 + 进度条（模型二含逐只股票进度）
 - **完成后**：保留最终阶段结果，包含三类页面数据的日期一致性核验，monitor 退出
+
+进度终态分为：`done`（完整完成）、`degraded`（核心产物完成但非阻断能力降级）和 `failed`（阻断失败）。明确关闭的可选步骤记为 `skipped`，不再伪装成成功执行，也不会让 monitor 把已完成流水线误判为失败。
 
 ```bash
 python3 scripts/monitor.py --date 260709         # 指定日期

@@ -673,7 +673,7 @@ def build_signal_plan(payload, date_yy, progress_file=None):
         if progress_file and (idx % 10 == 0 or idx == total_results - 1):
             try:
                 pt = ProgressTracker(progress_file)
-                pt.step_update("plan", current_stage="筛选候选+生成计划",
+                pt.step_update("signal_plan", current_stage="筛选候选+生成计划",
                                total=total_results, completed=idx + 1,
                                current_code=str(row.get("code", "")))
             except Exception:
@@ -882,7 +882,7 @@ def call_llm_notes(plans, progress_file=None):
             try:
                 first_plan = batch[0] if batch else {}
                 pt = ProgressTracker(progress_file)
-                pt.step_update("plan", current_stage="LLM备注",
+                pt.step_update("signal_plan", current_stage="LLM备注",
                                total=total_batches, completed=batch_idx + 1,
                                current_code=first_plan.get("code", "") if first_plan else "")
             except Exception:
@@ -1123,6 +1123,10 @@ def main():
     print(f"json: {json_path}")
     print(f"markdown: {md_path}")
     print(f"summary: {plan['summary']}")
+
+    llm_status = plan.get("summary", {}).get("llm", {}).get("status")
+    if not args.no_llm and llm_status == "failed":
+        sys.exit(3)
 
 
 if __name__ == "__main__":

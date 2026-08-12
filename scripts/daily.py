@@ -459,12 +459,16 @@ def main():
     tracker.step_start("signal_plan")
     print("[daily] → Signal Plan")
     result = run_signal_plan(date_yy, progress_path)
-    if result.returncode != 0:
+    if result.returncode not in (0, 3):  # 3 = LLM failed after deterministic outputs were written
         errors.append(f"signal_plan: exit {result.returncode}")
         tracker.step_done("signal_plan", error=f"exit {result.returncode}")
         stop_after("Signal Plan")
-    tracker.step_done("signal_plan")
-    print("[daily] ✓ signal plan done")
+    if result.returncode == 3:
+        tracker.step_degraded("signal_plan", "LLM 备注失败，规则产物已生成")
+        print("[daily] ⚠ Signal Plan LLM 备注失败，已使用规则产物继续")
+    else:
+        tracker.step_done("signal_plan")
+        print("[daily] ✓ signal plan done")
 
     # ── Step 6: Signal financial hints (non-blocking sidecar) ──
     tracker.step_start("signal_fundamentals")

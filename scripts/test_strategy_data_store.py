@@ -11,6 +11,7 @@ from scripts.data.strategy_data_store import (
     save_quant,
     save_signal_plan,
 )
+from scripts.strategy_publish import ordered_bloom_state
 
 
 class StrategyDataStoreTests(unittest.TestCase):
@@ -56,6 +57,18 @@ class StrategyDataStoreTests(unittest.TestCase):
         ])
         self.assertEqual(lifecycle_latest(self.conn, "2026-08-13")[0]["trade_date"], "2026-08-13")
         self.assertEqual(lifecycle_latest(self.conn)[0]["trade_date"], "2026-08-14")
+
+    def test_bloom_publisher_uses_runtime_state_order(self):
+        state = {
+            "cooldown": {"code": "000003", "bloom_status": "COOLDOWN", "structure_score": 99},
+            "early": {"code": "000002", "bloom_status": "EARLY", "structure_score": 20},
+            "forming": {"code": "000001", "bloom_status": "FORMING", "structure_score": 30},
+            "exit": {"code": "000004", "bloom_status": "EXIT", "structure_score": 100},
+        }
+        self.assertEqual(
+            [row["code"] for row in ordered_bloom_state(state)],
+            ["000001", "000002", "000003"],
+        )
 
 
 if __name__ == "__main__":

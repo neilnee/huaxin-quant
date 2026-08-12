@@ -35,6 +35,18 @@ def normalize_date(value: str) -> tuple[str, str]:
     raise ValueError("date must be YYMMDD or YYYY-MM-DD")
 
 
+def ordered_bloom_state(state: dict[str, dict]) -> list[dict]:
+    from scripts.bloom import is_active_status, safe_float
+
+    rows = [row for row in state.values() if row.get("bloom_status") != "EXIT"]
+    rows.sort(key=lambda row: (
+        0 if is_active_status(row.get("bloom_status")) else 1,
+        -safe_float(row.get("structure_score")),
+        row.get("code", ""),
+    ))
+    return rows
+
+
 def publish_quant(conn, date_iso: str, date_yy: str) -> list[Path]:
     from scripts.quant_filter import should_write_to_quant, write_csv
 
@@ -43,7 +55,7 @@ def publish_quant(conn, date_iso: str, date_yy: str) -> list[Path]:
         raise FileNotFoundError(f"quant document missing: {date_iso}")
     json_path = ROOT / "cache" / "quant_runs" / f"quant_{date_yy}.json"
     csv_path = ROOT / "quant" / f"quant_{date_yy}.csv"
-    atomic_write_json(json_path, payload)
+    atomic_write_text(json_path, json.dumps(payload, ensure_ascii=False, indent=2))
     rows = [row for row in payload.get("results", []) if should_write_to_quant(row)]
     rows.sort(key=lambda row: row.get("structure_score") or 0, reverse=True)
     if rows:
@@ -59,7 +71,7 @@ def publish_signal_plan(conn, date_iso: str, date_yy: str) -> list[Path]:
         raise FileNotFoundError(f"signal plan document missing: {date_iso}")
     json_path = ROOT / "signal_plan" / f"signal_plan_{date_yy}.json"
     md_path = ROOT / "signal_plan" / f"signal_plan_{date_yy}.md"
-    atomic_write_json(json_path, payload)
+    atomic_write_text(json_path, json.dumps(payload, ensure_ascii=False, indent=2))
     atomic_write_text(md_path, build_markdown(payload))
     return [json_path, md_path]
 
@@ -77,9 +89,7 @@ def publish_bloom(conn, date_iso: str, date_yy: str) -> list[Path]:
     atomic_write_json(input_path, payload)
     atomic_write_text(report_path, build_markdown(payload))
     state = load_bloom_state(conn, date_iso)
-    active = [row for row in state.values() if row.get("bloom_status") != "EXIT"]
-    active.sort(key=lambda row: (0 if row.get("bloom_status") in {"FORMING", "MATURE", "TRIGGERED"} else 1,
-                                 -(float(row.get("structure_score") or 0)), row.get("code", "")))
+    active = ordered_bloom_state(state)
     atomic_write_csv(state_path, STATE_FIELDS, active)
     content = "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n"
                       for row in load_all_bloom_events(conn))

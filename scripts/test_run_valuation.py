@@ -72,7 +72,7 @@ class RunValuationControllerTest(unittest.TestCase):
             decision = choose_recovery(run_dir)
             self.assertEqual(decision.mode, "stage5")
 
-    def test_recovery_repairs_contract_but_not_insufficient_consensus(self):
+    def test_recovery_reruns_stage5_contract_but_not_insufficient_consensus(self):
         with tempfile.TemporaryDirectory() as directory:
             run_dir = Path(directory)
             for filename in (
@@ -82,10 +82,12 @@ class RunValuationControllerTest(unittest.TestCase):
                 "stage_4_catalysts.json",
                 "research_card_raw.json",
                 "research_card.json",
+                "stage_5_research.json",
+                "stage_5_mapping.json",
             ):
                 write_json(run_dir / filename, {})
             write_json(run_dir / "manifest.json", {"status": "failed", "error": "valuation_inputs PE 区间必须有效"})
-            self.assertEqual(choose_recovery(run_dir).mode, "repair")
+            self.assertEqual(choose_recovery(run_dir).mode, "stage5")
             write_json(run_dir / "manifest.json", {"status": "failed", "error": "一致预期不足：当前 2 家"})
             self.assertEqual(choose_recovery(run_dir).mode, "resume")
 
@@ -108,7 +110,15 @@ class RunValuationControllerTest(unittest.TestCase):
     def test_terminal_verification_requires_dashboard_only_when_publishing(self):
         with tempfile.TemporaryDirectory() as directory:
             run_dir = Path(directory)
-            for filename in ("briefing.json", "evidence.json", "research_card.json", "calc_params.json", "calc_results.json"):
+            for filename in (
+                "briefing.json",
+                "evidence.json",
+                "stage_5_research.json",
+                "stage_5_mapping.json",
+                "research_card.json",
+                "calc_params.json",
+                "calc_results.json",
+            ):
                 write_json(run_dir / filename, {})
             write_json(
                 run_dir / "manifest.json",

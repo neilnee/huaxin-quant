@@ -26,6 +26,11 @@ bloom/
 reports/
 signal_plan/
 tracker/
+market/
+capital/
+backtest/
+position/
+signals/
 dashboard/data/
 refer/
 .tmp/

@@ -19,6 +19,7 @@ Background + monitor:
 """
 
 import argparse
+import atexit
 import json
 import os
 import re
@@ -30,8 +31,10 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.shared import PROJECT_ROOT, default_pipeline_date
 from scripts.progress_utils import ProgressTracker
+from scripts.io_utils import FileLock, LockBusyError
 
 PROGRESS_DIR = Path(PROJECT_ROOT) / ".tmp"
+DAILY_LOCK_PATH = PROGRESS_DIR / "locks" / "daily.lock"
 
 
 def normalize_date_arg(value):
@@ -72,6 +75,20 @@ def _progress_path(date_yy):
 
 # ── stage runners ──
 
+def _stage_timeout_seconds() -> float:
+    return float(os.environ.get("HUAXIN_STAGE_TIMEOUT_SECONDS", "21600"))
+
+
+def run_stage(command, *, timeout=None):
+    """Run one stage with a finite lifetime and a stable timeout exit code."""
+    effective_timeout = _stage_timeout_seconds() if timeout is None else timeout
+    try:
+        return subprocess.run(command, cwd=PROJECT_ROOT, timeout=effective_timeout)
+    except subprocess.TimeoutExpired:
+        print(f"[daily] ✗ 阶段超时（{effective_timeout:g}s）: {' '.join(map(str, command))}")
+        return subprocess.CompletedProcess(command, 124)
+
+
 def run_command_with_retries(command, *, attempts=2, label="步骤"):
     """仅用于可重入步骤的有限重试。
 
@@ -79,7 +96,7 @@ def run_command_with_retries(command, *, attempts=2, label="步骤"):
     """
     result = None
     for attempt in range(1, attempts + 1):
-        result = subprocess.run(command, cwd=PROJECT_ROOT)
+        result = run_stage(command)
         if result.returncode == 0:
             return result
         if attempt < attempts:
@@ -90,7 +107,7 @@ def run_command_with_retries(command, *, attempts=2, label="步骤"):
 def run_market_update(date_yy):
     iso = datetime.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
     return run_command_with_retries(
-        ["python3", "scripts/market_regime.py", "update", "--date", iso],
+        [sys.executable, "scripts/market_regime.py", "update", "--date", iso],
         label="市场数据更新",
     )
 
@@ -98,49 +115,46 @@ def run_market_update(date_yy):
 def run_pool(date_yy, force_refresh=False):
     from datetime import datetime as _dt
     iso = _dt.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
-    cmd = ["python3", "scripts/run_pool.py", "--date", iso]
+    cmd = [sys.executable, "scripts/run_pool.py", "--date", iso]
     if force_refresh:
         cmd.append("--force-refresh")
-    return subprocess.run(cmd, cwd=PROJECT_ROOT)
+    return run_stage(cmd)
 
 
 def run_quant(date_yy, pool_path, progress_path):
     cmd = [
-        "python3", "scripts/quant_filter.py",
+        sys.executable, "scripts/quant_filter.py",
         "--date", date_yy,
         "--pool", str(pool_path),
         "--progress-file", str(progress_path),
     ]
-    return subprocess.run(cmd, cwd=PROJECT_ROOT)
+    return run_stage(cmd)
 
 
 def run_bloom(date_yy, progress_path):
-    return subprocess.run(
-        ["python3", "scripts/bloom.py", "--date", date_yy,
+    return run_stage(
+        [sys.executable, "scripts/bloom.py", "--date", date_yy,
          "--progress-file", str(progress_path), "--skip-dashboard-publish"],
-        cwd=PROJECT_ROOT,
     )
 
 
 def run_signal_plan(date_yy, progress_path):
-    return subprocess.run(
-        ["python3", "scripts/signal_plan.py", "--date", date_yy,
+    return run_stage(
+        [sys.executable, "scripts/signal_plan.py", "--date", date_yy,
          "--progress-file", str(progress_path)],
-        cwd=PROJECT_ROOT,
     )
 
 
 def run_signal_fundamentals(date_yy):
-    return subprocess.run(
-        ["python3", "scripts/signal_fundamentals.py", "--date", date_yy],
-        cwd=PROJECT_ROOT,
+    return run_stage(
+        [sys.executable, "scripts/signal_fundamentals.py", "--date", date_yy],
     )
 
 
 def run_capital_observer(date_yy):
     iso = datetime.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
     return run_command_with_retries(
-        ["python3", "scripts/capital_observer.py", "run", "--date", iso, "--fetch"],
+        [sys.executable, "scripts/capital_observer.py", "run", "--date", iso, "--fetch"],
         label="资金观测",
     )
 
@@ -181,8 +195,8 @@ def load_market_llm_meta(date_yy):
 def run_market_publish(date_yy):
     """发布市场面板；LLM 失败时保留主线结论并定向重试一次。"""
     iso = datetime.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
-    command = ["python3", "scripts/market_regime.py", "run", "--date", iso]
-    result = subprocess.run(command, cwd=PROJECT_ROOT)
+    command = [sys.executable, "scripts/market_regime.py", "run", "--date", iso]
+    result = run_stage(command)
     if result.returncode == 0:
         try:
             load_market_llm_meta(date_yy)
@@ -193,7 +207,7 @@ def run_market_publish(date_yy):
         print(f"[daily] ⚠ 市场面板失败 (exit {result.returncode})，将保留已有主线并重试")
 
     retry_command = command + ["--reuse-existing-mainline"]
-    result = subprocess.run(retry_command, cwd=PROJECT_ROOT)
+    result = run_stage(retry_command)
     if result.returncode != 0:
         return result
     try:
@@ -209,9 +223,9 @@ def run_dashboard_publish(date_yy):
     if result.returncode != 0:
         return result
     commands = [
-        ["python3", "scripts/backtest.py", "--date", date_yy],
-        ["python3", "scripts/dashboard_vcp.py", "--date", date_yy],
-        ["python3", "scripts/dashboard_signals.py", "--date", date_yy, "--fetch-capital", "--max-mx-requests", "5"],
+        [sys.executable, "scripts/backtest.py", "--date", date_yy],
+        [sys.executable, "scripts/dashboard_vcp.py", "--date", date_yy],
+        [sys.executable, "scripts/dashboard_signals.py", "--date", date_yy, "--fetch-capital", "--max-mx-requests", "5"],
     ]
     for command in commands:
         result = run_command_with_retries(command, label=f"页面发布 {command[1]}")
@@ -310,13 +324,13 @@ def verify_pipeline_outputs(date_yy):
 def open_dashboard():
     """Open the local dashboard in the system default browser after publishing."""
     dashboard = Path(PROJECT_ROOT) / "dashboard" / "index.html"
-    return subprocess.run(["open", str(dashboard)], cwd=PROJECT_ROOT)
+    return run_stage(["open", str(dashboard)], timeout=30)
 
 
 def run_zixuan(date_yy):
     """Rebuild Eastmoney's all-watchlist after Bloom has completed."""
     return run_command_with_retries(
-        ["python3", "scripts/sync_zixuan.py", "--date", date_yy, "--yes"],
+        [sys.executable, "scripts/sync_zixuan.py", "--date", date_yy, "--yes"],
         label="东方财富自选同步",
     )
 
@@ -361,6 +375,14 @@ def main():
         if not pool_path_check.exists():
             print(f"错误: --skip-pool 需要已有 pool 文件: {pool_path_check}")
             sys.exit(1)
+
+    daily_lock = FileLock(DAILY_LOCK_PATH, blocking=False, purpose=f"daily:{date_yy}")
+    try:
+        daily_lock.acquire()
+    except LockBusyError as exc:
+        print(f"错误: 已有每日流水线正在运行: {exc}")
+        sys.exit(1)
+    atexit.register(daily_lock.release)
 
     progress_path = _progress_path(date_yy)
     tracker = ProgressTracker(progress_path)
@@ -426,29 +448,34 @@ def main():
         errors.append(f"bloom: exit {result.returncode}")
         tracker.step_done("bloom", error=f"exit {result.returncode}")
         stop_after("Bloom")
-    tracker.step_done("bloom")
     if result.returncode == 3:
+        tracker.step_degraded("bloom", "LLM 解读失败，规则产物已生成")
         print("[daily] ⚠ Bloom LLM 解读失败，已使用规则产物继续")
     else:
+        tracker.step_done("bloom")
         print("[daily] ✓ bloom done")
 
     # ── Step 5: Signal Plan ──
     tracker.step_start("signal_plan")
     print("[daily] → Signal Plan")
     result = run_signal_plan(date_yy, progress_path)
-    if result.returncode != 0:
+    if result.returncode not in (0, 3):  # 3 = LLM failed after deterministic outputs were written
         errors.append(f"signal_plan: exit {result.returncode}")
         tracker.step_done("signal_plan", error=f"exit {result.returncode}")
         stop_after("Signal Plan")
-    tracker.step_done("signal_plan")
-    print("[daily] ✓ signal plan done")
+    if result.returncode == 3:
+        tracker.step_degraded("signal_plan", "LLM 备注失败，规则产物已生成")
+        print("[daily] ⚠ Signal Plan LLM 备注失败，已使用规则产物继续")
+    else:
+        tracker.step_done("signal_plan")
+        print("[daily] ✓ signal plan done")
 
     # ── Step 6: Signal financial hints (non-blocking sidecar) ──
     tracker.step_start("signal_fundamentals")
     print("[daily] → 信号财务提示")
     result = run_signal_fundamentals(date_yy)
     if result.returncode != 0:
-        tracker.step_done("signal_fundamentals", error=f"exit {result.returncode}")
+        tracker.step_degraded("signal_fundamentals", f"exit {result.returncode}")
         print("[daily] ⚠ 信号财务补查失败，页面将使用已有缓存或降级提示")
     else:
         tracker.step_done("signal_fundamentals")
@@ -505,7 +532,7 @@ def main():
     print("[daily] → 打开数据分析面板")
     result = open_dashboard()
     if result.returncode != 0:
-        tracker.step_done("open_dashboard", error=f"exit {result.returncode}")
+        tracker.step_degraded("open_dashboard", f"exit {result.returncode}")
         print("[daily] ⚠ 无法自动打开浏览器，页面数据已生成")
     else:
         tracker.step_done("open_dashboard")
@@ -513,7 +540,7 @@ def main():
 
     # ── Step 11: Eastmoney all-watchlist rebuild ──
     if not _env_flag("ENABLE_ZIXUAN_SYNC"):
-        tracker.step_done("zixuan")
+        tracker.step_skipped("zixuan", "ENABLE_ZIXUAN_SYNC disabled")
         print("[daily] - zixuan disabled (set ENABLE_ZIXUAN_SYNC=true in .env to enable)")
     else:
         tracker.step_start("zixuan")
@@ -532,8 +559,14 @@ def main():
         for e in errors:
             print(f"  ⚠️ {e}")
         sys.exit(1)
-    tracker.mark_done()
-    print("[daily] 流水线完成，共 0 个错误")
+    progress = ProgressTracker.read(progress_path) or {}
+    degraded = any(step.get("status") == "degraded" for step in progress.get("steps", {}).values())
+    if degraded:
+        tracker.mark_degraded()
+        print("[daily] 流水线完成，存在非阻断降级")
+    else:
+        tracker.mark_done()
+        print("[daily] 流水线完成，共 0 个错误")
 
 
 if __name__ == "__main__":

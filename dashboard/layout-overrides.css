@@ -91,6 +91,7 @@
 .signal-capital-values div { padding: 7px; border-radius: 5px; background: #172131; }
 .signal-capital-values span { display: block; color: var(--muted); font-size: 10px; }
 .signal-capital-values b { display: block; margin-top: 2px; font-size: 13px; }
+.signal-capital-date { margin: 8px 0 0; color: var(--muted); font-size: 10px; text-align: right; }
 @media (max-width: 560px) {
   .signal-capital-grid { grid-template-columns: 1fr; }
   .signal-detail-topline { align-items: flex-start; flex-direction: column; gap: 7px; }

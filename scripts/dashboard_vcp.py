@@ -20,6 +20,7 @@ from scripts.plan_realization import realized_events_for_date
 ROOT = Path(PROJECT_ROOT)
 BLOOM_INPUT_DIR = ROOT / "bloom" / "state"
 QUANT_RUN_DIR = ROOT / "cache" / "quant_runs"
+POOL_DIR = ROOT / "pool"
 MARKET_DATA_DB = ROOT / "cache" / "market_data" / "market_data.sqlite"
 MARKET_REGIME_DB = ROOT / "cache" / "market_regime" / "market_regime.sqlite"
 SIGNAL_PLAN_DIR = ROOT / "signal_plan"
@@ -32,6 +33,11 @@ VOLUME_PATTERN_LABELS = {
     "flat": "量能基本持平",
     "mixed": "量能未呈持续缩减",
     "failed": "量能未达到缩量要求",
+}
+SOURCE_LABELS = {
+    "CORE_QUALITY": ("核心质量池", "core"),
+    "EXPANSION_RS": ("RS扩展池", "expansion"),
+    "BOTH": ("双通道", "both"),
 }
 
 
@@ -53,6 +59,27 @@ def latest_date() -> str:
 
 def load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def load_pool_sources(date_yy: str) -> dict[str, dict]:
+    """Load same-day Pool provenance without falling back to another date."""
+    path = POOL_DIR / f"pool_{date_yy}.csv"
+    if not path.exists():
+        return {}
+    result = {}
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        for row in csv.DictReader(handle):
+            match = re.search(r"\d{6}", str(row.get("股票代码") or ""))
+            if not match:
+                continue
+            channel = str(row.get("pool_channel") or "").strip()
+            label, tone = SOURCE_LABELS.get(channel, ("来源待确认", "unknown"))
+            result[match.group(0)] = {
+                "pool_channel": channel or "UNKNOWN",
+                "source_label": label,
+                "source_tone": tone,
+            }
+    return result
 
 
 def write_dashboard_index() -> None:
@@ -209,10 +236,14 @@ def build_context(date_yy: str) -> dict:
     bloom_by_code = {str(row.get("code", "")).zfill(6): row for row in active}
     codes = [str(row.get("code", "")).zfill(6) for row in active]
     industry_by_code = load_industry_context(codes, bloom.get("summary", {}).get("date", ""))
+    pool_sources = load_pool_sources(date_yy)
     candidates = []
     for code in codes:
         bloom_row = bloom_by_code.get(code, {})
         candidate = compact_candidate(bloom_row, quant_by_code.get(code, {}), industry_by_code.get(code, {}))
+        candidate.update(pool_sources.get(code, {
+            "pool_channel": "UNKNOWN", "source_label": "来源待确认", "source_tone": "unknown",
+        }))
         event = realized_by_key.get((code, candidate.get("model2_setup_signal")))
         candidate["previous_plan_hit"] = bool(event)
         candidate["previous_plan_source_date"] = event.get("plan_date") if event else None

@@ -12,6 +12,19 @@ from scripts import dashboard_vcp
 
 
 class DashboardVcpIndustryContextTests(unittest.TestCase):
+    def test_same_day_pool_source_is_exposed_for_vcp_detail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (root / "pool_260811.csv").open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["股票代码", "pool_channel"])
+                writer.writeheader()
+                writer.writerow({"股票代码": '="002517"', "pool_channel": "BOTH"})
+            with patch.object(dashboard_vcp, "POOL_DIR", root):
+                result = dashboard_vcp.load_pool_sources("260811")
+
+        self.assertEqual(result["002517"]["source_label"], "双通道")
+        self.assertEqual(result["002517"]["source_tone"], "both")
+
     def test_plan_hit_does_not_add_a_vcp_display_candidate(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

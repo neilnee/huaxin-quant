@@ -26,6 +26,7 @@ from scripts.data.strategy_data_store import (
     connect as connect_strategy_db,
     load_buy_point_events,
     load_document as load_strategy_document,
+    load_vcp_selection_events,
     buy_event_id,
     lifecycle_latest,
     replace_lifecycle_rows,
@@ -60,6 +61,8 @@ CAPITAL_OBSERVATION_START = str(CONDITION_CONFIG["capital_observation_start_date
 CAPITAL_LOOKBACK = int(CONDITION_CONFIG["capital_lookback_trade_days"])
 SAMPLE_THRESHOLDS = CONDITION_CONFIG["sample_thresholds"]
 CONDITIONS = CONDITION_CONFIG["conditions"]
+STRUCTURE_CONFIG = CONFIG["structure_evaluation"]
+STRUCTURE_ACTIVE_STATUSES = tuple(STRUCTURE_CONFIG["active_statuses"])
 LIFECYCLE_MAX_DAYS = int(CONFIG.get("lifecycle", {}).get("max_trade_days", 40))
 _CORPORATE_ACTION_SOURCE = None
 
@@ -633,6 +636,62 @@ def add_performance(events: list[dict], report_date_yy: str) -> list[dict]:
         conn.close()
 
 
+def add_structure_performance(events: list[dict], report_date_yy: str) -> list[dict]:
+    """Add fixed-horizon returns to first appearances in the displayed VCP list."""
+    report_date = iso_date(report_date_yy)
+    conn = sqlite3.connect(MARKET_DB)
+    try:
+        calendar = trading_calendar(conn, report_date)
+        index = {value: idx for idx, value in enumerate(calendar)}
+        eligible = [event for event in events if event["selection_date"] in index and report_date in index]
+        if not eligible:
+            return []
+        start_date = min(event["selection_date"] for event in eligible)
+        codes = sorted({event["code"] for event in eligible})
+        bars = load_bars(conn, codes, start_date, report_date)
+        mature_codes = sorted({
+            event["code"] for event in eligible
+            if index[report_date] - index[event["selection_date"]] >= WINDOW_MIN
+        })
+        action_map = {code: load_corporate_actions(code, report_date) for code in mature_codes}
+        result = []
+        for event in eligible:
+            selection_date = event["selection_date"]
+            age = index[report_date] - index[selection_date]
+            prices = bars.get(event["code"], {})
+            selection_close = prices.get(selection_date)
+            if selection_close is None:
+                selection_close = safe_float(event.get("selection_close_snapshot"))
+            actions = action_map.get(event["code"], [])
+            performance = {}
+            for horizon in HORIZONS:
+                value = None
+                if selection_close and age >= horizon:
+                    target = calendar[index[selection_date] + horizon]
+                    target_close = price_on_or_before(prices, target, selection_date)
+                    if target_close is not None:
+                        target_value, _ = holding_period_value(selection_date, target, target_close, actions)
+                        value = round((target_value / selection_close - 1) * 100, 3)
+                performance[f"return_{horizon}d"] = value
+            observation_end_date = calendar[min(index[report_date], index[selection_date] + WINDOW_MAX)]
+            applied_actions = [
+                action for action in actions
+                if selection_date < str(action.get("date") or "") <= observation_end_date
+            ]
+            result.append({
+                **event,
+                "age_days": age,
+                "selection_close": round(selection_close, 3) if selection_close is not None else None,
+                "observation_end_date": observation_end_date,
+                "return_basis": "holding_period_total_return",
+                "corporate_actions": applied_actions,
+                **performance,
+            })
+        return sorted(result, key=lambda item: (item["selection_date"], item["code"]), reverse=True)
+    finally:
+        conn.close()
+
+
 def horizon_stats(rows: list[dict]) -> dict:
     result = {}
     for horizon in HORIZONS:
@@ -774,6 +833,29 @@ def build_sample_window(rows: list[dict], window: dict) -> dict:
     }
 
 
+def build_structure_sample_window(rows: list[dict], window: dict) -> dict:
+    max_age = window.get("max_age_trade_days")
+    selected = rows if max_age is None else [row for row in rows if int(row["age_days"]) <= int(max_age)]
+    mature = [row for row in selected if int(row["age_days"]) >= WINDOW_MIN]
+    dates = sorted(row["selection_date"] for row in selected)
+    return {
+        "id": window["id"],
+        "label": window["label"],
+        "max_age_trade_days": max_age,
+        "events": selected,
+        "summary": {
+            "events": len(selected),
+            "mature_events": len(mature),
+            "pending_events": len(selected) - len(mature),
+            "sample_start_date": dates[0] if dates else None,
+            "sample_end_date": dates[-1] if dates else None,
+            "horizons": horizon_stats(selected),
+        },
+        "stage_groups": grouped_stats(selected, "initial_stage"),
+        "status_groups": grouped_stats(selected, "initial_bloom_status"),
+    }
+
+
 def build_context(report_date_yy: str) -> dict:
     conn = sqlite3.connect(MARKET_DB)
     try:
@@ -784,8 +866,13 @@ def build_context(report_date_yy: str) -> dict:
     with connect_strategy_db() as strategy_conn:
         save_buy_point_events(strategy_conn, discovered)
         persisted = load_buy_point_events(strategy_conn, iso_date(report_date_yy))
+        structure_selections = load_vcp_selection_events(
+            strategy_conn, iso_date(report_date_yy), set(calendar), STRUCTURE_ACTIVE_STATUSES
+        )
     lifecycle_rows = update_lifecycle(persisted, report_date_yy)
     analysis_events = add_performance(persisted, report_date_yy)
+    structure_events = add_structure_performance(structure_selections, report_date_yy)
+    structure_windows = [build_structure_sample_window(structure_events, window) for window in SAMPLE_WINDOWS]
     sample_windows = [build_sample_window(analysis_events, window) for window in SAMPLE_WINDOWS]
     default_window = next(window for window in sample_windows if window["id"] == DEFAULT_SAMPLE_WINDOW)
     events = default_window["events"]
@@ -822,6 +909,13 @@ def build_context(report_date_yy: str) -> dict:
             "events": len(analysis_events),
             "horizons": horizon_stats(analysis_events),
         },
+        "structure_evaluation": {
+            "event_definition": "first_displayed_vcp_list_appearance_per_code_and_structure_anchor",
+            "source": STRUCTURE_CONFIG["source"],
+            "active_statuses": list(STRUCTURE_ACTIVE_STATUSES),
+            "all_events": len(structure_events),
+            "sample_windows": structure_windows,
+        },
         "lifecycle_summary": lifecycle_summary(lifecycle_rows),
         "lifecycle_events": lifecycle_rows,
         "events": events,
@@ -844,11 +938,29 @@ def update_dashboard_index() -> None:
 def render_markdown(context: dict) -> str:
     main_labels = {"INFLOW": "流入", "BALANCED": "平衡", "OUTFLOW": "流出", "INSUFFICIENT": "数据不足"}
     margin_labels = {"LEVERAGING": "加杠杆", "STABLE": "稳定", "DELEVERAGING": "去杠杆", "NOT_APPLICABLE": "不适用", "INSUFFICIENT": "数据不足"}
+    structure_windows = context.get("structure_evaluation", {}).get("sample_windows", [])
+    structure_window = next((row for row in structure_windows if row.get("id") == DEFAULT_SAMPLE_WINDOW), {})
+    structure_summary = structure_window.get("summary", {})
     lines = [
-        f"# 实际买点回测｜{context['meta']['report_date']}", "",
+        f"# VCP结构与实际买点回测｜{context['meta']['report_date']}", "",
+        "## VCP结构入选表现", "",
+        f"成立范围：{DEFAULT_SAMPLE_WINDOW_LABEL}｜结构轮次 {structure_summary.get('events', 0)} 个｜已满5日 {structure_summary.get('mature_events', 0)} 个", "",
+        "| 首次入选 | 股票 | 入选阶段 | Bloom状态 | 结构分 | 入选价 | 年龄 | 5日 | 10日 | 20日 |", "|---|---|---|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    for row in structure_window.get("events", []):
+        value = lambda horizon: "—" if row.get(f"return_{horizon}d") is None else f"{row[f'return_{horizon}d']:.2f}%"
+        close = "—" if row.get("selection_close") is None else f"{row['selection_close']:.2f}"
+        lines.append(
+            f"| {row['selection_date']} | {row['name']}（{row['code']}） | {row['initial_stage']} | {row['initial_bloom_status']} | {row.get('structure_score', '—')} | {close} | {row['age_days']} | {value(5)} | {value(10)} | {value(20)} |"
+        )
+    if not structure_window.get("events"):
+        lines.append("| — | 当前范围没有VCP结构入选事件 | — | — | — | — | — | — | — | — |")
+    lines.extend([
+        "", "> 同一股票、同一结构轮次首次进入VCP页面观察列表时记一次；连续展示不重复计数。", "",
+        "## 实际买点表现", "",
         f"成立范围：{DEFAULT_SAMPLE_WINDOW_LABEL}｜收益观察：成立后 {'/'.join(map(str, HORIZONS))} 个交易日｜事件 {context['summary']['events']} 条", "",
         "| Plan日 | 成立日 | 股票 | 买点 | 等级 | 形态 | 成立价 | 年龄 | 突破时间 | 突破时涨幅 | 5日 | 10日 | 20日 | 成立时市场 | 成立时板块 | Plan日主力 | Plan日融资 |", "|---|---|---|---|---|---|---:|---:|---|---:|---:|---:|---:|---|---|---|---|",
-    ]
+    ])
     for row in context["events"]:
         value = lambda horizon: "—" if row.get(f"return_{horizon}d") is None else f"{row[f'return_{horizon}d']:.2f}%"
         breakout_value = "—" if row.get("breakout_return") is None else f"{row['breakout_return']:.2f}%"

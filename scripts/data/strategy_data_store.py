@@ -371,6 +371,66 @@ def load_all_bloom_events(conn: sqlite3.Connection) -> list[dict]:
     )]
 
 
+VCP_LIST_STATUSES = ("EARLY", "FORMING", "MATURE", "TRIGGERED", "RISK_BLOCKED")
+
+
+def load_vcp_selection_events(
+    conn: sqlite3.Connection,
+    through_date: str | None = None,
+    valid_trade_dates: set[str] | None = None,
+    active_statuses: tuple[str, ...] = VCP_LIST_STATUSES,
+) -> list[dict]:
+    """Return the first VCP-list appearance for each stock and structure round."""
+    placeholders = ",".join("?" for _ in active_statuses)
+    date_condition = "AND b.trade_date<=?" if through_date else ""
+    args = [*active_statuses]
+    if through_date:
+        args.append(through_date)
+    rows = conn.execute(
+        f"""SELECT b.trade_date,b.code,b.payload_json,
+                   q.structure_anchor,q.structure_stage,q.structure_score,
+                   q.structure_risk_score,q.strategy_version,q.payload_json
+              FROM bloom_daily_snapshots b
+              JOIN current_documents bc ON bc.document_id=b.document_id AND bc.module='bloom'
+              LEFT JOIN current_documents qc
+                ON qc.module='quant' AND qc.trade_date=b.trade_date
+              LEFT JOIN vcp_structure_snapshots q
+                ON q.document_id=qc.document_id AND q.code=b.code
+             WHERE b.bloom_status IN ({placeholders}) {date_condition}
+             ORDER BY b.trade_date,b.ordinal,b.code""",
+        args,
+    ).fetchall()
+    seen: set[tuple[str, str]] = set()
+    events = []
+    for row in rows:
+        if valid_trade_dates is not None and row[0] not in valid_trade_dates:
+            continue
+        bloom = json.loads(row[2])
+        quant = json.loads(row[8]) if row[8] else {}
+        first_seen = str(bloom.get("first_seen") or row[0])
+        anchor = str(row[3] or quant.get("setup_structure_anchor_date") or f"unanchored:{first_seen}")
+        key = (row[1], anchor)
+        if key in seen:
+            continue
+        seen.add(key)
+        events.append({
+            "event_type": "VCP_SELECTION",
+            "selection_date": row[0],
+            "signal_date": row[0],
+            "code": row[1],
+            "name": bloom.get("name") or quant.get("name") or row[1],
+            "structure_anchor": anchor,
+            "initial_stage": bloom.get("model2_stage") or row[4] or "NONE",
+            "initial_bloom_status": bloom.get("bloom_status") or "",
+            "structure_score": bloom.get("structure_score") if bloom.get("structure_score") not in (None, "") else row[5],
+            "structure_risk_score": bloom.get("structure_risk_score") if bloom.get("structure_risk_score") not in (None, "") else row[6],
+            "selection_close_snapshot": bloom.get("close") or quant.get("close"),
+            "quant_strategy_version": row[7] or quant.get("strategy_version") or "",
+            "bloom_strategy_version": bloom.get("strategy_version") or "",
+        })
+    return events
+
+
 def buy_event_id(event: dict) -> str:
     raw = "|".join((
         str(event.get("plan_date") or ""), str(event.get("entry_date") or ""), _code(event),

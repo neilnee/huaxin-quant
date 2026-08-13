@@ -6,7 +6,9 @@ from scripts.data.strategy_data_store import (
     connect,
     lifecycle_latest,
     load_document,
+    load_vcp_selection_events,
     replace_lifecycle_rows,
+    save_bloom,
     save_buy_point_events,
     save_quant,
     save_signal_plan,
@@ -68,6 +70,40 @@ class StrategyDataStoreTests(unittest.TestCase):
         self.assertEqual(
             [row["code"] for row in ordered_bloom_state(state)],
             ["000001", "000002", "000003"],
+        )
+
+    def test_vcp_selection_uses_first_display_day_per_structure_round(self):
+        def quant(date, anchor, close):
+            payload = {
+                "meta": {"run_date": date, "strategy_version": "q1"},
+                "results": [{"code": "000001", "name": "测试", "structure_type": "VCP",
+                             "structure_stage": "VCP_FORMING", "structure_valid": True,
+                             "contraction_group": [{"start_date": anchor}], "close": close}],
+            }
+            save_quant(self.conn, payload)
+
+        def bloom(date, first_seen):
+            payload = {"summary": {"date": date, "strategy_version": "b1"}, "sections": {}}
+            save_bloom(self.conn, payload, [{"code": "000001", "name": "测试",
+                       "bloom_status": "FORMING", "model2_stage": "VCP_FORMING",
+                       "first_seen": first_seen}])
+
+        quant("2026-08-10", "2026-07-01", 10)
+        bloom("2026-08-10", "2026-08-10")
+        quant("2026-08-11", "2026-07-01", 11)
+        bloom("2026-08-11", "2026-08-10")
+        quant("2026-08-12", "2026-08-12", 12)
+        bloom("2026-08-12", "2026-08-12")
+
+        events = load_vcp_selection_events(self.conn, "2026-08-12")
+        self.assertEqual([row["selection_date"] for row in events], ["2026-08-10", "2026-08-12"])
+        self.assertEqual([row["structure_anchor"] for row in events], ["2026-07-01", "2026-08-12"])
+        valid_events = load_vcp_selection_events(
+            self.conn, "2026-08-12", {"2026-08-11", "2026-08-12"}
+        )
+        self.assertEqual(
+            [row["selection_date"] for row in valid_events],
+            ["2026-08-11", "2026-08-12"],
         )
 
 

@@ -1,5 +1,5 @@
 {
-  "strategy_version": "strategy_backtest_v6",
+  "strategy_version": "strategy_backtest_v7",
   "event_rules": {
     "setup_families": ["PULLBACK", "BREAKOUT", "RETEST"],
     "failed_lifecycle_states": ["POST_BREAKOUT_FAILED", "POST_BREAKOUT_EXPIRED"]
@@ -16,6 +16,13 @@
     "horizons": [5, 10, 20],
     "breakout_pivot_ratio": 1.01,
     "win_return_threshold_pct": 0.0
+  },
+  "structure_evaluation": {
+    "source": "displayed_vcp_active_list",
+    "active_statuses": ["EARLY", "FORMING", "MATURE", "TRIGGERED", "RISK_BLOCKED"],
+    "event_identity": ["code", "structure_anchor"],
+    "entry_basis": "first_display_date_close",
+    "horizons": [5, 10, 20]
   },
   "lifecycle": {
     "max_trade_days": 40,

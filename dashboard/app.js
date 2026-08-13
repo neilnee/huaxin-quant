@@ -223,7 +223,7 @@ function loadBacktestContext(date) {
 }
 async function loadBacktest(date) {
   try { backtestContext = await loadBacktestContext(date); if (!backtestContext) throw new Error(`缺少 ${date} 的回测数据`); const windows=backtestContext.sample_windows||[]; if(windows.length&&!windows.some(row=>row.id===backtestSampleWindow))backtestSampleWindow=backtestContext.meta?.default_sample_window||windows[0].id; renderBacktest(); }
-  catch (error) { $("backtest-meta").textContent = "当前日期尚未发布回测数据"; $("backtest-summary").innerHTML = ""; $("backtest-window-tabs").innerHTML = ""; $("backtest-table").innerHTML = `<caption class="muted">${esc(error.message)}</caption>`; ["backtest-event-table", "backtest-grade-table", "backtest-maturity-table", "backtest-condition-table"].forEach((id) => $(id).innerHTML = ""); }
+  catch (error) { $("backtest-meta").textContent = "当前日期尚未发布回测数据"; $("backtest-summary").innerHTML = ""; $("backtest-window-tabs").innerHTML = ""; $("backtest-table").innerHTML = `<caption class="muted">${esc(error.message)}</caption>`; ["backtest-structure-summary", "backtest-structure-table", "backtest-structure-stage-table", "backtest-event-table", "backtest-grade-table", "backtest-maturity-table", "backtest-condition-table"].forEach((id) => $(id).innerHTML = ""); }
 }
 function backtestReturn(value) {
   if (value == null) return `<span class="backtest-pending">—</span>`;
@@ -233,6 +233,7 @@ function backtestReturn(value) {
 function backtestStat(value, suffix = "") { return value == null ? "—" : `${Number(value).toFixed(1)}${suffix}`; }
 function backtestShortDate(value) { return value ? esc(String(value).slice(5)) : "—"; }
 function backtestSetupLabel(value) { return ({ PULLBACK: "回踩", BREAKOUT: "突破", RETEST: "回踩确认" })[value] || esc(value || "—"); }
+function backtestStageLabel(value) { return ({VCP_EARLY:"早期",VCP_FORMING:"形成期",VCP_MATURE:"成熟",VCP_TIGHT:"紧凑"})[value]||esc(value||"—"); }
 function backtestBreakout(row) {
   if (!row.breakout_time) return '<span class="backtest-pending">无</span>';
   const [date, offset] = String(row.breakout_time).split(" · ");
@@ -279,6 +280,16 @@ function renderBacktestConditions(profile, window) {
   const capitalNote=start?`资金观察自 ${start} 起；更早资金行只用于首个观察日的状态窗口，不作为独立回测样本。`:"历史数据包尚未记录资金观察起点。";
   $("backtest-condition-note").textContent=[sectorNote,capitalNote].filter(Boolean).join(" ");
 }
+function renderBacktestStructures() {
+  const evaluation=backtestContext.structure_evaluation||{}, windows=evaluation.sample_windows||[];
+  const window=windows.find(row=>row.id===backtestSampleWindow)||windows[0];
+  if(!window){$("backtest-structure-summary").innerHTML="";$("backtest-structure-table").innerHTML="<caption class='muted'>该历史数据包尚未包含VCP结构入选回测</caption>";$("backtest-structure-stage-table").innerHTML="";return;}
+  const summary=window.summary||{}, horizon=summary.horizons||{}, rows=window.events||[];
+  $("backtest-structure-note").textContent=`${window.label}入选 ${summary.events||0} 个结构轮次 · 已满5日 ${summary.mature_events||0} · 待观察 ${summary.pending_events||0}`;
+  $("backtest-structure-summary").innerHTML=[["结构轮次",summary.events||0],["5日平均",horizon["5"]?.avg_return==null?"—":`${Number(horizon["5"].avg_return).toFixed(1)}%`],["5日胜率",horizon["5"]?.win_rate==null?"—":`${Number(horizon["5"].win_rate).toFixed(1)}%`],["10日胜率",horizon["10"]?.win_rate==null?"—":`${Number(horizon["10"].win_rate).toFixed(1)}%`],["20日胜率",horizon["20"]?.win_rate==null?"—":`${Number(horizon["20"].win_rate).toFixed(1)}%`]].map(([label,value])=>`<div><span>${label}</span><b>${value}</b></div>`).join("");
+  $("backtest-structure-table").innerHTML=`<thead><tr><th>首次入选</th><th>标的</th><th>入选阶段</th><th>Bloom状态</th><th>结构分</th><th>入选价</th><th>年龄</th><th>5日</th><th>10日</th><th>20日</th></tr></thead><tbody>${rows.map(row=>`<tr><td>${backtestShortDate(row.selection_date)}</td><td><b>${esc(row.name)}</b><small>${esc(row.code)}</small></td><td>${backtestStageLabel(row.initial_stage)}</td><td>${esc(row.initial_bloom_status||"—")}</td><td>${row.structure_score==null?"—":Number(row.structure_score).toFixed(0)}</td><td>${row.selection_close==null?"—":Number(row.selection_close).toFixed(2)}</td><td>${Number(row.age_days)}日</td><td>${backtestReturn(row.return_5d)}</td><td>${backtestReturn(row.return_10d)}</td><td>${backtestReturn(row.return_20d)}</td></tr>`).join("")||"<tr><td colspan='10' class='muted'>当前范围没有VCP结构入选事件</td></tr>"}</tbody>`;
+  renderBacktestGroupTable("backtest-structure-stage-table",(window.stage_groups||[]).map(row=>({...row,group:backtestStageLabel(row.group)})));
+}
 function renderBacktest() {
   const window=backtestWindow(), summary=window.summary||{}, rows=window.events||[];
   const filtered = backtestFilter === "ALL" ? rows : rows.filter((row) => row.setup_family === backtestFilter), profile=backtestProfile(window);
@@ -304,6 +315,7 @@ function renderBacktest() {
   renderBacktestGroupTable("backtest-grade-table", (profile.grade_groups || []).map((row) => ({ ...row, group: row.group === "A" ? "A类" : row.group === "REGULAR" ? "常规" : row.group })));
   renderBacktestGroupTable("backtest-maturity-table", profile.maturity_groups);
   $("backtest-profile-note").textContent=`当前基准：${window.label} · ${profileLabel} · ${profile.events||0} 条成熟样本 · ${sampleSpan}`;
+  renderBacktestStructures();
   renderBacktestConditions(profile, window);
 }
 

@@ -129,6 +129,39 @@ class BacktestEventTests(unittest.TestCase):
         self.assertEqual(result[0]["breakout_time"], "2026-07-04 · T+3")
         self.assertEqual(result[0]["breakout_return"], 8.333)
 
+    def test_structure_selection_returns_include_pending_and_mature_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "market.sqlite"
+            conn = sqlite3.connect(db_path)
+            conn.execute("CREATE TABLE daily_bars(code TEXT,trade_date TEXT,close REAL)")
+            calendar = [f"2026-07-{day:02d}" for day in range(1, 13)]
+            rows = []
+            for code, start in (("000001", 10), ("000002", 20)):
+                rows.extend((code, date, start + index) for index, date in enumerate(calendar))
+            conn.executemany("INSERT INTO daily_bars VALUES(?,?,?)", rows)
+            conn.commit(); conn.close()
+            events = [
+                {"event_type": "VCP_SELECTION", "selection_date": calendar[0], "signal_date": calendar[0],
+                 "code": "000001", "name": "成熟", "structure_anchor": "A",
+                 "initial_stage": "VCP_FORMING", "initial_bloom_status": "FORMING"},
+                {"event_type": "VCP_SELECTION", "selection_date": calendar[5], "signal_date": calendar[5],
+                 "code": "000002", "name": "待观察", "structure_anchor": "B",
+                 "initial_stage": "VCP_EARLY", "initial_bloom_status": "EARLY"},
+            ]
+            with patch.object(backtest, "MARKET_DB", db_path), \
+                 patch.object(backtest, "trading_calendar", return_value=calendar), \
+                 patch.object(backtest, "load_corporate_actions", return_value=[]):
+                result = backtest.add_structure_performance(events, "260708")
+
+        by_code = {row["code"]: row for row in result}
+        self.assertEqual(by_code["000001"]["return_5d"], 50.0)
+        self.assertIsNone(by_code["000001"]["return_20d"])
+        self.assertIsNone(by_code["000002"]["return_5d"])
+        window = backtest.build_structure_sample_window(result, {"id": "ALL", "label": "全部", "max_age_trade_days": None})
+        self.assertEqual(window["summary"]["events"], 2)
+        self.assertEqual(window["summary"]["mature_events"], 1)
+        self.assertEqual(window["summary"]["pending_events"], 1)
+
     def test_completed_event_keeps_frozen_returns_after_twenty_days(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "market.sqlite"

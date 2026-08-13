@@ -366,6 +366,7 @@ for each stock in quant_output where structure_stage in {VCP_MATURE, VCP_TIGHT}:
 
 ## 已完成
 
+- [x] 回测第一阶段扩展：以VCP页面实际展示列表为结构样本，按股票与结构轮次记录首次入选，统计5/10/20日总回报、入选阶段分组和明细；与实际买点回测并列且不改变任何筛选或交易规则
 - [x] 核心策略数据 SQLite 化：Quant 全量结构、Signal Plan、Bloom 日快照/事件、实际买点和买点后生命周期统一入库；保留文件发布兼容层，并完成全部现有历史产物的幂等迁移与校验
 - [x] RETEST 生命周期统一：突破日排除，1-2日快速回踩只标记不封顶、3-10日标准回踩、11-15日迟到回踩最高C、超过15日硬截止；窗口内允许连续 RETEST/FOLLOW 机会提示，且不读取或推断持仓
 - [x] Dashboard 技术风险标签中文化并按枚举去重，避免 setup 与 structure 同源风险重复展示

@@ -167,6 +167,7 @@ def compact_candidate(row: dict, quant: dict, industry: dict) -> dict:
         "structure_score", "structure_risk_score", "structure_risk_flags", "setup_score", "setup_quality",
         "setup_reasons", "setup_misses", "close", "MA20", "MA60", "distance_ma20", "pivot_distance",
         "volume_dry_up", "volume_pattern", "contraction_count", "contraction_pcts", "contraction_days",
+        "contraction_extension_tags", "contraction_extension_score", "contraction_extensions",
         "days_tracked", "days_in_observation", "score_change", "watch_reason", "next_watch_point",
         "llm_insight", "valuation_candidate", "valuation_priority",
     )
@@ -192,6 +193,9 @@ def compact_candidate(row: dict, quant: dict, industry: dict) -> dict:
         "contraction_count": "contraction_count",
         "contraction_pcts": "contraction_pcts",
         "contraction_days": "contraction_days",
+        "contraction_extension_tags": "contraction_extension_tags",
+        "contraction_extension_score": "contraction_extension_score",
+        "contraction_extensions": "contraction_extensions",
     }
     for target, source in quant_overrides.items():
         if source in quant:
@@ -201,6 +205,9 @@ def compact_candidate(row: dict, quant: dict, industry: dict) -> dict:
     # The full contraction scan is retained in Model 2 for audit.  The dashboard
     # must show only the group selected as the current valid VCP structure.
     result["contractions"] = quant.get("contraction_group", [])
+    result["contraction_extension_tags"] = quant.get("contraction_extension_tags", []) or []
+    result["contraction_extension_score"] = quant.get("contraction_extension_score", 0) or 0
+    result["contraction_extensions"] = quant.get("contraction_extensions", []) or []
     result["volume_pattern"] = display_vcp_text(result.get("volume_pattern"))
     result["structure_conditions"] = display_vcp_text(result["structure_conditions"])
     result["structure_misses"] = display_vcp_text(result["structure_misses"])

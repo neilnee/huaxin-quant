@@ -12,6 +12,40 @@ from scripts import dashboard_vcp
 
 
 class DashboardVcpIndustryContextTests(unittest.TestCase):
+    def test_compact_candidate_keeps_standard_and_extension_contractions_separate(self):
+        quant = {
+            "structure_stage": "VCP_EARLY",
+            "contraction_count": 1,
+            "contraction_group": [{"start_date": "2026-07-27", "end_date": "2026-07-30"}],
+            "contraction_extension_tags": [
+                "CONFIRMED_RESET_CONTRACTION", "TERMINAL_MICRO_CONTRACTION",
+            ],
+            "contraction_extension_score": 12,
+            "contraction_extensions": [
+                {"type": "CONFIRMED_RESET_CONTRACTION", "start_date": "2026-07-16", "end_date": "2026-07-20"},
+                {"type": "TERMINAL_MICRO_CONTRACTION", "start_date": "2026-07-31", "end_date": "2026-08-03"},
+            ],
+        }
+
+        result = dashboard_vcp.compact_candidate({}, quant, {})
+
+        self.assertEqual(result["contraction_count"], 1)
+        self.assertEqual(len(result["contractions"]), 1)
+        self.assertEqual(len(result["contraction_extensions"]), 2)
+        self.assertEqual(result["contraction_extension_score"], 12)
+
+    def test_compact_candidate_defaults_missing_extension_fields_for_old_history(self):
+        result = dashboard_vcp.compact_candidate(
+            {"contraction_count": "2"},
+            {"contraction_group": [{"start_date": "2026-05-01"}]},
+            {},
+        )
+
+        self.assertEqual(result["contraction_count"], "2")
+        self.assertEqual(result["contraction_extension_tags"], [])
+        self.assertEqual(result["contraction_extension_score"], 0)
+        self.assertEqual(result["contraction_extensions"], [])
+
     def test_same_day_pool_source_is_exposed_for_vcp_detail(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -1,5 +1,5 @@
 {
-  "strategy_version": "model2_quant_v16",
+  "strategy_version": "model2_quant_v17",
   "description": "Model 2 VCP structure and setup signal parameters. This file contains thresholds and weights only; algorithms stay in scripts/quant_filter.py.",
   "vcp": {
     "lookback_days": 120,
@@ -52,7 +52,31 @@
     "max_group_span_days": 60,
     "volume_decrease_ratio": 0.95,
     "volume_dry_up_threshold": 0.85,
-    "volume_failed_ratio": 1.2
+    "volume_failed_ratio": 1.2,
+    "extensions": {
+      "max_total_bonus": 12,
+      "confirmed_reset": {
+        "score": 6,
+        "max_gap_days": 25,
+        "max_follow_pullback_ratio": 0.9,
+        "max_follow_volume_ratio": 0.8,
+        "min_follow_low_ratio": 1.0
+      },
+      "terminal_micro": {
+        "score": 6,
+        "swing_window": 1,
+        "min_pullback_pct": 1.5,
+        "max_pullback_pct": 4.0,
+        "min_days": 2,
+        "max_days": 5,
+        "max_age_days": 10,
+        "max_volume_ratio": 0.85,
+        "max_volume_dry_up": 0.85,
+        "min_recovery_pct": 3.0,
+        "min_pivot_distance_pct": -15.0,
+        "max_pivot_distance_pct": 1.0
+      }
+    }
   },
   "stage_rules": {
     "early_min_contractions": 1,

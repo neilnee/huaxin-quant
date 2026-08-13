@@ -757,6 +757,151 @@ def evaluate_vcp_group(df, group):
     }
 
 
+def detect_confirmed_reset_contraction(df, contractions, group):
+    """Recognize a failed-breakout reset only after a cleaner contraction confirms it."""
+    cfg = CONTRACTION_CFG.get("extensions", {}).get("confirmed_reset", {})
+    if not cfg or not group:
+        return None
+
+    confirming = group[0]
+    earlier = [item for item in contractions if item["end_idx"] < confirming["start_idx"]]
+    if not earlier:
+        return None
+    reset = earlier[-1]
+    gap_days = confirming["start_idx"] - reset["end_idx"] - 1
+    reset_abs = abs(contraction_pullback_pct(reset))
+    confirming_abs = abs(contraction_pullback_pct(confirming))
+    if reset_abs <= 0 or not reset.get("avg_volume") or not reset.get("low_price"):
+        return None
+    if gap_days > cfg["max_gap_days"]:
+        return None
+    if confirming_abs > reset_abs * cfg["max_follow_pullback_ratio"]:
+        return None
+    volume_ratio = safe_float(confirming.get("avg_volume"), 0) / reset["avg_volume"]
+    if volume_ratio > cfg["max_follow_volume_ratio"]:
+        return None
+    low_ratio = safe_float(confirming.get("low_price"), 0) / reset["low_price"]
+    if low_ratio < cfg["min_follow_low_ratio"]:
+        return None
+
+    failure = None
+    for previous in contractions:
+        if previous["end_idx"] >= reset["start_idx"]:
+            break
+        previous_info = evaluate_vcp_group(df, [previous])
+        candidate = previous_info.get("post_breakout_failure")
+        if candidate and reset["start_idx"] <= candidate["idx"] <= reset["end_idx"]:
+            if failure is None or candidate["idx"] > failure["idx"]:
+                failure = candidate
+    if failure is None:
+        return None
+
+    return {
+        "type": "CONFIRMED_RESET_CONTRACTION",
+        "score": cfg["score"],
+        "start_date": reset["start_date"],
+        "end_date": reset["end_date"],
+        "close_pullback_pct": reset["close_pullback_pct"],
+        "duration_days": reset.get("duration_days"),
+        "avg_volume": reset["avg_volume"],
+        "recovery_pct": reset.get("recovery_pct"),
+        "failure_date": failure["date"],
+        "confirm_start_date": confirming["start_date"],
+        "confirm_end_date": confirming["end_date"],
+        "confirm_pullback_pct": confirming["close_pullback_pct"],
+        "confirm_volume_ratio": round(volume_ratio, 4),
+        "confirm_low_ratio": round(low_ratio, 4),
+        "gap_days": int(gap_days),
+    }
+
+
+def detect_terminal_micro_contraction(df, group, structure_pivot):
+    """Find a short, quiet terminal pullback that strengthens an existing VCP."""
+    cfg = CONTRACTION_CFG.get("extensions", {}).get("terminal_micro", {})
+    if not cfg or not group or not structure_pivot:
+        return None
+
+    latest = df.iloc[-1]
+    volume_dry_up = safe_float(latest.get("volume_dry_up"), 999)
+    pivot_distance = (safe_float(latest.get("close"), 0) - structure_pivot) / structure_pivot * 100
+    if volume_dry_up > cfg["max_volume_dry_up"]:
+        return None
+    if not cfg["min_pivot_distance_pct"] <= pivot_distance <= cfg["max_pivot_distance_pct"]:
+        return None
+
+    reference = group[-1]
+    reference_volume = safe_float(reference.get("avg_volume"), 0)
+    if reference_volume <= 0:
+        return None
+
+    candidates = []
+    swings = find_close_swings(
+        df,
+        lookback=VCP_LOOKBACK,
+        window=int(cfg.get("swing_window", 1)),
+    )
+    for high, low in zip(swings, swings[1:]):
+        if high["type"] != "high" or low["type"] != "low":
+            continue
+        if high["idx"] <= reference["end_idx"]:
+            continue
+        duration = low["idx"] - high["idx"] + 1
+        if not cfg["min_days"] <= duration <= cfg["max_days"]:
+            continue
+        pullback_pct = (low["price"] - high["price"]) / high["price"] * 100
+        pullback_abs = abs(pullback_pct)
+        if pullback_pct >= 0 or not cfg["min_pullback_pct"] <= pullback_abs < cfg["max_pullback_pct"]:
+            continue
+        age_days = len(df) - low["idx"] - 1
+        if age_days > cfg["max_age_days"]:
+            continue
+        segment = df.iloc[high["idx"]:low["idx"] + 1]
+        avg_volume = safe_float(segment["volume"].mean(), 0)
+        volume_ratio = avg_volume / reference_volume
+        if volume_ratio > cfg["max_volume_ratio"]:
+            continue
+        recovery_slice = df.iloc[low["idx"] + 1:]
+        if recovery_slice.empty:
+            continue
+        recovery_pct = (safe_float(recovery_slice["close"].max(), low["price"]) - low["price"]) / low["price"] * 100
+        if recovery_pct < cfg["min_recovery_pct"]:
+            continue
+        candidates.append({
+            "type": "TERMINAL_MICRO_CONTRACTION",
+            "score": cfg["score"],
+            "start_date": str(high["date"]),
+            "end_date": str(low["date"]),
+            "start_close": round(float(high["price"]), 2),
+            "end_close": round(float(low["price"]), 2),
+            "close_pullback_pct": round(float(pullback_pct), 2),
+            "duration_days": int(duration),
+            "avg_volume": avg_volume,
+            "reference_volume_ratio": round(volume_ratio, 4),
+            "recovery_pct": round(float(recovery_pct), 2),
+            "age_days": int(age_days),
+            "pivot_distance": round(float(pivot_distance), 2),
+            "volume_dry_up": round(float(volume_dry_up), 4),
+        })
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item["end_date"], item["start_date"]), reverse=True)
+    return candidates[0]
+
+
+def detect_contraction_extensions(df, contractions, current):
+    if not current or not current.get("group"):
+        return []
+    extensions = []
+    reset = detect_confirmed_reset_contraction(df, contractions, current["group"])
+    if reset:
+        extensions.append(reset)
+    micro = detect_terminal_micro_contraction(df, current["group"], current.get("structure_pivot"))
+    if micro:
+        extensions.append(micro)
+    return extensions
+
+
 def select_current_vcp_group(df, contractions):
     """Select the most recent contraction group that is still relevant now."""
     if not contractions:
@@ -854,6 +999,9 @@ def detect_vcp_structure(df):
         "contraction_count": 0,
         "contraction_pcts": "",
         "contraction_days": "",
+        "contraction_extension_tags": [],
+        "contraction_extension_score": 0,
+        "contraction_extensions": [],
         "volume_pattern": "unknown",
         "pivot_price": None,
         "structure_pivot": None,
@@ -893,6 +1041,9 @@ def detect_vcp_structure(df):
 
     contractions = detect_contractions(df)
     current, invalid_group = select_current_vcp_group(df, contractions)
+    contraction_extensions = []
+    contraction_extension_score = 0
+    contraction_extension_tags = []
     group = current["group"] if current else []
     recent = group[-CONTRACTION_CFG["max_recent_contractions"]:]
     count = len(group)
@@ -957,7 +1108,6 @@ def detect_vcp_structure(df):
     if any(has_intraday_close_divergence(c) for c in recent):
         structure_risk_flags.append("INTRADAY_CLOSE_DIVERGENCE")
         misses.append("日内影线波动显著大于收盘收缩")
-
     state = "REJECT"
     has_structure = False
     if base_ok and current and count >= STAGE_CFG["early_min_contractions"]:
@@ -1011,6 +1161,21 @@ def detect_vcp_structure(df):
         elif "post_structure_drawdown" in structure_invalid_reason:
             state = "POST_BREAKOUT_FAILED"
 
+    # Extension types strengthen an existing valid VCP only. They never create
+    # a structure, change its stage, or revive a group rejected by base/risk rules.
+    if has_structure and post_breakout_state == "PRE_BREAKOUT":
+        contraction_extensions = detect_contraction_extensions(df, contractions, current)
+        extension_cfg = CONTRACTION_CFG.get("extensions", {})
+        contraction_extension_score = min(
+            extension_cfg.get("max_total_bonus", 0),
+            sum(safe_float(item.get("score"), 0) for item in contraction_extensions),
+        )
+        contraction_extension_tags = [item["type"] for item in contraction_extensions]
+        if "CONFIRMED_RESET_CONTRACTION" in contraction_extension_tags:
+            conditions.append("确认型重置收缩")
+        if "TERMINAL_MICRO_CONTRACTION" in contraction_extension_tags:
+            conditions.append("末端微收缩")
+
     quality_map = {
         "VCP_TIGHT": "A",
         "VCP_MATURE": "A" if volume_pattern in {"decreasing", "drying"} else "B",
@@ -1037,6 +1202,9 @@ def detect_vcp_structure(df):
         "contraction_count": count,
         "contraction_pcts": " -> ".join(f'{contraction_pullback_pct(c):.2f}%' for c in recent),
         "contraction_days": " -> ".join(str(c["duration_days"]) for c in recent),
+        "contraction_extension_tags": contraction_extension_tags,
+        "contraction_extension_score": contraction_extension_score,
+        "contraction_extensions": contraction_extensions,
         "volume_pattern": volume_pattern,
         "pivot_price": pivot_price,
         "structure_pivot": structure_pivot,
@@ -1893,7 +2061,12 @@ def score_setup(df, structure, pullback, retest, overheat):
         elif pivot_watch_min <= pivot_distance <= pivot_watch_max:
             position_score += position_cfg["pivot_watch_bonus"]
 
-    score = structure_score + volume_score + trend_score + position_score
+    extension_score = safe_float(structure.get("contraction_extension_score"), 0)
+    extension_score = min(
+        CONTRACTION_CFG.get("extensions", {}).get("max_total_bonus", 0),
+        extension_score,
+    )
+    score = structure_score + volume_score + trend_score + position_score + extension_score
     score = max(SCORE_CFG["min_score"], min(SCORE_CFG["max_score"], score))
 
     return {
@@ -1904,6 +2077,7 @@ def score_setup(df, structure, pullback, retest, overheat):
             "volume": volume_score,
             "trend": trend_score,
             "position": position_score,
+            "contraction_extensions": extension_score,
         }
     }
 
@@ -2103,6 +2277,9 @@ def screen(df, code=None):
             "contraction_count": 0,
             "contraction_pcts": "",
             "contraction_days": "",
+            "contraction_extension_tags": [],
+            "contraction_extension_score": 0,
+            "contraction_extensions": [],
             "volume_pattern": "unknown",
             "pivot_price": None,
             "structure_pivot": None,
@@ -2192,6 +2369,9 @@ def screen(df, code=None):
         "contraction_count": structure.get("contraction_count", 0),
         "contraction_pcts": structure.get("contraction_pcts", ""),
         "contraction_days": structure.get("contraction_days", ""),
+        "contraction_extension_tags": structure.get("contraction_extension_tags", []),
+        "contraction_extension_score": structure.get("contraction_extension_score", 0),
+        "contraction_extensions": structure.get("contraction_extensions", []),
         "volume_pattern": structure.get("volume_pattern", "unknown"),
         "pivot_price": round_or_none(structure.get("pivot_price")),
         "structure_pivot": round_or_none(structure.get("structure_pivot")),
@@ -2228,7 +2408,8 @@ CSV_COLUMNS = [
     "setup_structure_base", "setup_action_score", "setup_current_action_score", "setup_breakout_action_score", "setup_score_components",
     "setup_reasons", "setup_misses", "setup_risk_flags", "setup_timing", "structure_volume_alignment",
     "structure_risk_flags", "support_price", "invalid_price", "breakout_level",
-    "contraction_count", "contraction_pcts", "contraction_days", "volume_pattern",
+    "contraction_count", "contraction_pcts", "contraction_days",
+    "contraction_extension_tags", "contraction_extension_score", "contraction_extensions", "volume_pattern",
     "pivot_price", "structure_pivot", "market_pivot", "pivot_distance", "last_contraction_low",
     "structure_age_days", "structure_valid", "structure_invalid_reason",
     "post_structure_gain", "post_structure_drawdown", "post_breakout_state", "structure_breakout_date", "structure_breakout_level", "breakout_days", "vcp_quality",
@@ -2321,6 +2502,9 @@ def write_csv(results, quant_path):
                 r["contraction_count"],
                 r["contraction_pcts"],
                 r["contraction_days"],
+                ";".join(r.get("contraction_extension_tags", [])),
+                r.get("contraction_extension_score", 0),
+                json.dumps(r.get("contraction_extensions", []), ensure_ascii=False, separators=(",", ":")),
                 r["volume_pattern"],
                 r["pivot_price"] if r["pivot_price"] is not None else "",
                 r["structure_pivot"] if r["structure_pivot"] is not None else "",
@@ -2381,6 +2565,7 @@ def print_single_summary(result):
     print(f"买点质量: {result['setup_score']} / {result['setup_quality']} | 动作分 {result['setup_pattern_score']} | 加分 {result['setup_reasons']} | 扣分 {result['setup_misses']}")
     print(f"动作: {result['action_hint']} | 建议仓位 {result['suggested_position']}")
     print(f"VCP: {result['structure_stage']} | 轮次 {result['contraction_count']} | 收缩 {result['contraction_pcts']} | 量能 {result['volume_pattern']}")
+    print(f"扩展收缩: {result.get('contraction_extension_tags', [])} | 加分 {result.get('contraction_extension_score', 0)}")
     print(f"Pivot: {result['pivot_price']} | 距pivot {result['pivot_distance']}% | 年龄 {result['structure_age_days']}天 | 有效 {result['structure_valid']}")
     if result["structure_invalid_reason"]:
         print(f"结构失效: {result['structure_invalid_reason']} | 结构后涨幅 {result['post_structure_gain']}% | 回撤 {result['post_structure_drawdown']}%")

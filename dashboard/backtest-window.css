@@ -9,6 +9,17 @@
   justify-content: flex-end;
 }
 
+.backtest-structure-controls {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.backtest-structure-controls #backtest-structure-window-tabs {
+  justify-content: flex-end;
+}
+
 .backtest-pagination {
   display: flex;
   align-items: center;
@@ -52,6 +63,15 @@
   }
 
   .backtest-header-side #backtest-window-tabs {
+    justify-content: flex-start;
+  }
+
+  .backtest-structure-controls {
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .backtest-structure-controls #backtest-structure-window-tabs {
     justify-content: flex-start;
   }
 

@@ -162,6 +162,29 @@ class BacktestEventTests(unittest.TestCase):
         self.assertEqual(window["summary"]["mature_events"], 1)
         self.assertEqual(window["summary"]["pending_events"], 1)
 
+    def test_structure_sample_windows_use_independent_30_90_180_day_ranges(self):
+        rows = [
+            {
+                "selection_date": f"2026-0{index + 1}-01",
+                "age_days": age,
+                "initial_stage": "VCP_FORMING" if index % 2 else "VCP_MATURE",
+                "initial_bloom_status": "FORMING",
+            }
+            for index, age in enumerate([5, 30, 31, 90, 91, 180, 181])
+        ]
+
+        windows = {
+            window["id"]: backtest.build_structure_sample_window(rows, window)
+            for window in backtest.STRUCTURE_SAMPLE_WINDOWS
+        }
+
+        self.assertEqual(backtest.STRUCTURE_DEFAULT_SAMPLE_WINDOW, "90D")
+        self.assertEqual(set(windows), {"30D", "90D", "180D", "ALL"})
+        self.assertEqual(windows["30D"]["summary"]["events"], 2)
+        self.assertEqual(windows["90D"]["summary"]["events"], 4)
+        self.assertEqual(windows["180D"]["summary"]["events"], 6)
+        self.assertEqual(windows["ALL"]["summary"]["events"], 7)
+
     def test_completed_event_keeps_frozen_returns_after_twenty_days(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "market.sqlite"

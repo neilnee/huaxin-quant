@@ -1,7 +1,7 @@
 const MODULES = { market: "市场环境", capital: "资金观测", vcp: "VCP结构", signals: "信号发现", backtest: "回测表现", valuation: "投研分析" };
 const LABELS = { industry_sw_l1: "申万一级", industry_sw_l2: "申万二级", gn: "概念题材", fg: "风格特征" };
 const INDEX_LABELS = { shanghai_composite: "上证综指", csi300: "沪深300", csi500: "中证500", csi1000: "中证1000", chinext: "创业板指", star50: "科创50" };
-let context, capitalContext, vcpContext, signalsContext, backtestContext, vcpFilter = "ALL", signalsFilter="ALL", backtestFilter="ALL", backtestSampleWindow="90D", backtestConditionHorizon=10, backtestStructurePage=1, backtestStructureStage="ALL", vcpSelectedCode, signalsSelectedCode, capitalSelectedCode, calendarMonth, currentKind = "industry_sw_l2", rankWindow = "rank_20", selectedName, matrixSelectedName, activeModule = "market";
+let context, capitalContext, vcpContext, signalsContext, backtestContext, vcpFilter = "ALL", signalsFilter="ALL", backtestFilter="ALL", backtestSampleWindow="90D", backtestConditionHorizon=10, backtestStructurePage=1, backtestStructureStage="ALL", backtestStructureWindow="90D", vcpSelectedCode, signalsSelectedCode, capitalSelectedCode, calendarMonth, currentKind = "industry_sw_l2", rankWindow = "rank_20", selectedName, matrixSelectedName, activeModule = "market";
 const BACKTEST_STRUCTURE_PAGE_SIZE=20;
 const $ = (id) => document.getElementById(id), pct = (v, d = 2) => v == null ? "—" : `${Number(v).toFixed(d)}%`, cls = (v) => v > 0 ? "positive" : v < 0 ? "negative" : "";
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
@@ -223,8 +223,8 @@ function loadBacktestContext(date) {
   });
 }
 async function loadBacktest(date) {
-  try { backtestContext = await loadBacktestContext(date); if (!backtestContext) throw new Error(`缺少 ${date} 的回测数据`); const windows=backtestContext.sample_windows||[]; if(windows.length&&!windows.some(row=>row.id===backtestSampleWindow))backtestSampleWindow=backtestContext.meta?.default_sample_window||windows[0].id; backtestStructurePage=1; renderBacktest(); }
-  catch (error) { $("backtest-meta").textContent = "当前日期尚未发布回测数据"; $("backtest-summary").innerHTML = ""; $("backtest-window-tabs").innerHTML = ""; $("backtest-table").innerHTML = `<caption class="muted">${esc(error.message)}</caption>`; ["backtest-structure-summary", "backtest-structure-filters", "backtest-structure-table", "backtest-structure-pagination", "backtest-structure-stage-table", "backtest-event-table", "backtest-grade-table", "backtest-maturity-table", "backtest-condition-table"].forEach((id) => $(id).innerHTML = ""); }
+  try { backtestContext = await loadBacktestContext(date); if (!backtestContext) throw new Error(`缺少 ${date} 的回测数据`); const windows=backtestContext.sample_windows||[]; if(windows.length&&!windows.some(row=>row.id===backtestSampleWindow))backtestSampleWindow=backtestContext.meta?.default_sample_window||windows[0].id; const structure=backtestContext.structure_evaluation||{}, structureWindows=structure.sample_windows||[]; if(structureWindows.length&&!structureWindows.some(row=>row.id===backtestStructureWindow))backtestStructureWindow=structure.default_sample_window||structureWindows[0].id; backtestStructurePage=1; renderBacktest(); }
+  catch (error) { $("backtest-meta").textContent = "当前日期尚未发布回测数据"; $("backtest-summary").innerHTML = ""; $("backtest-window-tabs").innerHTML = ""; $("backtest-table").innerHTML = `<caption class="muted">${esc(error.message)}</caption>`; ["backtest-structure-summary", "backtest-structure-filters", "backtest-structure-window-tabs", "backtest-structure-table", "backtest-structure-pagination", "backtest-structure-stage-table", "backtest-event-table", "backtest-grade-table", "backtest-maturity-table", "backtest-condition-table"].forEach((id) => $(id).innerHTML = ""); }
 }
 function backtestReturn(value) {
   if (value == null) return `<span class="backtest-pending">—</span>`;
@@ -283,8 +283,8 @@ function renderBacktestConditions(profile, window) {
 }
 function renderBacktestStructures() {
   const evaluation=backtestContext.structure_evaluation||{}, windows=evaluation.sample_windows||[];
-  const window=windows.find(row=>row.id===backtestSampleWindow)||windows[0];
-  if(!window){$("backtest-structure-summary").innerHTML="";$("backtest-structure-filters").innerHTML="";$("backtest-structure-table").innerHTML="<caption class='muted'>该历史数据包尚未包含VCP结构入选回测</caption>";$("backtest-structure-pagination").innerHTML="";$("backtest-structure-stage-table").innerHTML="";return;}
+  const window=windows.find(row=>row.id===backtestStructureWindow)||windows[0];
+  if(!window){$("backtest-structure-summary").innerHTML="";$("backtest-structure-filters").innerHTML="";$("backtest-structure-window-tabs").innerHTML="";$("backtest-structure-table").innerHTML="<caption class='muted'>该历史数据包尚未包含VCP结构入选回测</caption>";$("backtest-structure-pagination").innerHTML="";$("backtest-structure-stage-table").innerHTML="";return;}
   const summary=window.summary||{}, allRows=window.events||[], rows=backtestStructureStage==="ALL"?allRows:allRows.filter(row=>row.initial_stage===backtestStructureStage);
   const stageGroup=(window.stage_groups||[]).find(row=>row.group===backtestStructureStage), horizon=backtestStructureStage==="ALL"?summary.horizons||{}:stageGroup?.horizons||{};
   const matureAge=Number(backtestContext.meta?.window_min_days||5), matureEvents=rows.filter(row=>Number(row.age_days)>=matureAge).length, pendingEvents=rows.length-matureEvents;
@@ -296,6 +296,8 @@ function renderBacktestStructures() {
   $("backtest-structure-summary").innerHTML=[["结构轮次",rows.length],["5日平均",horizon["5"]?.avg_return==null?"—":`${Number(horizon["5"].avg_return).toFixed(1)}%`],["5日胜率",horizon["5"]?.win_rate==null?"—":`${Number(horizon["5"].win_rate).toFixed(1)}%`],["10日胜率",horizon["10"]?.win_rate==null?"—":`${Number(horizon["10"].win_rate).toFixed(1)}%`],["20日胜率",horizon["20"]?.win_rate==null?"—":`${Number(horizon["20"].win_rate).toFixed(1)}%`]].map(([label,value])=>`<div><span>${label}</span><b>${value}</b></div>`).join("");
   $("backtest-structure-filters").innerHTML=stageOptions.map(([key,label])=>`<button class="${key===backtestStructureStage?"active":""}" data-stage="${key}">${label}</button>`).join("");
   $("backtest-structure-filters").querySelectorAll("button[data-stage]").forEach(button=>button.onclick=()=>{backtestStructureStage=button.dataset.stage;backtestStructurePage=1;renderBacktestStructures();});
+  $("backtest-structure-window-tabs").innerHTML=windows.map(row=>`<button class="${row.id===window.id?"active":""}" data-window="${esc(row.id)}">${esc(row.label)}</button>`).join("");
+  $("backtest-structure-window-tabs").querySelectorAll("button[data-window]").forEach(button=>button.onclick=()=>{backtestStructureWindow=button.dataset.window;backtestStructurePage=1;renderBacktestStructures();});
   $("backtest-structure-table").innerHTML=`<thead><tr><th>首次入选</th><th>标的</th><th>入选阶段</th><th>Bloom状态</th><th>结构分</th><th>入选价</th><th>年龄</th><th>5日</th><th>10日</th><th>20日</th></tr></thead><tbody>${pageRows.map(row=>`<tr><td>${backtestShortDate(row.selection_date)}</td><td><b>${esc(row.name)}</b><small>${esc(row.code)}</small></td><td>${backtestStageLabel(row.initial_stage)}</td><td>${esc(row.initial_bloom_status||"—")}</td><td>${row.structure_score==null?"—":Number(row.structure_score).toFixed(0)}</td><td>${row.selection_close==null?"—":Number(row.selection_close).toFixed(2)}</td><td>${Number(row.age_days)}日</td><td>${backtestReturn(row.return_5d)}</td><td>${backtestReturn(row.return_10d)}</td><td>${backtestReturn(row.return_20d)}</td></tr>`).join("")||"<tr><td colspan='10' class='muted'>当前范围没有VCP结构入选事件</td></tr>"}</tbody>`;
   const pageNumbers=[];for(let page=Math.max(1,backtestStructurePage-2);page<=Math.min(pages,backtestStructurePage+2);page++)pageNumbers.push(page);
   $("backtest-structure-pagination").innerHTML=rows.length?`<span>显示 ${start+1}–${Math.min(start+BACKTEST_STRUCTURE_PAGE_SIZE,rows.length)} / ${rows.length}</span><div><button data-page="${backtestStructurePage-1}" ${backtestStructurePage===1?"disabled":""}>上一页</button>${pageNumbers.map(page=>`<button class="${page===backtestStructurePage?"active":""}" data-page="${page}">${page}</button>`).join("")}<button data-page="${backtestStructurePage+1}" ${backtestStructurePage===pages?"disabled":""}>下一页</button></div>`:"";
@@ -311,7 +313,7 @@ function renderBacktest() {
   $("backtest-meta").textContent = `报告日 ${backtestContext.meta.report_date} · ${window.label} · ${profileLabel}成熟样本 ${profile.events||0} 条 · 买点成立区间 ${sampleSpan}`;
   const windows=backtestContext.sample_windows||[];
   $("backtest-window-tabs").innerHTML=(windows.length?windows:[window]).map(row=>`<button class="${row.id===window.id?"active":""}" data-window="${esc(row.id)}">${esc(row.label)}</button>`).join("");
-  $("backtest-window-tabs").querySelectorAll("button").forEach(button=>button.onclick=()=>{backtestSampleWindow=button.dataset.window;backtestStructurePage=1;renderBacktest();});
+  $("backtest-window-tabs").querySelectorAll("button").forEach(button=>button.onclick=()=>{backtestSampleWindow=button.dataset.window;renderBacktest();});
   $("backtest-summary").innerHTML = [
     ["统计样本", profile.events || 0],
     ["A类 / 常规", `${(profile.grade_groups||[]).find(row=>row.group==="A")?.events||0} / ${(profile.grade_groups||[]).find(row=>row.group==="REGULAR")?.events||0}`],

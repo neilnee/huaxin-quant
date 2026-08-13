@@ -63,6 +63,11 @@ SAMPLE_THRESHOLDS = CONDITION_CONFIG["sample_thresholds"]
 CONDITIONS = CONDITION_CONFIG["conditions"]
 STRUCTURE_CONFIG = CONFIG["structure_evaluation"]
 STRUCTURE_ACTIVE_STATUSES = tuple(STRUCTURE_CONFIG["active_statuses"])
+STRUCTURE_DEFAULT_SAMPLE_WINDOW = str(STRUCTURE_CONFIG["default_sample_window"])
+STRUCTURE_SAMPLE_WINDOWS = STRUCTURE_CONFIG["sample_windows"]
+STRUCTURE_DEFAULT_SAMPLE_WINDOW_LABEL = next(
+    window["label"] for window in STRUCTURE_SAMPLE_WINDOWS if window["id"] == STRUCTURE_DEFAULT_SAMPLE_WINDOW
+)
 LIFECYCLE_MAX_DAYS = int(CONFIG.get("lifecycle", {}).get("max_trade_days", 40))
 _CORPORATE_ACTION_SOURCE = None
 
@@ -872,7 +877,7 @@ def build_context(report_date_yy: str) -> dict:
     lifecycle_rows = update_lifecycle(persisted, report_date_yy)
     analysis_events = add_performance(persisted, report_date_yy)
     structure_events = add_structure_performance(structure_selections, report_date_yy)
-    structure_windows = [build_structure_sample_window(structure_events, window) for window in SAMPLE_WINDOWS]
+    structure_windows = [build_structure_sample_window(structure_events, window) for window in STRUCTURE_SAMPLE_WINDOWS]
     sample_windows = [build_sample_window(analysis_events, window) for window in SAMPLE_WINDOWS]
     default_window = next(window for window in sample_windows if window["id"] == DEFAULT_SAMPLE_WINDOW)
     events = default_window["events"]
@@ -913,6 +918,7 @@ def build_context(report_date_yy: str) -> dict:
             "event_definition": "first_displayed_vcp_list_appearance_per_code_and_structure_anchor",
             "source": STRUCTURE_CONFIG["source"],
             "active_statuses": list(STRUCTURE_ACTIVE_STATUSES),
+            "default_sample_window": STRUCTURE_DEFAULT_SAMPLE_WINDOW,
             "all_events": len(structure_events),
             "sample_windows": structure_windows,
         },
@@ -939,12 +945,12 @@ def render_markdown(context: dict) -> str:
     main_labels = {"INFLOW": "流入", "BALANCED": "平衡", "OUTFLOW": "流出", "INSUFFICIENT": "数据不足"}
     margin_labels = {"LEVERAGING": "加杠杆", "STABLE": "稳定", "DELEVERAGING": "去杠杆", "NOT_APPLICABLE": "不适用", "INSUFFICIENT": "数据不足"}
     structure_windows = context.get("structure_evaluation", {}).get("sample_windows", [])
-    structure_window = next((row for row in structure_windows if row.get("id") == DEFAULT_SAMPLE_WINDOW), {})
+    structure_window = next((row for row in structure_windows if row.get("id") == STRUCTURE_DEFAULT_SAMPLE_WINDOW), {})
     structure_summary = structure_window.get("summary", {})
     lines = [
         f"# VCP结构与实际买点回测｜{context['meta']['report_date']}", "",
         "## VCP结构入选表现", "",
-        f"成立范围：{DEFAULT_SAMPLE_WINDOW_LABEL}｜结构轮次 {structure_summary.get('events', 0)} 个｜已满5日 {structure_summary.get('mature_events', 0)} 个", "",
+        f"成立范围：{STRUCTURE_DEFAULT_SAMPLE_WINDOW_LABEL}｜结构轮次 {structure_summary.get('events', 0)} 个｜已满5日 {structure_summary.get('mature_events', 0)} 个", "",
         "| 首次入选 | 股票 | 入选阶段 | Bloom状态 | 结构分 | 入选价 | 年龄 | 5日 | 10日 | 20日 |", "|---|---|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     for row in structure_window.get("events", []):

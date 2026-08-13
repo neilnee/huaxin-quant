@@ -285,7 +285,8 @@ function renderBacktestStructures() {
   const evaluation=backtestContext.structure_evaluation||{}, windows=evaluation.sample_windows||[];
   const window=windows.find(row=>row.id===backtestStructureWindow)||windows[0];
   if(!window){$("backtest-structure-summary").innerHTML="";$("backtest-structure-filters").innerHTML="";$("backtest-structure-window-tabs").innerHTML="";$("backtest-structure-table").innerHTML="<caption class='muted'>该历史数据包尚未包含VCP结构入选回测</caption>";$("backtest-structure-pagination").innerHTML="";$("backtest-structure-stage-table").innerHTML="";return;}
-  const summary=window.summary||{}, allRows=window.events||[], rows=backtestStructureStage==="ALL"?allRows:allRows.filter(row=>row.initial_stage===backtestStructureStage);
+  const summary=window.summary||{}, allRows=window.events||[], filteredRows=backtestStructureStage==="ALL"?allRows:allRows.filter(row=>row.initial_stage===backtestStructureStage);
+  const rows=[...filteredRows].sort((left,right)=>Number(left.return_5d==null)-Number(right.return_5d==null)||String(right.selection_date||"").localeCompare(String(left.selection_date||""))||String(left.code||"").localeCompare(String(right.code||"")));
   const stageGroup=(window.stage_groups||[]).find(row=>row.group===backtestStructureStage), horizon=backtestStructureStage==="ALL"?summary.horizons||{}:stageGroup?.horizons||{};
   const matureAge=Number(backtestContext.meta?.window_min_days||5), matureEvents=rows.filter(row=>Number(row.age_days)>=matureAge).length, pendingEvents=rows.length-matureEvents;
   const stageOptions=[["ALL","全部"],["VCP_EARLY","早期"],["VCP_FORMING","形成期"],["VCP_MATURE","成熟"],["VCP_TIGHT","紧凑"],["NONE","阶段缺失"]];

@@ -286,6 +286,14 @@ def update_lifecycle(events: list[dict], report_date_yy: str) -> list[dict]:
                 entry_date = str(event.get("entry_date") or event.get("signal_date") or "")
                 if entry_date not in indexes or indexes[entry_date] >= indexes.get(report_date, -1):
                     continue
+                event_meta = {
+                    "setup_family": event.get("setup_family") or "NONE",
+                    "entry_grade": event.get("entry_grade") or "NONE",
+                    "maturity_stage": event.get("maturity_stage") or "NONE",
+                    "entry_action": event.get("entry_action") or "",
+                    "structure_anchor": event.get("structure_anchor") or "",
+                    "sample_age_days": indexes[report_date] - indexes[entry_date],
+                }
                 end_index = min(indexes[report_date], indexes[entry_date] + LIFECYCLE_MAX_DAYS)
                 end_date = calendar[end_index]
                 bars = load_ohlc_bars(market, event["code"], entry_date, end_date)
@@ -301,6 +309,7 @@ def update_lifecycle(events: list[dict], report_date_yy: str) -> list[dict]:
                         "reference_entry_price": entry_price, "initial_invalid_price": invalid,
                         "lifecycle_status": "DATA_INSUFFICIENT",
                         "data_issue": "missing_or_invalid_initial_risk",
+                        **event_meta,
                     }
                     replace_lifecycle_rows(strategy_conn, buy_event_id(event), [unavailable])
                     continue
@@ -312,6 +321,8 @@ def update_lifecycle(events: list[dict], report_date_yy: str) -> list[dict]:
                 first_hits = {1: None, 2: None, 3: None}
                 invalid_touch_date = None
                 invalid_close_date = None
+                ambiguous_date = None
+                max_peak_giveback_r = 0.0
                 rows = []
                 for current_index in range(indexes[entry_date] + 1, end_index + 1):
                     current_date = calendar[current_index]
@@ -338,12 +349,16 @@ def update_lifecycle(events: list[dict], report_date_yy: str) -> list[dict]:
                                 hits[multiple] = True
                                 first_hits[multiple] = current_date
                     ambiguous = touched and bool(same_day_new_hits)
+                    if ambiguous and ambiguous_date is None:
+                        ambiguous_date = current_date
                     age = current_index - indexes[entry_date]
+                    current_peak_giveback_r = (peak - adjusted["close"]) / risk
+                    max_peak_giveback_r = max(max_peak_giveback_r, current_peak_giveback_r)
                     status = (
                         "AMBIGUOUS" if ambiguous else
                         "INVALID_CONFIRMED" if confirmed else
-                        "INVALID_TOUCHED" if invalid_touch_date is not None else
                         "TIMEOUT" if age >= LIFECYCLE_MAX_DAYS else
+                        "INVALID_TOUCHED" if invalid_touch_date is not None else
                         "OPEN"
                     )
                     mfe = (peak / entry_price - 1) * 100
@@ -354,18 +369,32 @@ def update_lifecycle(events: list[dict], report_date_yy: str) -> list[dict]:
                         **{field: round(adjusted[field], 4) for field in adjusted},
                         "reference_entry_price": entry_price, "initial_invalid_price": invalid,
                         "initial_risk": risk,
+                        "initial_risk_pct": round(risk / entry_price * 100, 3),
                         "current_return_pct": round((adjusted["close"] / entry_price - 1) * 100, 3),
                         "current_r": round((adjusted["close"] - entry_price) / risk, 3),
                         "mfe_pct": round(mfe, 3), "mfe_r": round((peak - entry_price) / risk, 3),
                         "mae_pct": round(mae, 3), "mae_r": round((trough - entry_price) / risk, 3),
                         "hit_1r": hits[1], "hit_2r": hits[2], "hit_3r": hits[3],
                         "hit_1r_date": first_hits[1], "hit_2r_date": first_hits[2], "hit_3r_date": first_hits[3],
+                        "hit_1r_days": indexes[first_hits[1]] - indexes[entry_date] if first_hits[1] else None,
+                        "hit_2r_days": indexes[first_hits[2]] - indexes[entry_date] if first_hits[2] else None,
+                        "hit_3r_days": indexes[first_hits[3]] - indexes[entry_date] if first_hits[3] else None,
                         "invalid_touched": invalid_touch_date is not None,
                         "invalid_touch_date": invalid_touch_date,
                         "invalid_confirmed": invalid_close_date is not None,
                         "invalid_close_date": invalid_close_date,
-                        "peak_giveback_r": round((peak - adjusted["close"]) / risk, 3),
+                        "invalid_touched_before_1r": bool(
+                            invalid_touch_date and (first_hits[1] is None or invalid_touch_date < first_hits[1])
+                        ),
+                        "invalid_confirmed_before_1r": bool(
+                            invalid_close_date and (first_hits[1] is None or invalid_close_date < first_hits[1])
+                        ),
+                        "ambiguous": ambiguous_date is not None,
+                        "ambiguous_date": ambiguous_date,
+                        "peak_giveback_r": round(current_peak_giveback_r, 3),
+                        "max_peak_giveback_r": round(max_peak_giveback_r, 3),
                         "lifecycle_status": status,
+                        **event_meta,
                     }
                     rows.append(row)
                     if confirmed:
@@ -377,18 +406,93 @@ def update_lifecycle(events: list[dict], report_date_yy: str) -> list[dict]:
 
 
 def lifecycle_summary(rows: list[dict]) -> dict:
+    return lifecycle_metrics(rows)
+
+
+def lifecycle_metrics(rows: list[dict]) -> dict:
     count = len(rows)
+    evaluable = [row for row in rows if row.get("lifecycle_status") != "DATA_INSUFFICIENT"]
+    denominator = len(evaluable)
+
+    def count_true(field: str) -> int:
+        return sum(bool(row.get(field)) for row in evaluable)
+
+    def rate(field: str) -> float | None:
+        return round(count_true(field) / denominator * 100, 1) if denominator else None
+
+    def average(field: str, source: list[dict] | None = None) -> float | None:
+        values = [safe_float(row.get(field)) for row in (evaluable if source is None else source)]
+        available = [value for value in values if value is not None]
+        return round(statistics.fmean(available), 3) if available else None
+
+    def median(field: str) -> float | None:
+        values = [safe_float(row.get(field)) for row in evaluable]
+        available = [value for value in values if value is not None]
+        return round(statistics.median(available), 3) if available else None
+
     return {
         "events": count,
-        "open": sum(row.get("lifecycle_status") == "OPEN" for row in rows),
-        "data_insufficient": sum(row.get("lifecycle_status") == "DATA_INSUFFICIENT" for row in rows),
-        "invalid_confirmed": sum(bool(row.get("invalid_confirmed")) for row in rows),
-        "hit_1r": sum(bool(row.get("hit_1r")) for row in rows),
-        "hit_2r": sum(bool(row.get("hit_2r")) for row in rows),
-        "hit_3r": sum(bool(row.get("hit_3r")) for row in rows),
-        "hit_1r_rate": round(sum(bool(row.get("hit_1r")) for row in rows) / count * 100, 1) if count else None,
-        "hit_2r_rate": round(sum(bool(row.get("hit_2r")) for row in rows) / count * 100, 1) if count else None,
-        "hit_3r_rate": round(sum(bool(row.get("hit_3r")) for row in rows) / count * 100, 1) if count else None,
+        "evaluable_events": denominator,
+        "data_insufficient": count - denominator,
+        "open": sum(
+            not row.get("invalid_confirmed") and row.get("lifecycle_status") != "TIMEOUT"
+            for row in evaluable
+        ),
+        "timeout": sum(row.get("lifecycle_status") == "TIMEOUT" for row in evaluable),
+        "invalid_touched": count_true("invalid_touched"),
+        "invalid_touched_rate": rate("invalid_touched"),
+        "invalid_confirmed": count_true("invalid_confirmed"),
+        "invalid_confirmed_rate": rate("invalid_confirmed"),
+        "invalid_touched_before_1r": count_true("invalid_touched_before_1r"),
+        "invalid_touched_before_1r_rate": rate("invalid_touched_before_1r"),
+        "invalid_confirmed_before_1r": count_true("invalid_confirmed_before_1r"),
+        "invalid_confirmed_before_1r_rate": rate("invalid_confirmed_before_1r"),
+        "ambiguous": count_true("ambiguous"),
+        "ambiguous_rate": rate("ambiguous"),
+        "hit_1r": count_true("hit_1r"),
+        "hit_2r": count_true("hit_2r"),
+        "hit_3r": count_true("hit_3r"),
+        "hit_1r_rate": rate("hit_1r"),
+        "hit_2r_rate": rate("hit_2r"),
+        "hit_3r_rate": rate("hit_3r"),
+        "avg_hit_1r_days": average("hit_1r_days", [row for row in evaluable if row.get("hit_1r")]),
+        "avg_hit_2r_days": average("hit_2r_days", [row for row in evaluable if row.get("hit_2r")]),
+        "avg_hit_3r_days": average("hit_3r_days", [row for row in evaluable if row.get("hit_3r")]),
+        "avg_mfe_r": average("mfe_r"),
+        "avg_mae_r": average("mae_r"),
+        "avg_max_peak_giveback_r": average("max_peak_giveback_r"),
+        "median_mfe_r": median("mfe_r"),
+        "median_mae_r": median("mae_r"),
+        "median_max_peak_giveback_r": median("max_peak_giveback_r"),
+        "median_initial_risk_pct": median("initial_risk_pct"),
+    }
+
+
+def lifecycle_grouped_metrics(rows: list[dict], field: str) -> list[dict]:
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        groups.setdefault(str(row.get(field) or "NONE"), []).append(row)
+    return [
+        {"group": group, **lifecycle_metrics(items)}
+        for group, items in sorted(groups.items(), key=lambda item: (-len(item[1]), item[0]))
+    ]
+
+
+def build_lifecycle_sample_window(rows: list[dict], window: dict) -> dict:
+    max_age = window.get("max_age_trade_days")
+    selected = rows if max_age is None else [
+        row for row in rows if int(row.get("sample_age_days") or 0) <= int(max_age)
+    ]
+    selected = sorted(selected, key=lambda row: (row.get("entry_date") or "", row.get("code") or ""), reverse=True)
+    return {
+        "id": window["id"],
+        "label": window["label"],
+        "max_age_trade_days": max_age,
+        "summary": lifecycle_metrics(selected),
+        "setup_groups": lifecycle_grouped_metrics(selected, "setup_family"),
+        "grade_groups": lifecycle_grouped_metrics(selected, "entry_grade"),
+        "maturity_groups": lifecycle_grouped_metrics(selected, "maturity_stage"),
+        "events": selected,
     }
 
 
@@ -875,6 +979,7 @@ def build_context(report_date_yy: str) -> dict:
             strategy_conn, iso_date(report_date_yy), set(calendar), STRUCTURE_ACTIVE_STATUSES
         )
     lifecycle_rows = update_lifecycle(persisted, report_date_yy)
+    lifecycle_windows = [build_lifecycle_sample_window(lifecycle_rows, window) for window in SAMPLE_WINDOWS]
     analysis_events = add_performance(persisted, report_date_yy)
     structure_events = add_structure_performance(structure_selections, report_date_yy)
     structure_windows = [build_structure_sample_window(structure_events, window) for window in STRUCTURE_SAMPLE_WINDOWS]
@@ -924,6 +1029,11 @@ def build_context(report_date_yy: str) -> dict:
         },
         "lifecycle_summary": lifecycle_summary(lifecycle_rows),
         "lifecycle_events": lifecycle_rows,
+        "lifecycle_evaluation": {
+            "default_sample_window": DEFAULT_SAMPLE_WINDOW,
+            "max_trade_days": LIFECYCLE_MAX_DAYS,
+            "sample_windows": lifecycle_windows,
+        },
         "events": events,
         "sample_windows": sample_windows,
         "setup_profiles": profiles,
@@ -975,7 +1085,28 @@ def render_markdown(context: dict) -> str:
         )
     if not context["events"]:
         lines.append("| — | — | 当前窗口没有已满5个交易日的实际买点事件 | — | — | — | — | — | — | — | — | — | — | — | — | — | — |")
-    lines.extend(["", "> 以买点实际成立日收盘价为基准，送转、分红和配股按持有期总回报调整；不代表真实交易收益。", ""])
+    lifecycle_windows = context.get("lifecycle_evaluation", {}).get("sample_windows", [])
+    lifecycle_window = next((row for row in lifecycle_windows if row.get("id") == DEFAULT_SAMPLE_WINDOW), {})
+    lifecycle = lifecycle_window.get("summary", {})
+    pct = lambda value: "—" if value is None else f"{value:.1f}%"
+    r_value = lambda value: "—" if value is None else f"{value:.2f}R"
+    lines.extend([
+        "", "> 以买点实际成立日收盘价为基准，送转、分红和配股按持有期总回报调整；不代表真实交易收益。", "",
+        "## 买点后生命周期", "",
+        f"成立范围：{DEFAULT_SAMPLE_WINDOW_LABEL}｜全部 {lifecycle.get('events', 0)} 条｜可评估 {lifecycle.get('evaluable_events', 0)} 条｜数据不足 {lifecycle.get('data_insufficient', 0)} 条", "",
+        f"止损确认 {pct(lifecycle.get('invalid_confirmed_rate'))}｜1R前止损确认 {pct(lifecycle.get('invalid_confirmed_before_1r_rate'))}｜达到1R/2R/3R：{pct(lifecycle.get('hit_1r_rate'))} / {pct(lifecycle.get('hit_2r_rate'))} / {pct(lifecycle.get('hit_3r_rate'))}｜MFE/MAE中位：{r_value(lifecycle.get('median_mfe_r'))} / {r_value(lifecycle.get('median_mae_r'))}", "",
+        "| 买点日 | 股票 | 买点 | 等级 | VCP阶段 | 状态 | 观察 | 初始R% | 止损确认 | 1R | 2R | 3R | MFE | MAE | 最大回撤 |",
+        "|---|---|---|---|---|---|---:|---:|---|---|---|---|---:|---:|---:|",
+    ])
+    for row in lifecycle_window.get("events", []):
+        risk_pct = "—" if row.get("initial_risk_pct") is None else f"{row['initial_risk_pct']:.2f}%"
+        hit = lambda multiple: "—" if not row.get(f"hit_{multiple}r_date") else f"{row[f'hit_{multiple}r_date']}（T+{row[f'hit_{multiple}r_days']}）"
+        lines.append(
+            f"| {row['entry_date']} | {row.get('name') or row['code']}（{row['code']}） | {row.get('setup_family', '—')} | {row.get('entry_grade', '—')} | {row.get('maturity_stage', '—')} | {row.get('lifecycle_status', '—')} | T+{row.get('age_trade_days', 0)} | {risk_pct} | {row.get('invalid_close_date') or '—'} | {hit(1)} | {hit(2)} | {hit(3)} | {r_value(row.get('mfe_r'))} | {r_value(row.get('mae_r'))} | {r_value(row.get('max_peak_giveback_r'))} |"
+        )
+    if not lifecycle_window.get("events"):
+        lines.append("| — | 当前范围没有生命周期事件 | — | — | — | — | — | — | — | — | — | — | — | — | — |")
+    lines.extend(["", "> 生命周期仅记录价格路径事实；不模拟止盈、仓位或真实委托。", ""])
     return "\n".join(lines)
 
 

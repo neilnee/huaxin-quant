@@ -185,6 +185,51 @@ class BacktestEventTests(unittest.TestCase):
         self.assertEqual(windows["180D"]["summary"]["events"], 6)
         self.assertEqual(windows["ALL"]["summary"]["events"], 7)
 
+    def test_lifecycle_metrics_exclude_data_insufficient_from_rates(self):
+        rows = [
+            {"lifecycle_status": "INVALID_CONFIRMED", "invalid_touched": True, "invalid_confirmed": True,
+             "invalid_touched_before_1r": True, "invalid_confirmed_before_1r": True,
+             "hit_1r": False, "hit_2r": False, "hit_3r": False, "mfe_r": 0.4, "mae_r": -1.2,
+             "max_peak_giveback_r": 1.3, "initial_risk_pct": 4.0},
+            {"lifecycle_status": "TIMEOUT", "invalid_touched": False, "invalid_confirmed": False,
+             "hit_1r": True, "hit_2r": True, "hit_3r": False, "hit_1r_days": 3, "hit_2r_days": 7,
+             "mfe_r": 2.4, "mae_r": -0.3, "max_peak_giveback_r": 1.1, "initial_risk_pct": 2.0},
+            {"lifecycle_status": "DATA_INSUFFICIENT"},
+        ]
+
+        result = backtest.lifecycle_metrics(rows)
+
+        self.assertEqual(result["events"], 3)
+        self.assertEqual(result["evaluable_events"], 2)
+        self.assertEqual(result["data_insufficient"], 1)
+        self.assertEqual(result["invalid_confirmed_rate"], 50.0)
+        self.assertEqual(result["invalid_confirmed_before_1r_rate"], 50.0)
+        self.assertEqual(result["hit_1r_rate"], 50.0)
+        self.assertEqual(result["hit_2r_rate"], 50.0)
+        self.assertEqual(result["avg_hit_1r_days"], 3.0)
+        self.assertEqual(result["avg_mfe_r"], 1.4)
+        self.assertEqual(result["avg_mae_r"], -0.75)
+        self.assertEqual(result["median_mfe_r"], 1.4)
+        self.assertEqual(result["median_initial_risk_pct"], 3.0)
+
+    def test_lifecycle_window_filters_by_report_age_and_builds_groups(self):
+        rows = [
+            {"entry_date": "2026-08-01", "code": "000001", "sample_age_days": 10,
+             "setup_family": "BREAKOUT", "entry_grade": "A", "maturity_stage": "VCP_TIGHT",
+             "lifecycle_status": "OPEN", "hit_1r": True},
+            {"entry_date": "2026-06-01", "code": "000002", "sample_age_days": 31,
+             "setup_family": "PULLBACK", "entry_grade": "REGULAR", "maturity_stage": "VCP_MATURE",
+             "lifecycle_status": "INVALID_CONFIRMED", "invalid_confirmed": True},
+        ]
+
+        window = backtest.build_lifecycle_sample_window(
+            rows, {"id": "20D", "label": "近20个交易日", "max_age_trade_days": 20}
+        )
+
+        self.assertEqual(window["summary"]["events"], 1)
+        self.assertEqual(window["events"][0]["code"], "000001")
+        self.assertEqual([row["group"] for row in window["setup_groups"]], ["BREAKOUT"])
+
     def test_completed_event_keeps_frozen_returns_after_twenty_days(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "market.sqlite"

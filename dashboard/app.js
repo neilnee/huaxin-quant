@@ -224,7 +224,7 @@ function loadBacktestContext(date) {
 }
 async function loadBacktest(date) {
   try { backtestContext = await loadBacktestContext(date); if (!backtestContext) throw new Error(`缺少 ${date} 的回测数据`); const windows=backtestContext.sample_windows||[]; if(windows.length&&!windows.some(row=>row.id===backtestSampleWindow))backtestSampleWindow=backtestContext.meta?.default_sample_window||windows[0].id; const structure=backtestContext.structure_evaluation||{}, structureWindows=structure.sample_windows||[]; if(structureWindows.length&&!structureWindows.some(row=>row.id===backtestStructureWindow))backtestStructureWindow=structure.default_sample_window||structureWindows[0].id; backtestStructurePage=1; renderBacktest(); }
-  catch (error) { $("backtest-meta").textContent = "当前日期尚未发布回测数据"; $("backtest-summary").innerHTML = ""; $("backtest-window-tabs").innerHTML = ""; $("backtest-table").innerHTML = `<caption class="muted">${esc(error.message)}</caption>`; ["backtest-structure-summary", "backtest-structure-filters", "backtest-structure-window-tabs", "backtest-structure-table", "backtest-structure-pagination", "backtest-structure-stage-table", "backtest-event-table", "backtest-grade-table", "backtest-maturity-table", "backtest-condition-table"].forEach((id) => $(id).innerHTML = ""); }
+  catch (error) { $("backtest-meta").textContent = "当前日期尚未发布回测数据"; $("backtest-summary").innerHTML = ""; $("backtest-window-tabs").innerHTML = ""; $("backtest-table").innerHTML = `<caption class="muted">${esc(error.message)}</caption>`; ["backtest-structure-summary", "backtest-structure-filters", "backtest-structure-window-tabs", "backtest-structure-table", "backtest-structure-pagination", "backtest-structure-stage-table", "backtest-lifecycle-summary", "backtest-lifecycle-setup-table", "backtest-lifecycle-grade-table", "backtest-lifecycle-maturity-table", "backtest-lifecycle-table", "backtest-event-table", "backtest-grade-table", "backtest-maturity-table", "backtest-condition-table"].forEach((id) => $(id).innerHTML = ""); }
 }
 function backtestReturn(value) {
   if (value == null) return `<span class="backtest-pending">—</span>`;
@@ -305,6 +305,24 @@ function renderBacktestStructures() {
   $("backtest-structure-pagination").querySelectorAll("button[data-page]").forEach(button=>button.onclick=()=>{backtestStructurePage=Number(button.dataset.page);renderBacktestStructures();});
   renderBacktestGroupTable("backtest-structure-stage-table",(window.stage_groups||[]).map(row=>({...row,group:backtestStageLabel(row.group)})));
 }
+function backtestLifecycleStatus(value){return {OPEN:"观察中",INVALID_TOUCHED:"曾触止损",INVALID_CONFIRMED:"止损确认",TIMEOUT:"观察结束",AMBIGUOUS:"同日歧义",DATA_INSUFFICIENT:"数据不足"}[value]||value||"—";}
+function backtestLifecycleRate(value){return value==null?"—":`${Number(value).toFixed(1)}%`;}
+function backtestLifecycleR(value){return value==null?"—":`${Number(value).toFixed(2)}R`;}
+function backtestLifecycleHit(row,multiple){const date=row[`hit_${multiple}r_date`],days=row[`hit_${multiple}r_days`];return date?`${backtestShortDate(date)}<small>T+${Number(days)}</small>`:"—";}
+function renderBacktestLifecycleGroupTable(id,groups,labeler){
+  $(id).innerHTML=`<thead><tr><th>分组</th><th>可评估/全部</th><th>1R前止损</th><th>1R</th><th>1R用时</th><th>2R</th><th>3R</th><th>MFE中位</th><th>MAE中位</th><th>最大回撤中位</th></tr></thead><tbody>${(groups||[]).map(row=>`<tr><td>${esc(labeler(row.group))}</td><td>${row.evaluable_events||0}/${row.events||0}</td><td>${backtestLifecycleRate(row.invalid_confirmed_before_1r_rate)}</td><td>${backtestLifecycleRate(row.hit_1r_rate)}</td><td>${row.avg_hit_1r_days==null?"—":`${Number(row.avg_hit_1r_days).toFixed(1)}日`}</td><td>${backtestLifecycleRate(row.hit_2r_rate)}</td><td>${backtestLifecycleRate(row.hit_3r_rate)}</td><td>${backtestLifecycleR(row.median_mfe_r)}</td><td>${backtestLifecycleR(row.median_mae_r)}</td><td>${backtestLifecycleR(row.median_max_peak_giveback_r)}</td></tr>`).join("")||"<tr><td colspan='10' class='muted'>当前范围没有生命周期样本</td></tr>"}</tbody>`;
+}
+function renderBacktestLifecycle(){
+  const evaluation=backtestContext.lifecycle_evaluation||{}, windows=evaluation.sample_windows||[], window=windows.find(row=>row.id===backtestSampleWindow)||windows[0];
+  if(!window){$("backtest-lifecycle-note").textContent="该历史数据包尚未包含生命周期统计";["backtest-lifecycle-summary","backtest-lifecycle-setup-table","backtest-lifecycle-grade-table","backtest-lifecycle-maturity-table","backtest-lifecycle-table"].forEach(id=>$(id).innerHTML="");return;}
+  const summary=window.summary||{}, rows=window.events||[];
+  $("backtest-lifecycle-note").textContent=`${window.label} · 全部 ${summary.events||0} 条 · 可评估 ${summary.evaluable_events||0} 条 · 数据不足 ${summary.data_insufficient||0} 条`;
+  $("backtest-lifecycle-summary").innerHTML=[["可评估",summary.evaluable_events||0],["止损触碰",backtestLifecycleRate(summary.invalid_touched_rate)],["止损确认",backtestLifecycleRate(summary.invalid_confirmed_rate)],["1R前止损确认",backtestLifecycleRate(summary.invalid_confirmed_before_1r_rate)],["达到1R",backtestLifecycleRate(summary.hit_1r_rate)],["达到2R",backtestLifecycleRate(summary.hit_2r_rate)],["达到3R",backtestLifecycleRate(summary.hit_3r_rate)],["MFE中位",backtestLifecycleR(summary.median_mfe_r)],["MAE中位",backtestLifecycleR(summary.median_mae_r)],["最大回撤中位",backtestLifecycleR(summary.median_max_peak_giveback_r)],["初始风险中位",summary.median_initial_risk_pct==null?"—":`${Number(summary.median_initial_risk_pct).toFixed(2)}%`],["同日歧义",`${summary.ambiguous||0}条`]].map(([label,value])=>`<div><span>${label}</span><b>${value}</b></div>`).join("");
+  renderBacktestLifecycleGroupTable("backtest-lifecycle-setup-table",window.setup_groups||[],backtestSetupLabel);
+  renderBacktestLifecycleGroupTable("backtest-lifecycle-grade-table",window.grade_groups||[],value=>value==="A"?"A类":value==="REGULAR"?"常规":value);
+  renderBacktestLifecycleGroupTable("backtest-lifecycle-maturity-table",window.maturity_groups||[],backtestStageLabel);
+  $("backtest-lifecycle-table").innerHTML=`<thead><tr><th>买点日</th><th>标的</th><th>买点/等级</th><th>VCP阶段</th><th>状态</th><th>观察</th><th>初始R%</th><th>止损触碰</th><th>止损确认</th><th>1R</th><th>2R</th><th>3R</th><th>MFE</th><th>MAE</th><th>最大回撤</th></tr></thead><tbody>${rows.map(row=>`<tr><td>${backtestShortDate(row.entry_date)}</td><td><b>${esc(row.name||row.code)}</b><small>${esc(row.code)}</small></td><td>${backtestSetupLabel(row.setup_family)}<small>${row.entry_grade==="A"?"A类":row.entry_grade==="REGULAR"?"常规":esc(row.entry_grade||"—")}</small></td><td>${backtestStageLabel(row.maturity_stage)}</td><td>${backtestLifecycleStatus(row.lifecycle_status)}</td><td>T+${Number(row.age_trade_days||0)}</td><td>${row.initial_risk_pct==null?"—":`${Number(row.initial_risk_pct).toFixed(2)}%`}</td><td>${backtestShortDate(row.invalid_touch_date)}</td><td>${backtestShortDate(row.invalid_close_date)}</td><td>${backtestLifecycleHit(row,1)}</td><td>${backtestLifecycleHit(row,2)}</td><td>${backtestLifecycleHit(row,3)}</td><td>${backtestLifecycleR(row.mfe_r)}</td><td>${backtestLifecycleR(row.mae_r)}</td><td>${backtestLifecycleR(row.max_peak_giveback_r)}</td></tr>`).join("")||"<tr><td colspan='15' class='muted'>当前范围没有生命周期样本</td></tr>"}</tbody>`;
+}
 function renderBacktest() {
   const window=backtestWindow(), summary=window.summary||{}, rows=window.events||[];
   const filtered = backtestFilter === "ALL" ? rows : rows.filter((row) => row.setup_family === backtestFilter), profile=backtestProfile(window);
@@ -331,6 +349,7 @@ function renderBacktest() {
   renderBacktestGroupTable("backtest-maturity-table", profile.maturity_groups);
   $("backtest-profile-note").textContent=`当前基准：${window.label} · ${profileLabel} · ${profile.events||0} 条成熟样本 · ${sampleSpan}`;
   renderBacktestStructures();
+  renderBacktestLifecycle();
   renderBacktestConditions(profile, window);
 }
 

@@ -22,6 +22,16 @@ from scripts.dashboard_index import update_dashboard_module
 from scripts.capital_observer import CONFIG as CAPITAL_CONFIG, classify_stock_capital
 from scripts.data.capital_data_store import DB_PATH as CAPITAL_DB
 from scripts.plan_realization import plan_hit_grade, realized_plan_event, structure_anchor
+from scripts.data.strategy_data_store import (
+    connect as connect_strategy_db,
+    load_buy_point_events,
+    load_document as load_strategy_document,
+    load_vcp_selection_events,
+    buy_event_id,
+    lifecycle_latest,
+    replace_lifecycle_rows,
+    save_buy_point_events,
+)
 
 
 ROOT = Path(PROJECT_ROOT)
@@ -51,6 +61,14 @@ CAPITAL_OBSERVATION_START = str(CONDITION_CONFIG["capital_observation_start_date
 CAPITAL_LOOKBACK = int(CONDITION_CONFIG["capital_lookback_trade_days"])
 SAMPLE_THRESHOLDS = CONDITION_CONFIG["sample_thresholds"]
 CONDITIONS = CONDITION_CONFIG["conditions"]
+STRUCTURE_CONFIG = CONFIG["structure_evaluation"]
+STRUCTURE_ACTIVE_STATUSES = tuple(STRUCTURE_CONFIG["active_statuses"])
+STRUCTURE_DEFAULT_SAMPLE_WINDOW = str(STRUCTURE_CONFIG["default_sample_window"])
+STRUCTURE_SAMPLE_WINDOWS = STRUCTURE_CONFIG["sample_windows"]
+STRUCTURE_DEFAULT_SAMPLE_WINDOW_LABEL = next(
+    window["label"] for window in STRUCTURE_SAMPLE_WINDOWS if window["id"] == STRUCTURE_DEFAULT_SAMPLE_WINDOW
+)
+LIFECYCLE_MAX_DAYS = int(CONFIG.get("lifecycle", {}).get("max_trade_days", 40))
 _CORPORATE_ACTION_SOURCE = None
 
 
@@ -86,6 +104,18 @@ def safe_float(value) -> float | None:
 
 
 def quant_rows(date_value: str) -> tuple[dict, dict[str, dict]]:
+    trade_date = iso_date(date_value)
+    payload = None
+    if Path(QUANT_DIR).resolve() == (ROOT / "cache" / "quant_runs").resolve():
+        with connect_strategy_db() as strategy_conn:
+            payload = load_strategy_document(strategy_conn, "quant", trade_date)
+    if payload is not None:
+        rows = {
+            str(row.get("code") or "").zfill(6): row
+            for row in payload.get("results", [])
+            if str(row.get("code") or "").strip("0")
+        }
+        return payload, rows
     path = QUANT_DIR / f"quant_{date_value}.json"
     if not path.exists():
         return {}, {}
@@ -108,9 +138,14 @@ def discover_events(report_date_yy: str, calendar: list[str]) -> list[dict]:
         entry_date = valid_dates[index + 1]
         plan_stamp = date_yy(plan_date)
         plan_path = PLAN_DIR / f"signal_plan_{plan_stamp}.json"
-        if not plan_path.exists():
+        plan_payload = None
+        if Path(PLAN_DIR).resolve() == (ROOT / "signal_plan").resolve():
+            with connect_strategy_db() as strategy_conn:
+                plan_payload = load_strategy_document(strategy_conn, "signal_plan", plan_date)
+        if plan_payload is None and not plan_path.exists():
             continue
-        plan_payload = load_json(plan_path)
+        if plan_payload is None:
+            plan_payload = load_json(plan_path)
         source_payload, source_rows = quant_rows(plan_stamp)
         entry_payload, entry_rows = quant_rows(date_yy(entry_date))
         if not entry_rows:
@@ -162,6 +197,19 @@ def load_bars(conn: sqlite3.Connection, codes: list[str], start_date: str, end_d
     for code, trade_date, close in rows:
         result.setdefault(code, {})[trade_date] = float(close)
     return result
+
+
+def load_ohlc_bars(conn: sqlite3.Connection, code: str, start_date: str, end_date: str) -> dict[str, dict]:
+    rows = conn.execute(
+        """SELECT trade_date,open,high,low,close FROM daily_bars
+           WHERE code=? AND trade_date BETWEEN ? AND ? ORDER BY trade_date""",
+        (code, start_date, end_date),
+    ).fetchall()
+    return {
+        row[0]: {"open": safe_float(row[1]), "high": safe_float(row[2]),
+                 "low": safe_float(row[3]), "close": safe_float(row[4])}
+        for row in rows
+    }
 
 
 def load_corporate_actions(code: str, through_date: str | None = None) -> list[dict]:
@@ -224,6 +272,228 @@ def holding_period_value(entry_date: str, target_date: str, target_close: float,
         shares += old_shares * (bonus + rights) / 10.0
         applied.append(action)
     return shares * target_close + cash, applied
+
+
+def update_lifecycle(events: list[dict], report_date_yy: str) -> list[dict]:
+    """Persist objective T+1 price paths for every realized buy-point event."""
+    report_date = iso_date(report_date_yy)
+    market = sqlite3.connect(MARKET_DB)
+    try:
+        calendar = trading_calendar(market, report_date)
+        indexes = {value: index for index, value in enumerate(calendar)}
+        with connect_strategy_db() as strategy_conn:
+            for event in events:
+                entry_date = str(event.get("entry_date") or event.get("signal_date") or "")
+                if entry_date not in indexes or indexes[entry_date] >= indexes.get(report_date, -1):
+                    continue
+                event_meta = {
+                    "setup_family": event.get("setup_family") or "NONE",
+                    "entry_grade": event.get("entry_grade") or "NONE",
+                    "maturity_stage": event.get("maturity_stage") or "NONE",
+                    "entry_action": event.get("entry_action") or "",
+                    "structure_anchor": event.get("structure_anchor") or "",
+                    "sample_age_days": indexes[report_date] - indexes[entry_date],
+                }
+                end_index = min(indexes[report_date], indexes[entry_date] + LIFECYCLE_MAX_DAYS)
+                end_date = calendar[end_index]
+                bars = load_ohlc_bars(market, event["code"], entry_date, end_date)
+                entry = bars.get(entry_date, {})
+                entry_price = safe_float(event.get("signal_close_snapshot")) or entry.get("close")
+                invalid = safe_float(event.get("invalid_price"))
+                if not entry_price or invalid is None or entry_price <= invalid:
+                    first_observation_index = min(indexes[entry_date] + 1, indexes[report_date])
+                    unavailable = {
+                        "event_id": buy_event_id(event), "code": event["code"], "name": event.get("name"),
+                        "entry_date": entry_date, "trade_date": calendar[first_observation_index],
+                        "age_trade_days": first_observation_index - indexes[entry_date],
+                        "reference_entry_price": entry_price, "initial_invalid_price": invalid,
+                        "lifecycle_status": "DATA_INSUFFICIENT",
+                        "data_issue": "missing_or_invalid_initial_risk",
+                        **event_meta,
+                    }
+                    replace_lifecycle_rows(strategy_conn, buy_event_id(event), [unavailable])
+                    continue
+                risk = entry_price - invalid
+                actions = load_corporate_actions(event["code"], report_date)
+                peak = entry_price
+                trough = entry_price
+                hits = {1: False, 2: False, 3: False}
+                first_hits = {1: None, 2: None, 3: None}
+                invalid_touch_date = None
+                invalid_close_date = None
+                ambiguous_date = None
+                max_peak_giveback_r = 0.0
+                rows = []
+                for current_index in range(indexes[entry_date] + 1, end_index + 1):
+                    current_date = calendar[current_index]
+                    bar = bars.get(current_date)
+                    if not bar or any(bar.get(field) is None for field in ("open", "high", "low", "close")):
+                        continue
+                    adjusted = {
+                        field: holding_period_value(entry_date, current_date, bar[field], actions)[0]
+                        for field in ("open", "high", "low", "close")
+                    }
+                    peak = max(peak, adjusted["high"])
+                    trough = min(trough, adjusted["low"])
+                    touched = adjusted["low"] <= invalid
+                    confirmed = adjusted["close"] <= invalid
+                    if touched and invalid_touch_date is None:
+                        invalid_touch_date = current_date
+                    if confirmed and invalid_close_date is None:
+                        invalid_close_date = current_date
+                    same_day_new_hits = []
+                    for multiple in hits:
+                        if adjusted["high"] >= entry_price + risk * multiple:
+                            if not hits[multiple]:
+                                same_day_new_hits.append(multiple)
+                                hits[multiple] = True
+                                first_hits[multiple] = current_date
+                    ambiguous = touched and bool(same_day_new_hits)
+                    if ambiguous and ambiguous_date is None:
+                        ambiguous_date = current_date
+                    age = current_index - indexes[entry_date]
+                    current_peak_giveback_r = (peak - adjusted["close"]) / risk
+                    max_peak_giveback_r = max(max_peak_giveback_r, current_peak_giveback_r)
+                    status = (
+                        "AMBIGUOUS" if ambiguous else
+                        "INVALID_CONFIRMED" if confirmed else
+                        "TIMEOUT" if age >= LIFECYCLE_MAX_DAYS else
+                        "INVALID_TOUCHED" if invalid_touch_date is not None else
+                        "OPEN"
+                    )
+                    mfe = (peak / entry_price - 1) * 100
+                    mae = (trough / entry_price - 1) * 100
+                    row = {
+                        "event_id": buy_event_id(event), "code": event["code"], "name": event.get("name"),
+                        "entry_date": entry_date, "trade_date": current_date, "age_trade_days": age,
+                        **{field: round(adjusted[field], 4) for field in adjusted},
+                        "reference_entry_price": entry_price, "initial_invalid_price": invalid,
+                        "initial_risk": risk,
+                        "initial_risk_pct": round(risk / entry_price * 100, 3),
+                        "current_return_pct": round((adjusted["close"] / entry_price - 1) * 100, 3),
+                        "current_r": round((adjusted["close"] - entry_price) / risk, 3),
+                        "mfe_pct": round(mfe, 3), "mfe_r": round((peak - entry_price) / risk, 3),
+                        "mae_pct": round(mae, 3), "mae_r": round((trough - entry_price) / risk, 3),
+                        "hit_1r": hits[1], "hit_2r": hits[2], "hit_3r": hits[3],
+                        "hit_1r_date": first_hits[1], "hit_2r_date": first_hits[2], "hit_3r_date": first_hits[3],
+                        "hit_1r_days": indexes[first_hits[1]] - indexes[entry_date] if first_hits[1] else None,
+                        "hit_2r_days": indexes[first_hits[2]] - indexes[entry_date] if first_hits[2] else None,
+                        "hit_3r_days": indexes[first_hits[3]] - indexes[entry_date] if first_hits[3] else None,
+                        "invalid_touched": invalid_touch_date is not None,
+                        "invalid_touch_date": invalid_touch_date,
+                        "invalid_confirmed": invalid_close_date is not None,
+                        "invalid_close_date": invalid_close_date,
+                        "invalid_touched_before_1r": bool(
+                            invalid_touch_date and (first_hits[1] is None or invalid_touch_date < first_hits[1])
+                        ),
+                        "invalid_confirmed_before_1r": bool(
+                            invalid_close_date and (first_hits[1] is None or invalid_close_date < first_hits[1])
+                        ),
+                        "ambiguous": ambiguous_date is not None,
+                        "ambiguous_date": ambiguous_date,
+                        "peak_giveback_r": round(current_peak_giveback_r, 3),
+                        "max_peak_giveback_r": round(max_peak_giveback_r, 3),
+                        "lifecycle_status": status,
+                        **event_meta,
+                    }
+                    rows.append(row)
+                    if confirmed:
+                        break
+                replace_lifecycle_rows(strategy_conn, buy_event_id(event), rows)
+            return lifecycle_latest(strategy_conn, report_date)
+    finally:
+        market.close()
+
+
+def lifecycle_summary(rows: list[dict]) -> dict:
+    return lifecycle_metrics(rows)
+
+
+def lifecycle_metrics(rows: list[dict]) -> dict:
+    count = len(rows)
+    evaluable = [row for row in rows if row.get("lifecycle_status") != "DATA_INSUFFICIENT"]
+    denominator = len(evaluable)
+
+    def count_true(field: str) -> int:
+        return sum(bool(row.get(field)) for row in evaluable)
+
+    def rate(field: str) -> float | None:
+        return round(count_true(field) / denominator * 100, 1) if denominator else None
+
+    def average(field: str, source: list[dict] | None = None) -> float | None:
+        values = [safe_float(row.get(field)) for row in (evaluable if source is None else source)]
+        available = [value for value in values if value is not None]
+        return round(statistics.fmean(available), 3) if available else None
+
+    def median(field: str) -> float | None:
+        values = [safe_float(row.get(field)) for row in evaluable]
+        available = [value for value in values if value is not None]
+        return round(statistics.median(available), 3) if available else None
+
+    return {
+        "events": count,
+        "evaluable_events": denominator,
+        "data_insufficient": count - denominator,
+        "open": sum(
+            not row.get("invalid_confirmed") and row.get("lifecycle_status") != "TIMEOUT"
+            for row in evaluable
+        ),
+        "timeout": sum(row.get("lifecycle_status") == "TIMEOUT" for row in evaluable),
+        "invalid_touched": count_true("invalid_touched"),
+        "invalid_touched_rate": rate("invalid_touched"),
+        "invalid_confirmed": count_true("invalid_confirmed"),
+        "invalid_confirmed_rate": rate("invalid_confirmed"),
+        "invalid_touched_before_1r": count_true("invalid_touched_before_1r"),
+        "invalid_touched_before_1r_rate": rate("invalid_touched_before_1r"),
+        "invalid_confirmed_before_1r": count_true("invalid_confirmed_before_1r"),
+        "invalid_confirmed_before_1r_rate": rate("invalid_confirmed_before_1r"),
+        "ambiguous": count_true("ambiguous"),
+        "ambiguous_rate": rate("ambiguous"),
+        "hit_1r": count_true("hit_1r"),
+        "hit_2r": count_true("hit_2r"),
+        "hit_3r": count_true("hit_3r"),
+        "hit_1r_rate": rate("hit_1r"),
+        "hit_2r_rate": rate("hit_2r"),
+        "hit_3r_rate": rate("hit_3r"),
+        "avg_hit_1r_days": average("hit_1r_days", [row for row in evaluable if row.get("hit_1r")]),
+        "avg_hit_2r_days": average("hit_2r_days", [row for row in evaluable if row.get("hit_2r")]),
+        "avg_hit_3r_days": average("hit_3r_days", [row for row in evaluable if row.get("hit_3r")]),
+        "avg_mfe_r": average("mfe_r"),
+        "avg_mae_r": average("mae_r"),
+        "avg_max_peak_giveback_r": average("max_peak_giveback_r"),
+        "median_mfe_r": median("mfe_r"),
+        "median_mae_r": median("mae_r"),
+        "median_max_peak_giveback_r": median("max_peak_giveback_r"),
+        "median_initial_risk_pct": median("initial_risk_pct"),
+    }
+
+
+def lifecycle_grouped_metrics(rows: list[dict], field: str) -> list[dict]:
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        groups.setdefault(str(row.get(field) or "NONE"), []).append(row)
+    return [
+        {"group": group, **lifecycle_metrics(items)}
+        for group, items in sorted(groups.items(), key=lambda item: (-len(item[1]), item[0]))
+    ]
+
+
+def build_lifecycle_sample_window(rows: list[dict], window: dict) -> dict:
+    max_age = window.get("max_age_trade_days")
+    selected = rows if max_age is None else [
+        row for row in rows if int(row.get("sample_age_days") or 0) <= int(max_age)
+    ]
+    selected = sorted(selected, key=lambda row: (row.get("entry_date") or "", row.get("code") or ""), reverse=True)
+    return {
+        "id": window["id"],
+        "label": window["label"],
+        "max_age_trade_days": max_age,
+        "summary": lifecycle_metrics(selected),
+        "setup_groups": lifecycle_grouped_metrics(selected, "setup_family"),
+        "grade_groups": lifecycle_grouped_metrics(selected, "entry_grade"),
+        "maturity_groups": lifecycle_grouped_metrics(selected, "maturity_stage"),
+        "events": selected,
+    }
 
 
 def price_on_or_before(prices: dict[str, float], target: str, not_before: str) -> float | None:
@@ -475,6 +745,62 @@ def add_performance(events: list[dict], report_date_yy: str) -> list[dict]:
         conn.close()
 
 
+def add_structure_performance(events: list[dict], report_date_yy: str) -> list[dict]:
+    """Add fixed-horizon returns to first appearances in the displayed VCP list."""
+    report_date = iso_date(report_date_yy)
+    conn = sqlite3.connect(MARKET_DB)
+    try:
+        calendar = trading_calendar(conn, report_date)
+        index = {value: idx for idx, value in enumerate(calendar)}
+        eligible = [event for event in events if event["selection_date"] in index and report_date in index]
+        if not eligible:
+            return []
+        start_date = min(event["selection_date"] for event in eligible)
+        codes = sorted({event["code"] for event in eligible})
+        bars = load_bars(conn, codes, start_date, report_date)
+        mature_codes = sorted({
+            event["code"] for event in eligible
+            if index[report_date] - index[event["selection_date"]] >= WINDOW_MIN
+        })
+        action_map = {code: load_corporate_actions(code, report_date) for code in mature_codes}
+        result = []
+        for event in eligible:
+            selection_date = event["selection_date"]
+            age = index[report_date] - index[selection_date]
+            prices = bars.get(event["code"], {})
+            selection_close = prices.get(selection_date)
+            if selection_close is None:
+                selection_close = safe_float(event.get("selection_close_snapshot"))
+            actions = action_map.get(event["code"], [])
+            performance = {}
+            for horizon in HORIZONS:
+                value = None
+                if selection_close and age >= horizon:
+                    target = calendar[index[selection_date] + horizon]
+                    target_close = price_on_or_before(prices, target, selection_date)
+                    if target_close is not None:
+                        target_value, _ = holding_period_value(selection_date, target, target_close, actions)
+                        value = round((target_value / selection_close - 1) * 100, 3)
+                performance[f"return_{horizon}d"] = value
+            observation_end_date = calendar[min(index[report_date], index[selection_date] + WINDOW_MAX)]
+            applied_actions = [
+                action for action in actions
+                if selection_date < str(action.get("date") or "") <= observation_end_date
+            ]
+            result.append({
+                **event,
+                "age_days": age,
+                "selection_close": round(selection_close, 3) if selection_close is not None else None,
+                "observation_end_date": observation_end_date,
+                "return_basis": "holding_period_total_return",
+                "corporate_actions": applied_actions,
+                **performance,
+            })
+        return sorted(result, key=lambda item: (item["selection_date"], item["code"]), reverse=True)
+    finally:
+        conn.close()
+
+
 def horizon_stats(rows: list[dict]) -> dict:
     result = {}
     for horizon in HORIZONS:
@@ -616,13 +942,47 @@ def build_sample_window(rows: list[dict], window: dict) -> dict:
     }
 
 
+def build_structure_sample_window(rows: list[dict], window: dict) -> dict:
+    max_age = window.get("max_age_trade_days")
+    selected = rows if max_age is None else [row for row in rows if int(row["age_days"]) <= int(max_age)]
+    mature = [row for row in selected if int(row["age_days"]) >= WINDOW_MIN]
+    dates = sorted(row["selection_date"] for row in selected)
+    return {
+        "id": window["id"],
+        "label": window["label"],
+        "max_age_trade_days": max_age,
+        "events": selected,
+        "summary": {
+            "events": len(selected),
+            "mature_events": len(mature),
+            "pending_events": len(selected) - len(mature),
+            "sample_start_date": dates[0] if dates else None,
+            "sample_end_date": dates[-1] if dates else None,
+            "horizons": horizon_stats(selected),
+        },
+        "stage_groups": grouped_stats(selected, "initial_stage"),
+        "status_groups": grouped_stats(selected, "initial_bloom_status"),
+    }
+
+
 def build_context(report_date_yy: str) -> dict:
     conn = sqlite3.connect(MARKET_DB)
     try:
         calendar = trading_calendar(conn, iso_date(report_date_yy))
     finally:
         conn.close()
-    analysis_events = add_performance(discover_events(report_date_yy, calendar), report_date_yy)
+    discovered = discover_events(report_date_yy, calendar)
+    with connect_strategy_db() as strategy_conn:
+        save_buy_point_events(strategy_conn, discovered)
+        persisted = load_buy_point_events(strategy_conn, iso_date(report_date_yy))
+        structure_selections = load_vcp_selection_events(
+            strategy_conn, iso_date(report_date_yy), set(calendar), STRUCTURE_ACTIVE_STATUSES
+        )
+    lifecycle_rows = update_lifecycle(persisted, report_date_yy)
+    lifecycle_windows = [build_lifecycle_sample_window(lifecycle_rows, window) for window in SAMPLE_WINDOWS]
+    analysis_events = add_performance(persisted, report_date_yy)
+    structure_events = add_structure_performance(structure_selections, report_date_yy)
+    structure_windows = [build_structure_sample_window(structure_events, window) for window in STRUCTURE_SAMPLE_WINDOWS]
     sample_windows = [build_sample_window(analysis_events, window) for window in SAMPLE_WINDOWS]
     default_window = next(window for window in sample_windows if window["id"] == DEFAULT_SAMPLE_WINDOW)
     events = default_window["events"]
@@ -659,6 +1019,21 @@ def build_context(report_date_yy: str) -> dict:
             "events": len(analysis_events),
             "horizons": horizon_stats(analysis_events),
         },
+        "structure_evaluation": {
+            "event_definition": "first_displayed_vcp_list_appearance_per_code_and_structure_anchor",
+            "source": STRUCTURE_CONFIG["source"],
+            "active_statuses": list(STRUCTURE_ACTIVE_STATUSES),
+            "default_sample_window": STRUCTURE_DEFAULT_SAMPLE_WINDOW,
+            "all_events": len(structure_events),
+            "sample_windows": structure_windows,
+        },
+        "lifecycle_summary": lifecycle_summary(lifecycle_rows),
+        "lifecycle_events": lifecycle_rows,
+        "lifecycle_evaluation": {
+            "default_sample_window": DEFAULT_SAMPLE_WINDOW,
+            "max_trade_days": LIFECYCLE_MAX_DAYS,
+            "sample_windows": lifecycle_windows,
+        },
         "events": events,
         "sample_windows": sample_windows,
         "setup_profiles": profiles,
@@ -679,11 +1054,29 @@ def update_dashboard_index() -> None:
 def render_markdown(context: dict) -> str:
     main_labels = {"INFLOW": "流入", "BALANCED": "平衡", "OUTFLOW": "流出", "INSUFFICIENT": "数据不足"}
     margin_labels = {"LEVERAGING": "加杠杆", "STABLE": "稳定", "DELEVERAGING": "去杠杆", "NOT_APPLICABLE": "不适用", "INSUFFICIENT": "数据不足"}
+    structure_windows = context.get("structure_evaluation", {}).get("sample_windows", [])
+    structure_window = next((row for row in structure_windows if row.get("id") == STRUCTURE_DEFAULT_SAMPLE_WINDOW), {})
+    structure_summary = structure_window.get("summary", {})
     lines = [
-        f"# 实际买点回测｜{context['meta']['report_date']}", "",
+        f"# VCP结构与实际买点回测｜{context['meta']['report_date']}", "",
+        "## VCP结构入选表现", "",
+        f"成立范围：{STRUCTURE_DEFAULT_SAMPLE_WINDOW_LABEL}｜结构轮次 {structure_summary.get('events', 0)} 个｜已满5日 {structure_summary.get('mature_events', 0)} 个", "",
+        "| 首次入选 | 股票 | 入选阶段 | Bloom状态 | 结构分 | 入选价 | 年龄 | 5日 | 10日 | 20日 |", "|---|---|---|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    for row in structure_window.get("events", []):
+        value = lambda horizon: "—" if row.get(f"return_{horizon}d") is None else f"{row[f'return_{horizon}d']:.2f}%"
+        close = "—" if row.get("selection_close") is None else f"{row['selection_close']:.2f}"
+        lines.append(
+            f"| {row['selection_date']} | {row['name']}（{row['code']}） | {row['initial_stage']} | {row['initial_bloom_status']} | {row.get('structure_score', '—')} | {close} | {row['age_days']} | {value(5)} | {value(10)} | {value(20)} |"
+        )
+    if not structure_window.get("events"):
+        lines.append("| — | 当前范围没有VCP结构入选事件 | — | — | — | — | — | — | — | — |")
+    lines.extend([
+        "", "> 同一股票、同一结构轮次首次进入VCP页面观察列表时记一次；连续展示不重复计数。", "",
+        "## 实际买点表现", "",
         f"成立范围：{DEFAULT_SAMPLE_WINDOW_LABEL}｜收益观察：成立后 {'/'.join(map(str, HORIZONS))} 个交易日｜事件 {context['summary']['events']} 条", "",
         "| Plan日 | 成立日 | 股票 | 买点 | 等级 | 形态 | 成立价 | 年龄 | 突破时间 | 突破时涨幅 | 5日 | 10日 | 20日 | 成立时市场 | 成立时板块 | Plan日主力 | Plan日融资 |", "|---|---|---|---|---|---|---:|---:|---|---:|---:|---:|---:|---|---|---|---|",
-    ]
+    ])
     for row in context["events"]:
         value = lambda horizon: "—" if row.get(f"return_{horizon}d") is None else f"{row[f'return_{horizon}d']:.2f}%"
         breakout_value = "—" if row.get("breakout_return") is None else f"{row['breakout_return']:.2f}%"
@@ -692,7 +1085,28 @@ def render_markdown(context: dict) -> str:
         )
     if not context["events"]:
         lines.append("| — | — | 当前窗口没有已满5个交易日的实际买点事件 | — | — | — | — | — | — | — | — | — | — | — | — | — | — |")
-    lines.extend(["", "> 以买点实际成立日收盘价为基准，送转、分红和配股按持有期总回报调整；不代表真实交易收益。", ""])
+    lifecycle_windows = context.get("lifecycle_evaluation", {}).get("sample_windows", [])
+    lifecycle_window = next((row for row in lifecycle_windows if row.get("id") == DEFAULT_SAMPLE_WINDOW), {})
+    lifecycle = lifecycle_window.get("summary", {})
+    pct = lambda value: "—" if value is None else f"{value:.1f}%"
+    r_value = lambda value: "—" if value is None else f"{value:.2f}R"
+    lines.extend([
+        "", "> 以买点实际成立日收盘价为基准，送转、分红和配股按持有期总回报调整；不代表真实交易收益。", "",
+        "## 买点后生命周期", "",
+        f"成立范围：{DEFAULT_SAMPLE_WINDOW_LABEL}｜全部 {lifecycle.get('events', 0)} 条｜可评估 {lifecycle.get('evaluable_events', 0)} 条｜数据不足 {lifecycle.get('data_insufficient', 0)} 条", "",
+        f"止损确认 {pct(lifecycle.get('invalid_confirmed_rate'))}｜1R前止损确认 {pct(lifecycle.get('invalid_confirmed_before_1r_rate'))}｜达到1R/2R/3R：{pct(lifecycle.get('hit_1r_rate'))} / {pct(lifecycle.get('hit_2r_rate'))} / {pct(lifecycle.get('hit_3r_rate'))}｜MFE/MAE中位：{r_value(lifecycle.get('median_mfe_r'))} / {r_value(lifecycle.get('median_mae_r'))}", "",
+        "| 买点日 | 股票 | 买点 | 等级 | VCP阶段 | 状态 | 观察 | 初始R% | 止损确认 | 1R | 2R | 3R | MFE | MAE | 最大回撤 |",
+        "|---|---|---|---|---|---|---:|---:|---|---|---|---|---:|---:|---:|",
+    ])
+    for row in lifecycle_window.get("events", []):
+        risk_pct = "—" if row.get("initial_risk_pct") is None else f"{row['initial_risk_pct']:.2f}%"
+        hit = lambda multiple: "—" if not row.get(f"hit_{multiple}r_date") else f"{row[f'hit_{multiple}r_date']}（T+{row[f'hit_{multiple}r_days']}）"
+        lines.append(
+            f"| {row['entry_date']} | {row.get('name') or row['code']}（{row['code']}） | {row.get('setup_family', '—')} | {row.get('entry_grade', '—')} | {row.get('maturity_stage', '—')} | {row.get('lifecycle_status', '—')} | T+{row.get('age_trade_days', 0)} | {risk_pct} | {row.get('invalid_close_date') or '—'} | {hit(1)} | {hit(2)} | {hit(3)} | {r_value(row.get('mfe_r'))} | {r_value(row.get('mae_r'))} | {r_value(row.get('max_peak_giveback_r'))} |"
+        )
+    if not lifecycle_window.get("events"):
+        lines.append("| — | 当前范围没有生命周期事件 | — | — | — | — | — | — | — | — | — | — | — | — | — |")
+    lines.extend(["", "> 生命周期仅记录价格路径事实；不模拟止盈、仓位或真实委托。", ""])
     return "\n".join(lines)
 
 

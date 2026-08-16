@@ -1,0 +1,53 @@
+.backtest-lifecycle-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.backtest-lifecycle-grid article {
+  min-width: 0;
+}
+
+.backtest-lifecycle-grid h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+
+#backtest-lifecycle-setup-table,
+#backtest-lifecycle-grade-table,
+#backtest-lifecycle-maturity-table {
+  min-width: 980px;
+}
+
+#backtest-lifecycle-table {
+  min-width: 1400px;
+  margin-top: 20px;
+}
+
+#backtest-lifecycle-table th,
+#backtest-lifecycle-table td,
+#backtest-lifecycle-setup-table th,
+#backtest-lifecycle-setup-table td,
+#backtest-lifecycle-grade-table th,
+#backtest-lifecycle-grade-table td,
+#backtest-lifecycle-maturity-table th,
+#backtest-lifecycle-maturity-table td {
+  text-align: center;
+}
+
+#backtest-lifecycle-table th:nth-child(-n+2),
+#backtest-lifecycle-table td:nth-child(-n+2),
+#backtest-lifecycle-setup-table th:first-child,
+#backtest-lifecycle-setup-table td:first-child,
+#backtest-lifecycle-grade-table th:first-child,
+#backtest-lifecycle-grade-table td:first-child,
+#backtest-lifecycle-maturity-table th:first-child,
+#backtest-lifecycle-maturity-table td:first-child {
+  text-align: left;
+}
+
+#backtest-lifecycle-table td small {
+  display: block;
+  color: var(--muted);
+}

@@ -129,6 +129,107 @@ class BacktestEventTests(unittest.TestCase):
         self.assertEqual(result[0]["breakout_time"], "2026-07-04 · T+3")
         self.assertEqual(result[0]["breakout_return"], 8.333)
 
+    def test_structure_selection_returns_include_pending_and_mature_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "market.sqlite"
+            conn = sqlite3.connect(db_path)
+            conn.execute("CREATE TABLE daily_bars(code TEXT,trade_date TEXT,close REAL)")
+            calendar = [f"2026-07-{day:02d}" for day in range(1, 13)]
+            rows = []
+            for code, start in (("000001", 10), ("000002", 20)):
+                rows.extend((code, date, start + index) for index, date in enumerate(calendar))
+            conn.executemany("INSERT INTO daily_bars VALUES(?,?,?)", rows)
+            conn.commit(); conn.close()
+            events = [
+                {"event_type": "VCP_SELECTION", "selection_date": calendar[0], "signal_date": calendar[0],
+                 "code": "000001", "name": "成熟", "structure_anchor": "A",
+                 "initial_stage": "VCP_FORMING", "initial_bloom_status": "FORMING"},
+                {"event_type": "VCP_SELECTION", "selection_date": calendar[5], "signal_date": calendar[5],
+                 "code": "000002", "name": "待观察", "structure_anchor": "B",
+                 "initial_stage": "VCP_EARLY", "initial_bloom_status": "EARLY"},
+            ]
+            with patch.object(backtest, "MARKET_DB", db_path), \
+                 patch.object(backtest, "trading_calendar", return_value=calendar), \
+                 patch.object(backtest, "load_corporate_actions", return_value=[]):
+                result = backtest.add_structure_performance(events, "260708")
+
+        by_code = {row["code"]: row for row in result}
+        self.assertEqual(by_code["000001"]["return_5d"], 50.0)
+        self.assertIsNone(by_code["000001"]["return_20d"])
+        self.assertIsNone(by_code["000002"]["return_5d"])
+        window = backtest.build_structure_sample_window(result, {"id": "ALL", "label": "全部", "max_age_trade_days": None})
+        self.assertEqual(window["summary"]["events"], 2)
+        self.assertEqual(window["summary"]["mature_events"], 1)
+        self.assertEqual(window["summary"]["pending_events"], 1)
+
+    def test_structure_sample_windows_use_independent_30_90_180_day_ranges(self):
+        rows = [
+            {
+                "selection_date": f"2026-0{index + 1}-01",
+                "age_days": age,
+                "initial_stage": "VCP_FORMING" if index % 2 else "VCP_MATURE",
+                "initial_bloom_status": "FORMING",
+            }
+            for index, age in enumerate([5, 30, 31, 90, 91, 180, 181])
+        ]
+
+        windows = {
+            window["id"]: backtest.build_structure_sample_window(rows, window)
+            for window in backtest.STRUCTURE_SAMPLE_WINDOWS
+        }
+
+        self.assertEqual(backtest.STRUCTURE_DEFAULT_SAMPLE_WINDOW, "90D")
+        self.assertEqual(set(windows), {"30D", "90D", "180D", "ALL"})
+        self.assertEqual(windows["30D"]["summary"]["events"], 2)
+        self.assertEqual(windows["90D"]["summary"]["events"], 4)
+        self.assertEqual(windows["180D"]["summary"]["events"], 6)
+        self.assertEqual(windows["ALL"]["summary"]["events"], 7)
+
+    def test_lifecycle_metrics_exclude_data_insufficient_from_rates(self):
+        rows = [
+            {"lifecycle_status": "INVALID_CONFIRMED", "invalid_touched": True, "invalid_confirmed": True,
+             "invalid_touched_before_1r": True, "invalid_confirmed_before_1r": True,
+             "hit_1r": False, "hit_2r": False, "hit_3r": False, "mfe_r": 0.4, "mae_r": -1.2,
+             "max_peak_giveback_r": 1.3, "initial_risk_pct": 4.0},
+            {"lifecycle_status": "TIMEOUT", "invalid_touched": False, "invalid_confirmed": False,
+             "hit_1r": True, "hit_2r": True, "hit_3r": False, "hit_1r_days": 3, "hit_2r_days": 7,
+             "mfe_r": 2.4, "mae_r": -0.3, "max_peak_giveback_r": 1.1, "initial_risk_pct": 2.0},
+            {"lifecycle_status": "DATA_INSUFFICIENT"},
+        ]
+
+        result = backtest.lifecycle_metrics(rows)
+
+        self.assertEqual(result["events"], 3)
+        self.assertEqual(result["evaluable_events"], 2)
+        self.assertEqual(result["data_insufficient"], 1)
+        self.assertEqual(result["invalid_confirmed_rate"], 50.0)
+        self.assertEqual(result["invalid_confirmed_before_1r_rate"], 50.0)
+        self.assertEqual(result["hit_1r_rate"], 50.0)
+        self.assertEqual(result["hit_2r_rate"], 50.0)
+        self.assertEqual(result["avg_hit_1r_days"], 3.0)
+        self.assertEqual(result["avg_mfe_r"], 1.4)
+        self.assertEqual(result["avg_mae_r"], -0.75)
+        self.assertEqual(result["median_mfe_r"], 1.4)
+        self.assertEqual(result["median_initial_risk_pct"], 3.0)
+
+    def test_lifecycle_window_filters_by_report_age_and_builds_groups(self):
+        rows = [
+            {"entry_date": "2026-08-01", "code": "000001", "sample_age_days": 10,
+             "setup_family": "BREAKOUT", "entry_grade": "A", "maturity_stage": "VCP_TIGHT",
+             "lifecycle_status": "OPEN", "hit_1r": True},
+            {"entry_date": "2026-06-01", "code": "000002", "sample_age_days": 31,
+             "setup_family": "PULLBACK", "entry_grade": "REGULAR", "maturity_stage": "VCP_MATURE",
+             "lifecycle_status": "INVALID_CONFIRMED", "invalid_confirmed": True},
+        ]
+
+        window = backtest.build_lifecycle_sample_window(
+            rows, {"id": "20D", "label": "近20个交易日", "max_age_trade_days": 20}
+        )
+
+        self.assertEqual(window["summary"]["events"], 1)
+        self.assertEqual(window["events"][0]["code"], "000001")
+        self.assertEqual([row["group"] for row in window["setup_groups"]], ["BREAKOUT"])
+
     def test_completed_event_keeps_frozen_returns_after_twenty_days(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "market.sqlite"

@@ -9,6 +9,54 @@
   justify-content: flex-end;
 }
 
+.backtest-structure-controls {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.backtest-structure-controls #backtest-structure-window-tabs {
+  justify-content: flex-end;
+}
+
+.backtest-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.backtest-pagination > div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.backtest-pagination button {
+  min-width: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.backtest-pagination button.active {
+  border-color: var(--accent);
+  background: #223148;
+  color: var(--accent);
+}
+
+.backtest-pagination button:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
 @media (max-width: 900px) {
   .backtest-header-side {
     align-items: stretch;
@@ -16,5 +64,19 @@
 
   .backtest-header-side #backtest-window-tabs {
     justify-content: flex-start;
+  }
+
+  .backtest-structure-controls {
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .backtest-structure-controls #backtest-structure-window-tabs {
+    justify-content: flex-start;
+  }
+
+  .backtest-pagination {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }

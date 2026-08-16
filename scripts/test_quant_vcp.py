@@ -85,6 +85,71 @@ class CloseBasedContractionTests(unittest.TestCase):
         self.assertEqual([len(cluster) for cluster in clusters], [1, 2])
         self.assertEqual(quant.contraction_group_span_days(clusters[-1]), 13)
 
+    def test_failed_breakout_reset_requires_a_cleaner_confirming_contraction(self):
+        df = make_frame([99, 100, 98, 102, 95, 90, 80, 85, 90, 95, 100, 92, 85, 88, 90, 92])
+        old = {
+            "start_idx": 0, "end_idx": 2, "start_date": "2026-01-01", "end_date": "2026-01-05",
+            "high_price": 100.0, "low_price": 95.0, "close_pullback_pct": -10.0,
+            "avg_volume": 100.0,
+        }
+        reset = {
+            "start_idx": 3, "end_idx": 6, "start_date": "2026-01-06", "end_date": "2026-01-09",
+            "high_price": 105.0, "low_price": 80.0, "close_pullback_pct": -20.0,
+            "avg_volume": 200.0,
+        }
+        confirming = {
+            "start_idx": 10, "end_idx": 12, "start_date": "2026-01-15", "end_date": "2026-01-19",
+            "high_price": 101.0, "low_price": 85.0, "close_pullback_pct": -15.0,
+            "avg_volume": 90.0,
+        }
+
+        result = quant.detect_confirmed_reset_contraction(df, [old, reset, confirming], [confirming])
+
+        self.assertEqual(result["type"], "CONFIRMED_RESET_CONTRACTION")
+        self.assertEqual(result["score"], 6)
+        self.assertEqual(result["failure_date"], str(df.iloc[4]["date"]))
+        self.assertAlmostEqual(result["confirm_volume_ratio"], 0.45)
+
+        noisy_follow = dict(confirming, avg_volume=180.0)
+        self.assertIsNone(
+            quant.detect_confirmed_reset_contraction(df, [old, reset, noisy_follow], [noisy_follow])
+        )
+
+    def test_terminal_micro_contraction_strengthens_but_does_not_join_standard_group(self):
+        closes = [100.0] * 70 + [95.0, 100.0, 97.0, 101.0, 102.0, 101.0, 101.0, 101.0, 101.0, 101.0]
+        df = make_frame(closes)
+        df["volume"] = [100.0] * 71 + [60.0] * 9
+        df = quant.calc_indicators(df)
+        group = [{
+            "start_idx": 65, "end_idx": 70, "start_date": str(df.iloc[65]["date"]),
+            "end_date": str(df.iloc[70]["date"]), "high_price": 105.0, "low_price": 94.0,
+            "close_pullback_pct": -10.0, "avg_volume": 100.0,
+        }]
+
+        result = quant.detect_terminal_micro_contraction(df, group, 105.0)
+
+        self.assertEqual(result["type"], "TERMINAL_MICRO_CONTRACTION")
+        self.assertEqual(result["start_date"], str(df.iloc[71]["date"]))
+        self.assertEqual(result["end_date"], str(df.iloc[72]["date"]))
+        self.assertEqual(result["close_pullback_pct"], -3.0)
+        self.assertEqual(len(group), 1)
+
+    def test_contraction_extension_bonus_is_added_to_structure_score(self):
+        df = quant.calc_indicators(make_frame([100.0] * 80))
+        base_structure = {
+            "state": "VCP_EARLY", "volume_pattern": "mixed", "pivot_distance": None,
+            "contraction_extension_score": 0,
+        }
+        enhanced_structure = dict(base_structure, contraction_extension_score=12)
+        overheat = {"risk_flags": [], "risk_score": 0, "hard_reject": False}
+
+        base = quant.score_setup(df, base_structure, {}, {}, overheat)
+        enhanced = quant.score_setup(df, enhanced_structure, {}, {}, overheat)
+
+        self.assertEqual(enhanced["structure_score"] - base["structure_score"], 12)
+        self.assertEqual(enhanced["components"]["contraction_extensions"], 12)
+        self.assertEqual(enhanced_structure["state"], "VCP_EARLY")
+
     def test_retest_selling_uses_board_specific_drop_threshold(self):
         df = make_frame([100, 101, 102, 101, 100, 99, 98, 82])
         df["open"] = [100, 101, 102, 101, 100, 99, 98, 100]

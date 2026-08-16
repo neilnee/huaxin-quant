@@ -1,11 +1,11 @@
 # 模型二：量价精筛模型（自执行指令）
 
 - **版本管理**: 由 Git 分支与提交历史管理，文件名不再携带版本号
-- **最近更新**: 2026-08-11（model2_quant_v16）
+- **最近更新**: 2026-08-14（model2_quant_v17）
 - **核心目标**: 在模型一基本面候选池中，寻找 VCP 蓄力结构和可交易触发，输出可复现、可回测、可供模型三/四复用的结构化量价结果。
 - **核心哲学**: 基本面先过滤烂公司，模型二只判断资金行为和价格位置。脚本负责确定性计算，LLM 只做可选解释，不参与结构阶段或交易触发判定。
 - **输入**: `pool/pool_<YYMMDD>.csv`，或命令行指定 `--code/--codes`
-- **输出**: `quant/quant_<YYMMDD>.csv` + `cache/quant_runs/quant_<YYMMDD>.json`
+- **输出**: 策略数据库中的 Quant 全量快照，以及由该快照发布的 `quant/quant_<YYMMDD>.csv` + `cache/quant_runs/quant_<YYMMDD>.json`
 - **配套脚本**: `scripts/quant_filter.py`
 - **策略配置**: `strategies/02-quant.json`
 
@@ -566,6 +566,37 @@ recovery_pct
 
 `duration_days = low_idx - high_idx + 1`，与 `avg_volume` 的取样区间一致，均包含局部高点日和局部低点日。
 
+### 1.1.1 扩展收缩类型
+
+标准 contraction 继续是结构骨架，只有标准 contraction 参与 `contraction_count`、收缩递减和
+`VCP_EARLY / VCP_FORMING / VCP_MATURE / VCP_TIGHT` 阶段判定。模型二在标准结构之外识别两类
+扩展收缩，用于评价同阶段结构的供求质量：
+
+| 类型 | 成立条件 | 用途 |
+|------|----------|------|
+| `CONFIRMED_RESET_CONTRACTION` | 一段标准收缩横跨旧结构突破失败日；其后出现新标准收缩，且后段振幅不超过重置段的 90%、段均量不超过 80%、低点不低于重置段低点、间隔不超过 25 日 | 确认剧烈洗盘后供给继续收敛，结构分 +6 |
+| `TERMINAL_MICRO_CONTRACTION` | 当前标准结构之后出现 2-5 日、至少 1.5% 且小于 4% 的短回撤；段均量不超过最近标准收缩的 85%，整体 `volume_dry_up <= 0.85`，回撤后修复至少 3%，且当前位于 Pivot 的 -15% 至 +1% | 确认末端抛压衰竭，结构分 +6 |
+
+扩展收缩必须遵守以下边界：
+
+```text
+不计入 contraction_count
+不参与标准收缩递减比较
+不改变 structure_stage
+不能使 VCP_EARLY 获得 FORMING/MATURE 的买点权限
+不能抵消风险标记、结构失效或买点硬否决
+两项可叠加，structure_score 扩展加分合计最多 12 分
+```
+
+`CONFIRMED_RESET_CONTRACTION` 只有在后续标准收缩完成确认后才成立；单独的突破失败、跌停或放量下跌
+不是正向结构。`TERMINAL_MICRO_CONTRACTION` 必须依附于当前有效标准 contraction group，不能凭普通小幅
+震荡独立建立 VCP。两类扩展段仅在当前标的已经通过趋势基础并形成有效 VCP 阶段时输出和加分；
+`NONE / TREND_WATCH / POST_BREAKOUT / TREND_REBUILD / STRUCTURE_INVALID` 均不得获得扩展分；进入任一
+`POST_BREAKOUT_*` 生命周期后不再重复计算当前扩展分，突破买点仍使用突破前一日冻结的结构分。
+
+输出保留 `contraction_extension_tags`、`contraction_extension_score` 和 `contraction_extensions`，用于逐段
+审计识别类型、时间、振幅、量能比例和确认关系。
+
 ### 1.2 收缩递减
 
 核心条件：
@@ -898,19 +929,21 @@ structure_score = stage_score
                 + volume_score
                 + trend_score
                 + position_score
+                + contraction_extension_score
 ```
 
 `structure_score` 只评价结构形态质量，分数越高，说明 VCP 越标准、越紧致、量能越健康、趋势越配合、位置越合理。它不直接决定最终买卖，模型四需结合估值、持仓和风险管理使用。
 
 ### 6.1 structure_score 评分明细
 
-`structure_score` 由四部分相加后限制在 `0~100`：
+`structure_score` 由五部分相加后限制在 `0~100`：
 
 ```text
 structure_score = stage_score
                 + volume_score
                 + trend_score
                 + position_score
+                + contraction_extension_score
 ```
 
 #### stage_score：结构阶段基础分
@@ -951,6 +984,15 @@ structure_score = stage_score
 | `distance_ma20 <= 10%` | +5 | 价格未明显远离 MA20 |
 | `pivot_distance ∈ [-8%, 0%]` | +12 | 价格接近 pivot 下方，高质量观察区 |
 | `pivot_distance ∈ [-15%, 0%]` | +6 | 距 pivot 尚可，仍可观察 |
+
+#### contraction_extension_score：扩展收缩评分
+
+| 条件 | 分数 | 含义 |
+|------|------|------|
+| `CONFIRMED_RESET_CONTRACTION` | +6 | 重置段已被后一轮量价收敛确认 |
+| `TERMINAL_MICRO_CONTRACTION` | +6 | 标准结构末端出现缩量微收缩并完成修复 |
+
+两项最多各计一次，合计上限 12 分。该项只增强现有结构质量，不改变正式收缩轮数、结构阶段和买点硬条件。
 
 ### 6.2 structure_risk_score 风险评分
 
@@ -1034,6 +1076,9 @@ breakout_level
 contraction_count
 contraction_pcts
 contraction_days
+contraction_extension_tags
+contraction_extension_score
+contraction_extensions
 volume_pattern
 pivot_price
 structure_pivot
@@ -1116,6 +1161,8 @@ setup_plan_inputs.retest:
 | 多股 | `quant/multi_<YYMMDD>.csv` | `cache/quant_runs/multi_<YYMMDD>.json` |
 
 只有全量模式允许覆盖 `cache/quant_runs/quant_<YYMMDD>.json`。测试、单股、多股模式不得覆盖全量 JSON，避免 Bloom 消费到测试结果。
+
+全量模式必须先把完整 `results` 写入 `cache/strategy/strategy_data.sqlite`，再从已提交的数据发布 CSV 和 JSON。数据库写入不改变筛选、评分、排序或 LLM 输入；文件仅作为兼容输出。存储与迁移规则见 `instructions/strategy-data.md`。
 
 单股模式必须打印终端摘要，并同样写入 JSON。
 

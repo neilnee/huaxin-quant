@@ -402,6 +402,10 @@ for each stock in quant_output where structure_stage in {VCP_MATURE, VCP_TIGHT}:
 - [x] 模型二当前 VCP 组收缩扩张重置逻辑优化
 - [x] Bloom 信号层 v2（BREAKOUT_BUY 补全 + 状态字段扩展 + LLM 逐只请求）
 - [x] Bloom LLM 解读门槛：仅对结构评分不低于70分的重点观察标的调用，低分标的保留规则文本且不改变信号与生命周期
+- [x] 每日 AI 研读数据包：独立脚本按指定日期汇总市场趋势、盘面热点、当前板块排名、板块资金、VCP结构和信号为单一确定性JSON，不调用LLM
+- [x] AI 日报语义安全修复：交易支撑/失效价格按突破、回踩、回测方案分组并标明当前方案；市场 LLM 文字增加宽基 MA20/MA60 结构化事实冲突告警，不改策略或原文
+- [x] AI 日报协议健壮性：VCP板块机器字段严格类型化，信号与结构增加稳定关联标识，Bloom来源/页面状态计数明确互斥口径，并补齐主要决策枚举字典
+- [x] AI 日报协议冻结收尾：升级至 v1.1，按路径声明信号/Plan/VCP绝对成交量均以手计并明确100股/手，增加 LLM 原文可用性标记及交易价格 canonical 层声明
 - [x] Bloom 突破后状态映射修复（`structure_stage=NONE` 时优先消费 `post_breakout_state`，避免误兜底为 `FORMING`）
 - [x] 重点观察智能过滤（结构分门槛）与排序规则（买点优先 + 结构强弱）
 - [x] 交易策略参考文档（instructions/trading-strategy.md）

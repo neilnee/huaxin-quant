@@ -43,6 +43,7 @@ RUNTIME_DIRS = [
     "capital",
     "backtest",
     "reports/valuation",
+    "reports/ai_daily",
     "reports/indexes",
     "reports/archive/valuation",
     "position/trades",

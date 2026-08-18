@@ -1,4 +1,5 @@
 import json
+import inspect
 import sys
 import tempfile
 import unittest
@@ -27,6 +28,7 @@ class DailyCapitalWorkflowTests(unittest.TestCase):
             month / "vcp_context_260810.js",
             month / "signals_context_260810.js",
             month / "backtest_context_260810.js",
+            root / "reports" / "ai_daily" / "202608" / "huaxin_quant_ai_report_260810.json",
         ]
         for path in required:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -54,6 +56,13 @@ class DailyCapitalWorkflowTests(unittest.TestCase):
         }
         (root / "market" / "data" / "market_context_260810.json").write_text(
             json.dumps(market_context), encoding="utf-8"
+        )
+        ai_report = {
+            "schema_version": "huaxin_ai_daily_v1.1",
+            "report_date": "2026-08-10",
+        }
+        (root / "reports" / "ai_daily" / "202608" / "huaxin_quant_ai_report_260810.json").write_text(
+            json.dumps(ai_report), encoding="utf-8"
         )
         signals = {
             "meta": {"capital_fetch_enabled": signal_fetch_enabled},
@@ -92,6 +101,21 @@ class DailyCapitalWorkflowTests(unittest.TestCase):
             ],
         )
 
+    def test_ai_daily_report_runs_as_date_scoped_deterministic_step(self):
+        with patch.object(daily.subprocess, "run") as run:
+            run.return_value.returncode = 0
+            daily.run_ai_daily_report(self.DATE)
+        self.assertEqual(
+            run.call_args.args[0],
+            [sys.executable, "scripts/daily_ai_report.py", "--date", self.DATE],
+        )
+
+    def test_ai_daily_report_is_after_dashboard_and_before_verification(self):
+        source = inspect.getsource(daily.main)
+
+        self.assertLess(source.index("run_dashboard_publish(date_yy)"), source.index("run_ai_daily_report(date_yy)"))
+        self.assertLess(source.index("run_ai_daily_report(date_yy)"), source.index("verify_pipeline_outputs(date_yy)"))
+
     def test_verify_requires_full_and_signal_capital_outputs(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -107,6 +131,23 @@ class DailyCapitalWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._build_complete_outputs(root, signal_fetch_enabled=False)
+            with patch.object(daily, "PROJECT_ROOT", str(root)):
+                self.assertFalse(daily.verify_pipeline_outputs(self.DATE))
+
+    def test_verify_rejects_missing_or_wrong_ai_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._build_complete_outputs(root)
+            report_path = root / "reports" / "ai_daily" / "202608" / "huaxin_quant_ai_report_260810.json"
+            report_path.unlink()
+            with patch.object(daily, "PROJECT_ROOT", str(root)):
+                self.assertFalse(daily.verify_pipeline_outputs(self.DATE))
+
+            self._build_complete_outputs(root)
+            report_path.write_text(
+                json.dumps({"schema_version": "huaxin_ai_daily_v1", "report_date": "2026-08-10"}),
+                encoding="utf-8",
+            )
             with patch.object(daily, "PROJECT_ROOT", str(root)):
                 self.assertFalse(daily.verify_pipeline_outputs(self.DATE))
 

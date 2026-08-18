@@ -406,6 +406,7 @@ for each stock in quant_output where structure_stage in {VCP_MATURE, VCP_TIGHT}:
 - [x] AI 日报语义安全修复：交易支撑/失效价格按突破、回踩、回测方案分组并标明当前方案；市场 LLM 文字增加宽基 MA20/MA60 结构化事实冲突告警，不改策略或原文
 - [x] AI 日报协议健壮性：VCP板块机器字段严格类型化，信号与结构增加稳定关联标识，Bloom来源/页面状态计数明确互斥口径，并补齐主要决策枚举字典
 - [x] AI 日报协议冻结收尾：升级至 v1.1，按路径声明信号/Plan/VCP绝对成交量均以手计并明确100股/手，增加 LLM 原文可用性标记及交易价格 canonical 层声明
+- [x] AI 日报接入每日工作流：四类Dashboard分析数据全部发布后确定性生成月目录报告，作为阻断型必需产物纳入随后完整性核验与进度监控
 - [x] Bloom 突破后状态映射修复（`structure_stage=NONE` 时优先消费 `post_breakout_state`，避免误兜底为 `FORMING`）
 - [x] 重点观察智能过滤（结构分门槛）与排序规则（买点优先 + 结构强弱）
 - [x] 交易策略参考文档（instructions/trading-strategy.md）

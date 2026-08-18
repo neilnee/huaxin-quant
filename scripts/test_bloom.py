@@ -3,7 +3,7 @@
 
 import unittest
 
-from scripts.bloom import base_status
+from scripts.bloom import base_status, should_call_llm_insight
 
 
 def sample_row(**overrides):
@@ -45,6 +45,11 @@ class BloomStatusMappingTests(unittest.TestCase):
             base_status(sample_row(post_breakout_state="PRE_BREAKOUT", structure_stage="VCP_FORMING")),
             "FORMING",
         )
+
+    def test_llm_insight_requires_structure_score_of_at_least_70(self):
+        self.assertFalse(should_call_llm_insight({"structure_score": 69.99}))
+        self.assertTrue(should_call_llm_insight({"structure_score": 70}))
+        self.assertTrue(should_call_llm_insight({"structure_score": "75"}))
 
 
 if __name__ == "__main__":

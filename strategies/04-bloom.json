@@ -93,6 +93,7 @@
     "top_candidates": 20,
     "section_limit": 30,
     "human_review_limit": 12,
+    "llm_min_structure_score": 70.0,
     "llm_max_tokens": 800,
     "llm_max_retries": 3,
     "watching_min_scores": {

@@ -401,6 +401,7 @@ for each stock in quant_output where structure_stage in {VCP_MATURE, VCP_TIGHT}:
 - [x] BREAKOUT_BUY 完整体系（硬条件 + 动作质量评分 + K线确认）
 - [x] 模型二当前 VCP 组收缩扩张重置逻辑优化
 - [x] Bloom 信号层 v2（BREAKOUT_BUY 补全 + 状态字段扩展 + LLM 逐只请求）
+- [x] Bloom LLM 解读门槛：仅对结构评分不低于70分的重点观察标的调用，低分标的保留规则文本且不改变信号与生命周期
 - [x] Bloom 突破后状态映射修复（`structure_stage=NONE` 时优先消费 `post_breakout_state`，避免误兜底为 `FORMING`）
 - [x] 重点观察智能过滤（结构分门槛）与排序规则（买点优先 + 结构强弱）
 - [x] 交易策略参考文档（instructions/trading-strategy.md）

@@ -367,6 +367,11 @@ def watch_sort_key(row):
     )
 
 
+def should_call_llm_insight(row):
+    min_score = safe_float(CONFIG.get("reporting", {}).get("llm_min_structure_score"), 70.0)
+    return safe_float(row.get("structure_score")) >= min_score
+
+
 def status_rank(status):
     return STATUS_RANK.get(status, 0)
 
@@ -1237,23 +1242,27 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False, progres
         "watching": watching_rows,
     }
 
-    # ── LLM 解读：为重点观察标的生成自然语言洞察 ──
+    # ── LLM 解读：只为达到独立分数门槛的重点观察标的生成自然语言洞察 ──
     watching = sections.get("watching", [])
+    llm_min_score = safe_float(CONFIG.get("reporting", {}).get("llm_min_structure_score"), 70.0)
+    llm_watching = [r for r in watching if should_call_llm_insight(r)]
     llm_status = {
         "status": "skipped",
-        "reason": "no watching rows",
+        "reason": f"no watching rows at or above structure score {fmt_num(llm_min_score)}",
         "requested": 0,
         "returned": 0,
+        "minimum_structure_score": llm_min_score,
     }
-    if watching:
+    if llm_watching:
         if progress_file:
             try:
                 pt = ProgressTracker(progress_file)
-                pt.step_update("bloom", current_stage="LLM解读", total=len(watching), completed=0)
+                pt.step_update("bloom", current_stage="LLM解读", total=len(llm_watching), completed=0)
             except Exception:
                 pass
-        insights, llm_status = call_llm_insights(watching, results, progress_file=progress_file)
-        for r in watching:
+        insights, llm_status = call_llm_insights(llm_watching, results, progress_file=progress_file)
+        llm_status["minimum_structure_score"] = llm_min_score
+        for r in llm_watching:
             code = r.get("code", "")
             if code in insights:
                 r["llm_insight"] = insights[code]

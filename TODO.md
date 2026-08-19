@@ -12,6 +12,8 @@
 - [x] 每日子阶段使用当前 Python 解释器并设置可配置的有限执行时长。
 - [x] 初始化脚本对齐当前 runtime 目录与 `position/` 账本，补齐运行产物忽略规则和工程环境示例。
 - [x] 补充锁、原子写入、Dashboard 并发、持仓持久化和降级状态测试。
+- [x] 修复估值报告行情来源元数据未转义导致的 Dashboard HTML 注入风险，并补充回归检查。
+- [x] 将本地与 CI Python 基线升级到 3.11+，使用 Python 3.12/OpenSSL 3 独立虚拟环境替代 macOS 系统 Python 3.9/LibreSSL。
 
 ---
 

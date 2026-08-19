@@ -94,6 +94,17 @@ python3 scripts/position.py
 
 Codex 执行时优先用 `rg`、`sed`、`python3 -m py_compile`、项目脚本等稳定命令。不要用 ad-hoc 命令污染项目根目录。
 
+### 6. Python 使用项目虚拟环境
+
+项目要求 Python 3.11+。本地运行实例使用根目录 `.venv/`，执行脚本和检查时优先显式调用：
+
+```bash
+.venv/bin/python scripts/check.py
+.venv/bin/python scripts/daily.py
+```
+
+也可以先执行 `source .venv/bin/activate`，再使用文档中的 `python3 scripts/...` 命令。不要使用 macOS 自带的 `/usr/bin/python3`（Python 3.9 / LibreSSL）。
+
 ## 目录职责
 
 ```text

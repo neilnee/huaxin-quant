@@ -3,7 +3,7 @@
 [English](README.en.md) | 中文
 
 [![Version](https://img.shields.io/github/v/tag/neilnee/huaxin-quant?sort=semver&label=version&color=0f766e)](https://github.com/neilnee/huaxin-quant/tags)
-[![Python](https://img.shields.io/badge/Python-3.9%2B-2563eb)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-2563eb)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-c59b2a)](LICENSE)
 
 **面向 A 股研究与复盘的可审计量化工作流。** 通过基本面筛选、VCP 量价结构、跨日信号生命周期、市场与资金旁路验证，把候选发现转化为按交易日归档、可复现的观察流程。
@@ -97,6 +97,7 @@ flowchart LR
 git clone https://github.com/neilnee/huaxin-quant.git
 cd huaxin-quant
 
+python3 --version  # 需要 Python 3.11+
 python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install -r requirements.txt

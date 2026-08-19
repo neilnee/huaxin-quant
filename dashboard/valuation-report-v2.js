@@ -63,7 +63,7 @@ function renderValuationYear() {
     [`${yearLabel} 基准`, selected.base, pct(selected.base_upside_pct), "base"],
     [`${yearLabel} 乐观`, selected.optimistic, current ? `${pct((selected.optimistic / current - 1) * 100)} 空间` : "—", ""],
   ];
-  $("valuation-cards").innerHTML = cards.map(([label, value, note, klass]) => `<article class="valuation-card ${klass}"><span>${label}</span><b>${money(value)}</b><small class="${Number(String(note).replace("%", "")) >= 0 ? "positive" : "negative"}">${note}</small></article>`).join("");
+  $("valuation-cards").innerHTML = cards.map(([label, value, note, klass]) => `<article class="valuation-card ${klass}"><span>${label}</span><b>${money(value)}</b><small class="${Number(String(note).replace("%", "")) >= 0 ? "positive" : "negative"}">${esc(note)}</small></article>`).join("");
 
   const points = [["悲观", selected.pessimistic], ["基准", selected.base], ["乐观", selected.optimistic], ["当前", valuation.current_price]].filter(([, value]) => Number.isFinite(Number(value)));
   const values = points.map(([, value]) => Number(value));

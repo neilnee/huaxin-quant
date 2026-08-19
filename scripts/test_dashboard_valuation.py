@@ -2,6 +2,7 @@
 """Regression tests for the Model 3 Dashboard publishing contract."""
 
 import unittest
+from pathlib import Path
 
 from scripts.dashboard_valuation import (
     business_map_with_coverage,
@@ -16,6 +17,13 @@ from scripts.dashboard_valuation import (
 
 
 class DashboardValuationTest(unittest.TestCase):
+    def test_report_cards_escape_quote_metadata_before_inner_html(self):
+        dashboard = Path(__file__).resolve().parents[1] / "dashboard"
+        legacy = (dashboard / "valuation-report.js").read_text(encoding="utf-8")
+        current = (dashboard / "valuation-report-v2.js").read_text(encoding="utf-8")
+        self.assertIn(">${esc(s)}</small>", legacy)
+        self.assertIn(">${esc(note)}</small>", current)
+
     def test_company_summary_flattens_sourced_fields_for_display(self):
         result = company_summary_for_display({"company_summary": {
             "company_profile": {"text": "主营数据中心服务", "source_ids": ["s1"]},

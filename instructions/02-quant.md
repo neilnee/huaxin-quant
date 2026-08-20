@@ -1,7 +1,7 @@
 # 模型二：量价精筛模型（自执行指令）
 
 - **版本管理**: 由 Git 分支与提交历史管理，文件名不再携带版本号
-- **最近更新**: 2026-08-14（model2_quant_v17）
+- **最近更新**: 2026-08-20（model2_quant_v18）
 - **核心目标**: 在模型一基本面候选池中，寻找 VCP 蓄力结构和可交易触发，输出可复现、可回测、可供模型三/四复用的结构化量价结果。
 - **核心哲学**: 基本面先过滤烂公司，模型二只判断资金行为和价格位置。脚本负责确定性计算，LLM 只做可选解释，不参与结构阶段或交易触发判定。
 - **输入**: `pool/pool_<YYMMDD>.csv`，或命令行指定 `--code/--codes`
@@ -1105,6 +1105,8 @@ reason
 run_date
 strategy_version
 ```
+
+顶层 `support_price`、`invalid_price`、`breakout_level` 只描述当前最终 `setup_signal` 对应的买点；必须从选中的 `setup_detail` 读取，不得按 RETEST / BREAKOUT / PULLBACK 候选的固定优先级跨类型借值。`setup_signal=NONE` 时不输出其他候选买点的价格；RETEST 卖压硬阻断可保留其自身价格供失败原因审计。
 
 `setup_plan_inputs` 为模型四 Signal Plan 使用的结构化中间阈值，不参与模型二自身排序和买点判定。模型二必须先按原逻辑完成 `setup_signal` 与 `setup_score` 判定，再把判定过程中已经计算出的阈值透出：
 

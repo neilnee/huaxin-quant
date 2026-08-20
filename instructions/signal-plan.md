@@ -1,7 +1,7 @@
 # Signal Plan: 次日信号计划层指令卡
 
 - **版本管理**: 由 Git 分支与提交历史管理
-- **最近更新**: 2026-08-11（model4_signal_plan_v6）
+- **最近更新**: 2026-08-20（model4_signal_plan_v7）
 - **所属模型**: 模型四 Tracker
 - **策略配置**: `strategies/04-signal-plan.json`
 - **核心目标**: 基于模型二已经识别出的有效 VCP 结构和当日买点事实，生成下一交易日可执行的量价触发计划，提前标出 A/B 类买点所需的收盘价区间、成交量区间和失效位。
@@ -15,7 +15,7 @@ Signal Plan 只做次日量价计划，不重新识别 VCP，不替代模型二�
 Signal Plan 负责：
 
 - 消费模型二结构化 JSON。
-- 优先消费模型二 `setup_plan_inputs` 中已经计算好的买点阈值。
+- 消费模型二 `setup_plan_inputs` 中的结构事实；RETEST 次日执行价区由 Signal Plan 按 NEW / FOLLOW 配置计算，不把模型二的结构回踩容忍下沿直接当作次日买入下沿。
 - 选择允许形成模型二买点的有效 VCP，或当日已触发买点的标的。
 - 计算下一交易日可能触发的买点计划。
 - 输出普通买点触发区、A 类买点量价区、最高潜在等级和失效价。
@@ -376,6 +376,8 @@ A 类缩量 = 当前突破日 volume × ideal_pullback_volume_max_ratio 以下
 失效价 = structure_pivot × invalid_ratio
 ```
 
+RETEST 的 `structure_pivot`、突破量和 `invalid_price` 继续优先继承模型二事实；次日 `trigger_price_low/high` 与 `ideal_price_low/high` 必须由 Signal Plan 当前 `retest_buy` / `retest_follow` 配置计算，不得用模型二 `setup_plan_inputs.retest.price_low/high` 或 `ideal_price_low/high` 覆盖。模型二的 `price_low` 是当日结构回踩容忍边界，不等同于次日执行下沿。计划必须满足 `trigger_price_low > invalid_price`，使“未失效但未重新确认”的价格区间保持为等待状态。
+
 若模型二未输出 MA10，Signal Plan 第一版用 `structure_pivot` 作为确认价，不自行重新拉行情计算 MA10。
 
 ---
@@ -454,4 +456,5 @@ Markdown 报告分区：
 - 高风险或硬风险标的不得进入 A/B 主表。
 - 突破后生命周期必须限制计划类型：`POST_BREAKOUT_RETEST` 仅可在模型二已输出 `RETEST_BUY` 时生成 `RETEST_FOLLOW`；其余突破后状态不得沿用旧 VCP 输出 `PULLBACK` / `BREAKOUT`。
 - `FOLLOW_SETUP_PLAN` 不等同于昨日买点自动顺延，必须重新计算次日可参与区间。
+- RETEST 次日执行区间必须使用 Signal Plan 的 NEW / FOLLOW 配置，且触发下沿严格高于继承的失效价；模型二结构容忍下沿不得直接成为执行下沿。
 - Signal Plan 不更新 Bloom 状态、不写持仓账本、不输出最终交易建议。

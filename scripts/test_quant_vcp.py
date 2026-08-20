@@ -29,6 +29,15 @@ def make_frame(closes, highs=None, lows=None):
 
 
 class CloseBasedContractionTests(unittest.TestCase):
+    def test_top_level_prices_follow_the_selected_setup(self):
+        pullback = {"support_price": 22.31, "invalid_price": 14.94}
+        breakout = {"support_price": 25.20, "invalid_price": 24.44, "breakout_level": 25.20}
+        retest = {"support_price": 26.00, "invalid_price": 25.00, "breakout_level": 26.00}
+
+        detail = quant.choose_setup_detail("PULLBACK_BUY", pullback, breakout, retest)
+
+        self.assertEqual(quant.setup_reference_prices(detail), (22.31, 14.94, None))
+
     def test_contraction_uses_close_swings_and_keeps_intraday_audit_range(self):
         closes = [90, 94, 100, 104, 106, 103, 100, 97, 95, 96, 98, 101, 103]
         highs = [91, 95, 101, 105, 120, 104, 101, 98, 96, 97, 99, 102, 104]

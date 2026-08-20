@@ -1,5 +1,5 @@
 {
-  "strategy_version": "model4_signal_plan_v6",
+  "strategy_version": "model4_signal_plan_v7",
   "description": "Signal Plan parameters. This model-4 signal layer consumes Model 2 quant JSON and emits next-session concrete price/volume setup plans.",
   "inputs": {
     "quant_run_dir": "cache/quant_runs"

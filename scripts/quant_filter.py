@@ -2241,6 +2241,15 @@ def choose_setup_detail(setup_signal, pullback, breakout, retest):
     return base_setup_result(False, "无买点触发")
 
 
+def setup_reference_prices(setup_detail):
+    """Return top-level price references for the selected setup only."""
+    return (
+        setup_detail.get("support_price"),
+        setup_detail.get("invalid_price"),
+        setup_detail.get("breakout_level"),
+    )
+
+
 def screen(df, code=None):
     """确定性识别 VCP 结构阶段和触发信号，返回结构化结果。"""
     latest = df.iloc[-1]
@@ -2325,9 +2334,7 @@ def screen(df, code=None):
     structure_stage = structure_stage_from_internal(structure.get("state"))
     setup_detail = choose_setup_detail(setup_signal, pullback, breakout, retest)
 
-    support = retest.get("support_price") or breakout.get("support_price") or pullback.get("support_price")
-    invalid = retest.get("invalid_price") or breakout.get("invalid_price") or pullback.get("invalid_price")
-    breakout_level = retest.get("breakout_level") or breakout.get("breakout_level")
+    support, invalid, breakout_level = setup_reference_prices(setup_detail)
 
     final_quality = structure.get("vcp_quality", "D")
     if setup_signal in {"PULLBACK_BUY", "BREAKOUT_BUY", "RETEST_BUY"}:

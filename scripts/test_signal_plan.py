@@ -84,6 +84,26 @@ class SignalPlanLifecycleTests(unittest.TestCase):
         self.assertEqual([(p["setup_family"], p["plan_action"]) for p in plans], [("RETEST", "FOLLOW")])
         self.assertEqual(plans[0]["setup_timing"], "FAST")
         self.assertEqual(plans[0]["target_quality"], "A")
+        self.assertEqual(plans[0]["trigger_price_low"], 99.5)
+        self.assertEqual(plans[0]["trigger_price_high"], 102.0)
+        self.assertEqual(plans[0]["ideal_price_low"], 100.0)
+        self.assertEqual(plans[0]["ideal_price_high"], 101.0)
+        self.assertEqual(plans[0]["invalid_price"], 97.0)
+
+    def test_retest_execution_range_does_not_reuse_model2_tolerance_range(self):
+        candidate = sample_row("POST_BREAKOUT_RETEST", "RETEST_BUY")
+        inputs = candidate["setup_plan_inputs"]["retest"]
+        inputs.update({"price_low": 97.0, "price_high": 100.5,
+                       "ideal_price_low": 99.0, "ideal_price_high": 100.3})
+
+        plan = plans_for_row(candidate)[0]
+
+        self.assertEqual(plan["trigger_price_low"], 99.5)
+        self.assertEqual(plan["trigger_price_high"], 102.0)
+        self.assertEqual(plan["ideal_price_low"], 100.0)
+        self.assertEqual(plan["ideal_price_high"], 101.0)
+        self.assertEqual(plan["invalid_price"], 97.0)
+        self.assertEqual(plan["formula_ref"]["model2_plan_inputs"]["price_low"], 97.0)
 
     def test_retest_follow_can_repeat_inside_window(self):
         candidate = sample_row("POST_BREAKOUT_RETEST", "RETEST_BUY")

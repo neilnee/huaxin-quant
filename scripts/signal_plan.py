@@ -493,15 +493,15 @@ def build_retest_plan(row, follow=False):
         volume_max_ratio = cfg["pullback_volume_max_ratio"]
         ideal_volume_max_ratio = cfg["ideal_pullback_volume_max_ratio"]
     plan.update({
-        "trigger_price_low": round_price(inputs.get("price_low") or pivot * cfg["trigger_low_ratio"]),
-        "trigger_price_high": round_price(inputs.get("price_high") or pivot * cfg["trigger_high_ratio"]),
-        "ideal_price_low": round_price(inputs.get("ideal_price_low") or pivot * cfg["ideal_low_ratio"]),
-        "ideal_price_high": round_price(inputs.get("ideal_price_high") or pivot * cfg["ideal_high_ratio"]),
+        "trigger_price_low": round_price(pivot * cfg["trigger_low_ratio"]),
+        "trigger_price_high": round_price(pivot * cfg["trigger_high_ratio"]),
+        "ideal_price_low": round_price(pivot * cfg["ideal_low_ratio"]),
+        "ideal_price_high": round_price(pivot * cfg["ideal_high_ratio"]),
         "volume_max": round_volume(inputs.get("volume_threshold") or current_volume * volume_max_ratio),
         "ideal_volume_max": round_volume(inputs.get("ideal_volume_max") or current_volume * ideal_volume_max_ratio),
         "invalid_price": round_price(inputs.get("invalid_price") or max_not_none(row.get("invalid_price"), pivot * cfg["invalid_pivot_ratio"])),
         "formula_ref": {
-            "source": "model2.setup_plan_inputs.retest" if inputs else "signal_plan_fallback",
+            "source": "signal_plan.retest_execution_with_model2_facts" if inputs else "signal_plan_fallback",
             "model2_plan_inputs": inputs,
             "pivot": round_price(pivot),
             "reference_volume": round_volume(current_volume),

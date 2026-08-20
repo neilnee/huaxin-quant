@@ -3,7 +3,10 @@
 
 import unittest
 
-from scripts.bloom import apply_exit_rules, base_status, is_watching_row, should_call_llm_insight, state_row
+from scripts.bloom import (
+    apply_exit_rules, base_status, is_post_breakout_focus_row,
+    is_watching_row, should_call_llm_insight, state_row,
+)
 
 
 def sample_row(**overrides):
@@ -73,6 +76,13 @@ class BloomStatusMappingTests(unittest.TestCase):
             "model2_stage": "VCP_MATURE",
             "structure_score": "90",
         }))
+
+    def test_post_breakout_focus_uses_only_frozen_structure_score(self):
+        row = {"post_breakout_state": "POST_BREAKOUT_RETEST", "structure_score": "90"}
+        row["structure_breakout_score"] = "54"
+        self.assertFalse(is_post_breakout_focus_row(row))
+        row["structure_breakout_score"] = "55"
+        self.assertTrue(is_post_breakout_focus_row(row))
 
     def test_llm_insight_requires_structure_score_of_at_least_70(self):
         self.assertFalse(should_call_llm_insight({"structure_score": 69.99}))

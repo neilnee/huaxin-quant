@@ -31,6 +31,13 @@ class SyncZixuanTargetTests(unittest.TestCase):
         ), "2026-08-20")
         self.assertIsNone(result)
 
+    def test_low_frozen_score_post_breakout_is_not_selected_by_rescanned_stage(self):
+        result = target_row(sample_row(
+            post_breakout_state="POST_BREAKOUT_RETEST", structure_breakout_score="54",
+            structure_score="90",
+        ), "2026-08-20")
+        self.assertIsNone(result)
+
 
 if __name__ == "__main__":
     unittest.main()

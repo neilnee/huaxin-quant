@@ -519,6 +519,7 @@ for each stock in quant_output where structure_stage in {VCP_MATURE, VCP_TIGHT}:
 - [x] 突破后结构分冻结：模型二按突破日前时间锚点固化原 VCP `structure_breakout_score`，Bloom 与 VCP 页面只传递和展示冻结分，不再显示当日重扫分
 - [x] VCP 标题汇总布局：桌面端六个数据块单行横排，窄屏按三列/两列自适应
 - [x] 突破后状态标签精简：表格仅显示强势/回踩/整理，并以红/蓝/紫标签区分
+- [x] 突破后重点集合按冻结结构分筛选：55分为统一门槛，页面与自选同步一致，底层生命周期样本完整保留
 - [x] 重点观察智能过滤（结构分门槛）与排序规则（买点优先 + 结构强弱）
 - [x] 交易策略参考文档（instructions/trading-strategy.md）
 - [x] 日线缓存 30 天保留 + --date 回测参数

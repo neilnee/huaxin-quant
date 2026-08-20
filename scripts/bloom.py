@@ -375,6 +375,14 @@ def is_watching_row(row):
     return False
 
 
+def is_post_breakout_focus_row(row):
+    return (
+        row.get("post_breakout_state") in POST_BREAKOUT_TRACKING_STATES
+        and safe_float(row.get("structure_breakout_score"))
+        >= safe_float(CONFIG.get("reporting", {}).get("post_breakout_min_structure_score"), 55.0)
+    )
+
+
 def watch_sort_key(row):
     return (
         0 if row.get("bloom_status") == "TRIGGERED" or has_setup_trigger(row) else 1,
@@ -1281,8 +1289,7 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False, progres
         ],
         "post_breakout": [
             r for r in rows
-            if r.get("post_breakout_state") in POST_BREAKOUT_TRACKING_STATES
-            and r.get("bloom_status") != "EXIT"
+            if is_post_breakout_focus_row(r) and r.get("bloom_status") != "EXIT"
         ],
         "upgrades": [r for r in rows if r["bloom_signal"] == "UPGRADE"],
         "triggered": [r for r in rows if r["bloom_status"] == "TRIGGERED" or r["bloom_signal"] == "SETUP_TRIGGER"],

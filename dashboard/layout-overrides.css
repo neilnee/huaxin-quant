@@ -27,6 +27,11 @@
 .vcp-header .vcp-summary { margin-left: auto; }
 #vcp-content .vcp-summary { grid-template-columns: repeat(6, minmax(72px, 1fr)); }
 #signals-content .vcp-summary { grid-template-columns: repeat(3, minmax(82px, 1fr)); }
+.post-breakout-pill { display: inline-block; min-width: 42px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; text-align: center; font-size: 11px; font-weight: 700; }
+.post-breakout-pill.post-hot { border-color: #8f4650; background: #4b252c; color: #ffabb1; }
+.post-breakout-pill.post-retest { border-color: #3f78a3; background: #1d3449; color: #a7d7ff; }
+.post-breakout-pill.post-consolidating { border-color: #6c5aa0; background: #322a4b; color: #d8c8ff; }
+.post-breakout-pill.post-failed,.post-breakout-pill.post-expired,.post-breakout-pill.post-unknown { color: #b9c4d5; background: #283241; }
 .signal-plan-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .signal-plan-grid > div { padding: 9px; border: 1px solid var(--line); border-radius: 6px; background: #101722; }
 .signal-plan-grid span { display: block; color: var(--muted); font-size: 11px; }

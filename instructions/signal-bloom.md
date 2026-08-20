@@ -360,6 +360,8 @@ Markdown 的“全量观察”分区中，“突破前跟踪”展示全部突�
 
 VCP Dashboard 默认页签名称为“突破前跟踪”，替代原“全部”；原有 Bloom 状态筛选继续只筛突破前标的，最后增加“突破后跟踪”页签。突破后页签使用模型二 `post_breakout_state` 作为主状态，结构分只显示冻结的 `structure_breakout_score`；不得用 `VCP_FORMING` 等当前重扫阶段或当日 `structure_score` 掩盖、改写旧 VCP 突破时的结构质量。
 
+VCP 结构标题卡右侧的六个汇总数据块在桌面宽度下必须保持单行横排；只在窄屏空间不足时降为三列或两列，不得影响其他模块的汇总卡布局。
+
 Markdown 的“重点观察”表格列为：
 
 ```text

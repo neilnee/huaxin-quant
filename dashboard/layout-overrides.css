@@ -25,6 +25,7 @@
 .signal-score-grid b { display: block; margin-top: 2px; }
 
 .vcp-header .vcp-summary { margin-left: auto; }
+#vcp-content .vcp-summary { grid-template-columns: repeat(6, minmax(72px, 1fr)); }
 #signals-content .vcp-summary { grid-template-columns: repeat(3, minmax(82px, 1fr)); }
 .signal-plan-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .signal-plan-grid > div { padding: 9px; border: 1px solid var(--line); border-radius: 6px; background: #101722; }
@@ -45,7 +46,11 @@
 .signal-source-pill.source-unknown, .signal-financial-pill.financial-unverified { color: #b9c4d5; background: #283241; }
 .signal-financial-pill.financial-verified { border-color: #34735a; background: #173c30; color: #a8e8ca; }
 .signal-financial-pill.financial-risk, .signal-technical-pill { border-color: #7b414b; background: #542a34; color: #ffd1d5; }
-@media (max-width: 560px) { .signal-tag-group { grid-template-columns: 1fr; gap: 3px; } }
+@media (max-width: 700px) { #vcp-content .vcp-summary { grid-template-columns: repeat(3, minmax(72px, 1fr)); } }
+@media (max-width: 560px) {
+  #vcp-content .vcp-summary { grid-template-columns: repeat(2, minmax(72px, 1fr)); }
+  .signal-tag-group { grid-template-columns: 1fr; gap: 3px; }
+}
 .signal-summary { line-height: 1.65; }
 .market-status-pill { display: inline-block; margin-left: 6px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; font-size: 11px; font-weight: 700; vertical-align: middle; }
 .market-status-pill.market-supportive { border-color: #2f7b73; background: #153b39; color: #9de4d9; }

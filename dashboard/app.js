@@ -1,7 +1,7 @@
 const MODULES = { market: "市场环境", capital: "资金观测", vcp: "VCP结构", signals: "信号发现", backtest: "回测表现", valuation: "投研分析" };
 const LABELS = { industry_sw_l1: "申万一级", industry_sw_l2: "申万二级", gn: "概念题材", fg: "风格特征" };
 const INDEX_LABELS = { shanghai_composite: "上证综指", csi300: "沪深300", csi500: "中证500", csi1000: "中证1000", chinext: "创业板指", star50: "科创50" };
-let context, capitalContext, vcpContext, signalsContext, backtestContext, vcpFilter = "ALL", signalsFilter="ALL", backtestFilter="ALL", backtestSampleWindow="90D", backtestConditionHorizon=10, backtestStructurePage=1, backtestStructureStage="ALL", backtestStructureWindow="90D", vcpSelectedCode, signalsSelectedCode, capitalSelectedCode, calendarMonth, currentKind = "industry_sw_l2", rankWindow = "rank_20", selectedName, matrixSelectedName, activeModule = "market";
+let context, capitalContext, vcpContext, signalsContext, backtestContext, vcpFilter = "PRE_BREAKOUT", signalsFilter="ALL", backtestFilter="ALL", backtestSampleWindow="90D", backtestConditionHorizon=10, backtestStructurePage=1, backtestStructureStage="ALL", backtestStructureWindow="90D", vcpSelectedCode, signalsSelectedCode, capitalSelectedCode, calendarMonth, currentKind = "industry_sw_l2", rankWindow = "rank_20", selectedName, matrixSelectedName, activeModule = "market";
 const BACKTEST_STRUCTURE_PAGE_SIZE=20;
 const $ = (id) => document.getElementById(id), pct = (v, d = 2) => v == null ? "—" : `${Number(v).toFixed(d)}%`, cls = (v) => v > 0 ? "positive" : v < 0 ? "negative" : "";
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
@@ -54,6 +54,14 @@ const renderVcpDetailWithSummary = renderVcpDetail;
 renderVcpDetail = function (row) {
   renderVcpDetailWithSummary(row);
   const detail = $("vcp-detail");
+  if (row?.tracking_scope === "POST_BREAKOUT") {
+    const labels={POST_BREAKOUT_HOT:"突破后强势",POST_BREAKOUT_RETEST:"突破后回踩",POST_BREAKOUT_CONSOLIDATING:"突破后整理",POST_BREAKOUT_FAILED:"突破失败",POST_BREAKOUT_EXPIRED:"跟踪到期"};
+    const tags=detail.querySelector(".signal-primary-tags");
+    tags?.querySelector(".status-pill")?.remove();
+    tags?.insertAdjacentHTML("afterbegin",`<span class="status-pill status-cooldown">${esc(labels[row.post_breakout_state]||row.post_breakout_state||"突破后跟踪")}</span>`);
+    const metrics=detail.querySelector(".vcp-metrics");
+    metrics?.insertAdjacentHTML("afterbegin",`<div class="vcp-metric"><span>突破日期</span><b>${esc(row.structure_breakout_date||"—")}</b></div><div class="vcp-metric"><span>突破后交易日</span><b>${row.breakout_days==null||row.breakout_days===""?"—":`${esc(row.breakout_days)} 日`}</b></div><div class="vcp-metric"><span>原 Pivot</span><b>${vcpNumber(row.structure_breakout_level||row.pivot_price,2)}</b></div>`);
+  }
   detail.querySelector(".vcp-contraction-summary")?.remove();
   detail.querySelectorAll(".vcp-contraction-table tr").forEach((row) => row.lastElementChild?.remove());
   detail.querySelector(".vcp-contraction-table td[colspan]")?.setAttribute("colspan", "6");
@@ -63,9 +71,20 @@ renderVcpDetail = function (row) {
 };
 const renderVcpBase = renderVcp;
 renderVcp = function () {
-  renderVcpBase();
+  const summary=vcpContext.summary||{},rows=vcpContext.candidates||[],status=summary.status_dist||{};
+  const filters=[["PRE_BREAKOUT","突破前跟踪"],["TRIGGERED","已触发"],["MATURE","成熟"],["FORMING","形成中"],["EARLY","早期"],["RISK_BLOCKED","风险阻断"],["POST_BREAKOUT","突破后跟踪"]];
+  const filtered=vcpFilter==="PRE_BREAKOUT"?rows.filter(row=>row.tracking_scope!=="POST_BREAKOUT"):vcpFilter==="POST_BREAKOUT"?rows.filter(row=>row.tracking_scope==="POST_BREAKOUT"):rows.filter(row=>row.tracking_scope!=="POST_BREAKOUT"&&row.bloom_status===vcpFilter);
+  const postLabels={POST_BREAKOUT_HOT:"突破后强势",POST_BREAKOUT_RETEST:"突破后回踩",POST_BREAKOUT_CONSOLIDATING:"突破后整理",POST_BREAKOUT_FAILED:"突破失败",POST_BREAKOUT_EXPIRED:"跟踪到期"};
+  $("vcp-summary").innerHTML=[["突破前跟踪",summary.pre_breakout_total||0],["突破后跟踪",summary.post_breakout_total||0],["已触发",status.TRIGGERED||0],["结构成熟",status.MATURE||0],["形成中",status.FORMING||0],["风险阻断",status.RISK_BLOCKED||0]].map(([k,v])=>`<div><span>${k}</span><b>${v}</b></div>`).join("");
+  $("vcp-filters").innerHTML=filters.map(([key,label])=>`<button class="${key===vcpFilter?"active":""}" data-filter="${key}">${label}</button>`).join("");
+  $("vcp-filters").querySelectorAll("button").forEach(button=>button.onclick=()=>{vcpFilter=button.dataset.filter;renderVcp();});
+  const scopeLabel=vcpFilter==="POST_BREAKOUT"?"突破后标的":"突破前结构";
+  $("vcp-filter-note").textContent=`显示 ${filtered.length}/${rows.length} 只 · ${scopeLabel}`;
+  if(!filtered.some(row=>row.code===vcpSelectedCode))vcpSelectedCode=filtered[0]?.code;
+  $("vcp-table").innerHTML=`<thead><tr><th>标的</th><th>${vcpFilter==="POST_BREAKOUT"?"突破后状态":"结构"}</th><th>生命周期</th><th>${vcpFilter==="POST_BREAKOUT"?"突破后日数":"买点"}</th><th>结构分</th><th>风险</th></tr></thead><tbody>${filtered.map(row=>`<tr class="vcp-table-row ${row.code===vcpSelectedCode?"selected":""}" data-code="${esc(row.code)}"><td><b>${esc(row.name)}</b><br><span class="vcp-list-note">${esc(row.code)}</span></td><td>${esc(row.tracking_scope==="POST_BREAKOUT"?(postLabels[row.post_breakout_state]||row.post_breakout_state||"—"):(row.model2_stage||"—"))}</td><td>${row.tracking_scope==="POST_BREAKOUT"?esc(row.structure_breakout_date||"—"):vcpStatus(row.bloom_status)}</td><td>${row.tracking_scope==="POST_BREAKOUT"?(row.breakout_days==null||row.breakout_days===""?"—":`${esc(row.breakout_days)} 日`):esc(row.model2_setup_signal||"—")}</td><td>${vcpNumber(row.structure_score,0)}</td><td class="risk-${String(row.risk_level||"").toLowerCase()}">${esc(row.risk_level||"—")}</td></tr>`).join("")||"<tr><td colspan='6' class='muted'>该跟踪范围暂无标的</td></tr>"}</tbody>`;
+  $("vcp-table").querySelectorAll("tbody tr[data-code]").forEach(tr=>tr.onclick=()=>{vcpSelectedCode=tr.dataset.code;renderVcp();});
+  renderVcpDetail(filtered.find(row=>row.code===vcpSelectedCode));
   $("vcp-meta").textContent = "";
-  $("vcp-summary").insertAdjacentHTML("afterbegin", `<div><span>活跃结构</span><b>${(vcpContext.candidates || []).length}</b></div>`);
 };
 
 function renderStateRules() { const e=context.market_state_explainer, rules=$("state-rules"); if(!e)return; const metrics=e.current.metrics.map((v)=>`<div><span>${esc(v.label)}</span><b>${esc(v.value)}</b></div>`).join(""); const matched=e.current.matched.map((v)=>`<li>${esc(v)}</li>`).join(""); const states=e.states.map((v)=>`<tr class="${v.active?"active-rule":""}"><td><span class="state-rule-name"><span>${esc(v.name)}</span>${v.active?"<span class='tag'>当前</span>":""}</span></td><td>${esc(v.rule)}</td><td>${esc(v.confirm)}</td><td>${esc(v.meaning)}</td></tr>`).join(""); const scores=e.score_rules.map((v)=>`<article><h4>${esc(v.name)}</h4><p>${esc(v.rule)}</p><span>${esc(v.direction)}</span></article>`).join(""); rules.innerHTML=`<div class="rules-current"><div><p class="section-label">当前判定</p><h3>${esc(e.current.label)}</h3><ul>${matched}</ul></div><div class="rule-metrics">${metrics}</div></div><div class="rules-all"><p class="section-label">完整状态规则</p><div class="table-scroll"><table><thead><tr><th>状态</th><th>触发规则</th><th>确认</th><th>含义</th></tr></thead><tbody>${states}</tbody></table></div></div><div class="score-rules"><p class="section-label">四项分数口径</p><div>${scores}</div></div>`; }

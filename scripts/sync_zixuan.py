@@ -34,6 +34,10 @@ BUY_SIGNALS = {"PULLBACK_BUY", "BREAKOUT_BUY", "RETEST_BUY"}
 MATURE_STAGES = {"VCP_TIGHT", "VCP_MATURE"}
 SCORE_STAGES = {"VCP_FORMING", "VCP_EARLY"}
 FOCUS_MIN_SCORE = 60.0
+POST_BREAKOUT_TRACKING_STATES = {
+    "POST_BREAKOUT_HOT", "POST_BREAKOUT_RETEST", "POST_BREAKOUT_CONSOLIDATING",
+}
+POST_BREAKOUT_TERMINAL_STATES = {"POST_BREAKOUT_FAILED", "POST_BREAKOUT_EXPIRED"}
 
 MANAGE_INTERVAL_SECONDS = 1.2
 BATCH_SIZE = 5
@@ -42,7 +46,7 @@ RETRY_PAUSE_SECONDS = 15.0
 
 MANAGED_FIELDS = [
     "code", "name", "date", "selection", "model2_stage",
-    "structure_score", "model2_setup_signal", "bloom_status",
+    "structure_score", "model2_setup_signal", "bloom_status", "post_breakout_state",
 ]
 
 
@@ -104,15 +108,21 @@ def target_row(row, date_iso):
     stage = str(row.get("model2_stage") or "").upper()
     setup = str(row.get("model2_setup_signal") or "").upper()
     bloom_status = str(row.get("bloom_status") or "").upper()
+    post_state = str(row.get("post_breakout_state") or "").upper()
+    if post_state in POST_BREAKOUT_TERMINAL_STATES:
+        return None
     score = safe_float(row.get("structure_score"))
     triggered = setup in BUY_SIGNALS or bloom_status == "TRIGGERED"
     focus = stage in MATURE_STAGES or (stage in SCORE_STAGES and score >= FOCUS_MIN_SCORE)
-    if not focus and not triggered:
+    post_tracking = post_state in POST_BREAKOUT_TRACKING_STATES
+    if not focus and not triggered and not post_tracking:
         return None
 
     selection = (
-        "FOCUS_AND_SETUP_TRIGGER" if focus and triggered
+        "POST_BREAKOUT_AND_SETUP_TRIGGER" if post_tracking and triggered
+        else "FOCUS_AND_SETUP_TRIGGER" if focus and triggered
         else "SETUP_TRIGGER" if triggered
+        else "POST_BREAKOUT_TRACKING" if post_tracking
         else "FOCUS"
     )
     return {
@@ -123,6 +133,7 @@ def target_row(row, date_iso):
         "structure_score": row.get("structure_score", ""),
         "model2_setup_signal": setup,
         "bloom_status": bloom_status,
+        "post_breakout_state": post_state,
     }
 
 
@@ -133,7 +144,7 @@ def read_bloom_targets(date_yy, path=None):
     date_iso = date_to_iso(date_yy)
     required = {
         "code", "name", "last_seen", "model2_stage", "structure_score",
-        "model2_setup_signal", "bloom_status",
+        "model2_setup_signal", "bloom_status", "post_breakout_state",
     }
     targets = {}
     with path.open(encoding="utf-8-sig", newline="") as f:
@@ -173,6 +184,7 @@ def read_managed(path=None):
                 "structure_score": str(row.get("structure_score") or ""),
                 "model2_setup_signal": str(row.get("model2_setup_signal") or ""),
                 "bloom_status": str(row.get("bloom_status") or ""),
+                "post_breakout_state": str(row.get("post_breakout_state") or ""),
             }
     return managed
 
@@ -221,6 +233,7 @@ def sort_key(row):
     stage_rank = {"VCP_TIGHT": 4, "VCP_MATURE": 3, "VCP_FORMING": 2, "VCP_EARLY": 1}
     return (
         0 if "SETUP_TRIGGER" in row["selection"] else 1,
+        0 if row.get("post_breakout_state") in POST_BREAKOUT_TRACKING_STATES else 1,
         -stage_rank.get(row["model2_stage"], 0),
         -safe_float(row["structure_score"]),
         row["code"],

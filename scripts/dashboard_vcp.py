@@ -169,7 +169,8 @@ def compact_candidate(row: dict, quant: dict, industry: dict) -> dict:
         "volume_dry_up", "volume_pattern", "contraction_count", "contraction_pcts", "contraction_days",
         "contraction_extension_tags", "contraction_extension_score", "contraction_extensions",
         "days_tracked", "days_in_observation", "score_change", "watch_reason", "next_watch_point",
-        "llm_insight", "valuation_candidate", "valuation_priority",
+        "llm_insight", "valuation_candidate", "valuation_priority", "post_breakout_state",
+        "structure_breakout_date", "breakout_days", "structure_breakout_level",
     )
     result = {field: row.get(field, "") for field in fields}
     quant_overrides = {
@@ -196,6 +197,10 @@ def compact_candidate(row: dict, quant: dict, industry: dict) -> dict:
         "contraction_extension_tags": "contraction_extension_tags",
         "contraction_extension_score": "contraction_extension_score",
         "contraction_extensions": "contraction_extensions",
+        "post_breakout_state": "post_breakout_state",
+        "structure_breakout_date": "structure_breakout_date",
+        "breakout_days": "breakout_days",
+        "structure_breakout_level": "structure_breakout_level",
     }
     for target, source in quant_overrides.items():
         if source in quant:
@@ -225,19 +230,23 @@ def build_context(date_yy: str) -> dict:
     quant_results = load_json(quant_path).get("results", []) if quant_path.exists() else []
     quant_by_code = {str(row.get("code", "")).zfill(6): row for row in quant_results}
     active = bloom.get("sections", {}).get("active", [])
+    post_breakout = bloom.get("sections", {}).get("post_breakout", [])
+    display_rows = [(row, "PRE_BREAKOUT") for row in active]
+    display_rows.extend((row, "POST_BREAKOUT") for row in post_breakout)
     realized = realized_events_for_date(date_yy, SIGNAL_PLAN_DIR, QUANT_RUN_DIR, MARKET_DATA_DB)
     realized_by_key = {
         (str(event.get("code", "")).zfill(6), event.get("setup_type")): event
         for event in realized
     }
-    bloom_by_code = {str(row.get("code", "")).zfill(6): row for row in active}
-    codes = [str(row.get("code", "")).zfill(6) for row in active]
+    bloom_by_code = {str(row.get("code", "")).zfill(6): (row, scope) for row, scope in display_rows}
+    codes = list(bloom_by_code)
     industry_by_code = load_industry_context(codes, bloom.get("summary", {}).get("date", ""))
     pool_sources = load_pool_sources(date_yy)
     candidates = []
     for code in codes:
-        bloom_row = bloom_by_code.get(code, {})
+        bloom_row, tracking_scope = bloom_by_code.get(code, ({}, "PRE_BREAKOUT"))
         candidate = compact_candidate(bloom_row, quant_by_code.get(code, {}), industry_by_code.get(code, {}))
+        candidate["tracking_scope"] = tracking_scope
         candidate.update(pool_sources.get(code, {
             "pool_channel": "UNKNOWN", "source_label": "来源待确认", "source_tone": "unknown",
         }))
@@ -245,7 +254,12 @@ def build_context(date_yy: str) -> dict:
         candidate["previous_plan_hit"] = bool(event)
         candidate["previous_plan_source_date"] = event.get("plan_date") if event else None
         candidates.append(candidate)
-    candidates.sort(key=lambda row: (row.get("bloom_status") != "TRIGGERED", row.get("bloom_status") != "MATURE", -float(row["structure_score"] or 0)))
+    candidates.sort(key=lambda row: (
+        row.get("tracking_scope") == "POST_BREAKOUT",
+        row.get("bloom_status") != "TRIGGERED",
+        row.get("bloom_status") != "MATURE",
+        -float(row["structure_score"] or 0),
+    ))
     summary = dict(bloom.get("summary", {}))
     summary["source_status_dist"] = summary.get("status_dist", {})
     summary["status_dist"] = {
@@ -254,6 +268,8 @@ def build_context(date_yy: str) -> dict:
     }
     summary["plan_hit_total"] = sum(row.get("previous_plan_hit", False) for row in candidates)
     summary["display_total"] = len(candidates)
+    summary["pre_breakout_total"] = sum(row.get("tracking_scope") == "PRE_BREAKOUT" for row in candidates)
+    summary["post_breakout_total"] = sum(row.get("tracking_scope") == "POST_BREAKOUT" for row in candidates)
     return {
         "meta": {"run_date": bloom.get("summary", {}).get("date"), "source": bloom_path.name,
                  "quant_source": quant_path.name if quant_path.exists() else None},

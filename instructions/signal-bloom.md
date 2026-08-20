@@ -1,7 +1,7 @@
 # Signal Bloom：模型四 Bloom 信号层指令卡
 
 - **版本管理**: 由 Git 分支与提交历史管理
-- **最近更新**: 2026-08-14
+- **最近更新**: 2026-08-20
 - **所属模型**: 模型四 Tracker
 - **策略配置**: `strategies/04-bloom.json`
 - **核心目标**: 对模型二发现的股票进行信号质量判断和跨日生命周期跟踪，输出观察状态、风险阻断、估值候选和下一步观察点。
@@ -148,6 +148,13 @@ Bloom 不重新计算模型二，但会使用模型二已输出或可直接读�
 
 状态判定优先级为：数据异常 → 已触发买点 → 明确结构失效 → 突破后生命周期 → 普通 VCP 阶段 → 未识别阶段兜底。模型二为保留旧 VCP 突破后审计，可能输出 `structure_stage=NONE`、`model2_include=true` 和明确的 `post_breakout_state`；Bloom 必须优先消费 `post_breakout_state`，不得把这类标的按未识别阶段兜底为 `FORMING`。
 
+`COOLDOWN` 只是突破后生命周期在 Bloom 状态枚举中的兼容映射，不再等同于统一的 5 日冷却退出。Bloom 必须原样保留模型二已有的 `post_breakout_state`、`structure_breakout_date`、`breakout_days` 和 `structure_breakout_level`：
+
+- `POST_BREAKOUT_HOT` / `POST_BREAKOUT_RETEST` / `POST_BREAKOUT_CONSOLIDATING` 持续进入“突破后跟踪”，不得因 `cooldown_keep_days` 提前移出。
+- `POST_BREAKOUT_FAILED` / `POST_BREAKOUT_EXPIRED` 是突破后终态，当日直接 `EXIT`；退出事件仍进入当日报告供复盘，但不继续占用跟踪列表。
+- 突破后有效期完全沿用模型二：突破当日至第 15 日为 HOT/RETEST，第 16–20 日为 CONSOLIDATING，超过 20 日由模型二转为 EXPIRED；Bloom 不重复计算突破天数或另造阶段。
+- 若模型二重新识别出 `PRE_BREAKOUT` 新结构，则按新结构的普通 VCP 阶段重新进入突破前生命周期。
+
 风险阻断优先级高于普通观察状态。若结构状态为 `FORMING` / `MATURE` / `TRIGGERED`，但触发高风险规则，则输出 `RISK_BLOCKED`。
 
 ---
@@ -289,6 +296,10 @@ MA60
 distance_ma20
 volume_dry_up
 pivot_distance
+post_breakout_state
+structure_breakout_date
+breakout_days
+structure_breakout_level
 score_change
 days_tracked
 days_in_observation
@@ -335,15 +346,18 @@ VCP Dashboard 的历史起点与系统回放起点一致，为 `2026-05-06`。�
 
 报告分区：
 
-1. 全量活跃观察（全部活跃标的，含结构评分；今日新进入标 🆕 标记）
-2. 今日结构升级
-3. 成熟/触发重点观察
-4. 高风险阻断
-5. 冷却与准备移出
-6. 数据异常
-7. 待估值候选
+1. 突破前跟踪（EARLY/FORMING/MATURE/TRIGGERED/RISK_BLOCKED，含结构评分；今日新进入标 🆕 标记）
+2. 突破后跟踪（HOT/RETEST/CONSOLIDATING）
+3. 今日结构升级
+4. 成熟/触发重点观察
+5. 高风险阻断
+6. 冷却与准备移出
+7. 数据异常
+8. 待估值候选
 
-Markdown 的”全量观察”分区中，”活跃观察”展示全部活跃标的（EARLY/FORMING/MATURE/TRIGGERED/RISK_BLOCKED），每只显示代码、名称、Bloom 状态和结构评分，今日新进入的额外标注 🆕；”移出”使用紧凑多列表格展示，表头保持为空，单元格包含股票代码、名称和 Bloom 状态；不得把大量移出标的拼成单行长文本。
+Markdown 的“全量观察”分区中，“突破前跟踪”展示全部突破前活跃标的（EARLY/FORMING/MATURE/TRIGGERED/RISK_BLOCKED）；“突破后跟踪”展示尚未退出的 `POST_BREAKOUT_*` 标的，并明确显示突破后状态、突破日期、突破后交易日和距 Pivot。每只显示代码、名称、状态和结构评分，今日新进入的额外标注 🆕；“移出”使用紧凑多列表格展示，表头保持为空，单元格包含股票代码、名称和 Bloom 状态；不得把大量移出标的拼成单行长文本。
+
+VCP Dashboard 默认页签名称为“突破前跟踪”，替代原“全部”；原有 Bloom 状态筛选继续只筛突破前标的，最后增加“突破后跟踪”页签。突破后页签使用模型二 `post_breakout_state` 作为主状态，不得用 `VCP_FORMING` 等当前重扫阶段掩盖旧 VCP 已突破事实。
 
 Markdown 的“重点观察”表格列为：
 
@@ -352,6 +366,7 @@ Markdown 的“重点观察”表格列为：
 ```
 
 - 重点观察纳入规则：`VCP_MATURE` / `VCP_TIGHT` 默认纳入；`VCP_FORMING` 需 `structure_score >= 60`；`VCP_EARLY` 需 `structure_score >= 60`；若 `setup_signal=PULLBACK_BUY/BREAKOUT_BUY/RETEST_BUY` 或 Bloom 状态为 `TRIGGERED`，不受结构分门槛限制，必须纳入。
+- 重点观察表只承载突破前结构；存在明确 `POST_BREAKOUT_*` 的标的统一进入“突破后跟踪”，不得因当日重扫得到的阶段或结构分重复进入重点观察表。
 - 重点观察排序规则：先排有买点触发的标的，再按结构阶段强弱排序（`VCP_TIGHT` > `VCP_MATURE` > `VCP_FORMING` > `VCP_EARLY`），最后按 `structure_score` 从高到低排序。
 - `结构` 列格式为 `model2_stage / structure_score分`，例如 `VCP_FORMING / 62分`。
 - `买点` 列格式为 `setup_signal / setup_score分 / setup_quality级买点 / 建议仓位：suggested_position`，例如 `BREAKOUT_BUY / 82分 / A级买点 / 建议仓位：40%-50%`；无买点时填 `-`。
@@ -379,7 +394,7 @@ LLM 观察要点：
 - 全新的 `model2_include=false` 标的不能写入 Bloom 状态表；已在状态表中的标的可因连续冷却或失效进入 `EXIT`。
 - `EXIT` 标的必须从滚动状态表移除，后续只能由模型二重新发现并以新生命周期进入。
 - 高结构分但高风险的股票应输出 `RISK_BLOCKED`，而不是 `TRIGGERED` 的正向交易结论。
-- `structure_stage=NONE` 且存在明确 `POST_BREAKOUT_*` 生命周期的标的必须进入 `COOLDOWN`，不得出现在活跃 VCP 结构列表。
+- 存在明确 `POST_BREAKOUT_*` 生命周期的标的必须进入独立的“突破后跟踪”，不得混入“突破前跟踪”；HOT/RETEST/CONSOLIDATING 不受普通 5 日 COOLDOWN 退出影响，FAILED/EXPIRED 当日退出。
 - `valuation_candidate` 只代表送估值候选，不代表估值结论或交易建议。
 - LLM 观察要点不得静默失败；每日 summary 和 Markdown 必须能看出 LLM 是成功、部分成功、跳过还是失败。
 - 配置了 LLM 且调用失败时，Bloom 命令不得以成功状态退出。

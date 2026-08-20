@@ -120,6 +120,7 @@ quant_lab/  # Huaxin Quant 本地运行实例
 ├── pool/              模型一输出
 ├── quant/             模型二输出
 ├── bloom/             Bloom 信号报告与 state/
+├── macro/             全球宏观信源健康与采集摘要
 ├── reports/           估值报告与 indexes/
 ├── position/          本地持仓账本
 ├── .tmp/              临时脚本和临时文件（用完清理）
@@ -160,6 +161,16 @@ python3 scripts/market_regime.py update               # 盘后增量更新
 python3 scripts/market_regime.py run                  # 生成市场报告与面板数据
 python3 scripts/market_regime.py run --no-llm         # 跳过 LLM 解读
 python3 scripts/market_regime.py status               # 检查数据就绪状态
+```
+
+### 全球宏观与流动性雷达（Global Macro）
+
+独立的官方信源数据层：记录信源健康，采集美元流动性、利率、汇率、波动率代理变量和央行官方事件；不读取或改写 Pool、Quant、Bloom、Market Regime 或资金观测结果。执行方式参考 `instructions/global-macro.md`。
+
+```bash
+python3 scripts/global_macro.py probe
+python3 scripts/global_macro.py fetch
+python3 scripts/global_macro.py status --days 7
 ```
 
 ### Bloom 信号层

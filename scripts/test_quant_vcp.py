@@ -272,6 +272,17 @@ class CloseBasedContractionTests(unittest.TestCase):
         self.assertEqual(context["setup_structure_anchor_date"], "2026-08-07")
         self.assertEqual(context["setup_structure_base"], 53)
 
+    def test_post_breakout_score_reuses_frozen_pre_breakout_anchor(self):
+        structure = {
+            "post_breakout_state": "POST_BREAKOUT_HOT",
+            "setup_score_context": {
+                "RETEST_BUY": {"structure_score": 89, "anchor_date": "2026-08-07"},
+            },
+        }
+        self.assertEqual(quant.frozen_breakout_structure_score(structure), 89)
+        structure["post_breakout_state"] = "PRE_BREAKOUT"
+        self.assertIsNone(quant.frozen_breakout_structure_score(structure))
+
     def test_retest_action_score_combines_breakout_and_retest_quality(self):
         structure = {
             "state": "VCP_MATURE",

@@ -148,7 +148,7 @@ Bloom 不重新计算模型二，但会使用模型二已输出或可直接读�
 
 状态判定优先级为：数据异常 → 已触发买点 → 明确结构失效 → 突破后生命周期 → 普通 VCP 阶段 → 未识别阶段兜底。模型二为保留旧 VCP 突破后审计，可能输出 `structure_stage=NONE`、`model2_include=true` 和明确的 `post_breakout_state`；Bloom 必须优先消费 `post_breakout_state`，不得把这类标的按未识别阶段兜底为 `FORMING`。
 
-`COOLDOWN` 只是突破后生命周期在 Bloom 状态枚举中的兼容映射，不再等同于统一的 5 日冷却退出。Bloom 必须原样保留模型二已有的 `post_breakout_state`、`structure_breakout_date`、`breakout_days` 和 `structure_breakout_level`：
+`COOLDOWN` 只是突破后生命周期在 Bloom 状态枚举中的兼容映射，不再等同于统一的 5 日冷却退出。Bloom 必须原样保留模型二已有的 `post_breakout_state`、`structure_breakout_date`、`structure_breakout_score`、`breakout_days` 和 `structure_breakout_level`：
 
 - `POST_BREAKOUT_HOT` / `POST_BREAKOUT_RETEST` / `POST_BREAKOUT_CONSOLIDATING` 持续进入“突破后跟踪”，不得因 `cooldown_keep_days` 提前移出。
 - `POST_BREAKOUT_FAILED` / `POST_BREAKOUT_EXPIRED` 是突破后终态，当日直接 `EXIT`；退出事件仍进入当日报告供复盘，但不继续占用跟踪列表。
@@ -298,6 +298,7 @@ volume_dry_up
 pivot_distance
 post_breakout_state
 structure_breakout_date
+structure_breakout_score
 breakout_days
 structure_breakout_level
 score_change
@@ -357,7 +358,7 @@ VCP Dashboard 的历史起点与系统回放起点一致，为 `2026-05-06`。�
 
 Markdown 的“全量观察”分区中，“突破前跟踪”展示全部突破前活跃标的（EARLY/FORMING/MATURE/TRIGGERED/RISK_BLOCKED）；“突破后跟踪”展示尚未退出的 `POST_BREAKOUT_*` 标的，并明确显示突破后状态、突破日期、突破后交易日和距 Pivot。每只显示代码、名称、状态和结构评分，今日新进入的额外标注 🆕；“移出”使用紧凑多列表格展示，表头保持为空，单元格包含股票代码、名称和 Bloom 状态；不得把大量移出标的拼成单行长文本。
 
-VCP Dashboard 默认页签名称为“突破前跟踪”，替代原“全部”；原有 Bloom 状态筛选继续只筛突破前标的，最后增加“突破后跟踪”页签。突破后页签使用模型二 `post_breakout_state` 作为主状态，不得用 `VCP_FORMING` 等当前重扫阶段掩盖旧 VCP 已突破事实。
+VCP Dashboard 默认页签名称为“突破前跟踪”，替代原“全部”；原有 Bloom 状态筛选继续只筛突破前标的，最后增加“突破后跟踪”页签。突破后页签使用模型二 `post_breakout_state` 作为主状态，结构分只显示冻结的 `structure_breakout_score`；不得用 `VCP_FORMING` 等当前重扫阶段或当日 `structure_score` 掩盖、改写旧 VCP 突破时的结构质量。
 
 Markdown 的“重点观察”表格列为：
 

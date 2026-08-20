@@ -117,6 +117,7 @@ STATE_FIELDS = [
     "pivot_distance",
     "post_breakout_state",
     "structure_breakout_date",
+    "structure_breakout_score",
     "breakout_days",
     "structure_breakout_level",
     "score_change",
@@ -805,6 +806,7 @@ def state_row(prev_row, row, date_iso, status):
         "pivot_distance": fmt_num(row.get("pivot_distance")),
         "post_breakout_state": post_state,
         "structure_breakout_date": str(row.get("structure_breakout_date") or ""),
+        "structure_breakout_score": fmt_num(row.get("structure_breakout_score")),
         "breakout_days": str(row.get("breakout_days") if row.get("breakout_days") is not None else ""),
         "structure_breakout_level": fmt_num(row.get("structure_breakout_level")),
         "score_change": "" if delta is None else fmt_num(delta),
@@ -869,6 +871,7 @@ def missing_data_row(prev_row, date_iso):
         "structure_risk_flags": prev_row.get("structure_risk_flags", ""),
         "post_breakout_state": prev_row.get("post_breakout_state", ""),
         "structure_breakout_date": prev_row.get("structure_breakout_date", ""),
+        "structure_breakout_score": prev_row.get("structure_breakout_score", ""),
         "breakout_days": prev_row.get("breakout_days", ""),
         "structure_breakout_level": prev_row.get("structure_breakout_level", ""),
         "reason": "今日模型二结果缺失，可能为 API 失败或输入池缺失",
@@ -1558,7 +1561,9 @@ def build_markdown(bloom):
         day_text = f"第 {breakout_days} 日" if breakout_days != "" else "日数待补"
         pivot_distance = r.get("pivot_distance", "")
         distance_text = f" / 距 Pivot {pivot_distance}%" if pivot_distance != "" else ""
-        return f"`{r.get('code', '')}` {r.get('name', '')}<br>{state} / {breakout_date} / {day_text}{distance_text}"
+        score = r.get("structure_breakout_score", "")
+        score_text = f" / 原结构 {score}分" if score != "" else " / 原结构分待补"
+        return f"`{r.get('code', '')}` {r.get('name', '')}<br>{state}{score_text} / {breakout_date} / {day_text}{distance_text}"
 
     append_compact_stock_table(lines, "突破后跟踪", post_rows, "*无突破后跟踪标的*",
                                cols_per_row=4, format_cell=_format_post_breakout_cell)

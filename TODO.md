@@ -516,6 +516,7 @@ for each stock in quant_output where structure_stage in {VCP_MATURE, VCP_TIGHT}:
 - [x] AI 日报接入每日工作流：四类Dashboard分析数据全部发布后确定性生成月目录报告，作为阻断型必需产物纳入随后完整性核验与进度监控
 - [x] Bloom 突破后状态映射修复（`structure_stage=NONE` 时优先消费 `post_breakout_state`，避免误兜底为 `FORMING`）
 - [x] VCP 突破后生命周期跟踪：页面“全部”改为“突破前跟踪”，新增 HOT/RETEST/CONSOLIDATING 独立列表，FAILED/EXPIRED 当日退出；Bloom、自选同步统一直接消费模型二突破后状态
+- [x] 突破后结构分冻结：模型二按突破日前时间锚点固化原 VCP `structure_breakout_score`，Bloom 与 VCP 页面只传递和展示冻结分，不再显示当日重扫分
 - [x] 重点观察智能过滤（结构分门槛）与排序规则（买点优先 + 结构强弱）
 - [x] 交易策略参考文档（instructions/trading-strategy.md）
 - [x] 日线缓存 30 天保留 + --date 回测参数

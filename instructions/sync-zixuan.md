@@ -58,7 +58,7 @@ post_breakout_state=POST_BREAKOUT_HOT / POST_BREAKOUT_RETEST / POST_BREAKOUT_CON
 ### 添加当日目标
 
 - 对当日目标集合按重点排序的反向顺序逐只调用添加接口：低权重标的先添加，高权重标的后添加，使高权重标的最终更靠前。
-- 重点排序从高到低为：已触发买点 > VCP_TIGHT > VCP_MATURE > FORMING / EARLY（按结构分降序）；同级按代码排序。
+- 重点排序从高到低为：已触发买点 > 突破后跟踪（按 `structure_breakout_score` 降序）> VCP_TIGHT > VCP_MATURE > FORMING / EARLY（按当日结构分降序）；同级按代码排序。
 - 添加成功后写入受管账本。
 - 如果添加接口提示该股票已存在或调用失败，不接管删除权，并由下一次工作流重新尝试添加。
 

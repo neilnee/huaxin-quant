@@ -170,7 +170,7 @@ def compact_candidate(row: dict, quant: dict, industry: dict) -> dict:
         "contraction_extension_tags", "contraction_extension_score", "contraction_extensions",
         "days_tracked", "days_in_observation", "score_change", "watch_reason", "next_watch_point",
         "llm_insight", "valuation_candidate", "valuation_priority", "post_breakout_state",
-        "structure_breakout_date", "breakout_days", "structure_breakout_level",
+        "structure_breakout_date", "structure_breakout_score", "breakout_days", "structure_breakout_level",
     )
     result = {field: row.get(field, "") for field in fields}
     quant_overrides = {
@@ -199,6 +199,7 @@ def compact_candidate(row: dict, quant: dict, industry: dict) -> dict:
         "contraction_extensions": "contraction_extensions",
         "post_breakout_state": "post_breakout_state",
         "structure_breakout_date": "structure_breakout_date",
+        "structure_breakout_score": "structure_breakout_score",
         "breakout_days": "breakout_days",
         "structure_breakout_level": "structure_breakout_level",
     }
@@ -258,7 +259,7 @@ def build_context(date_yy: str) -> dict:
         row.get("tracking_scope") == "POST_BREAKOUT",
         row.get("bloom_status") != "TRIGGERED",
         row.get("bloom_status") != "MATURE",
-        -float(row["structure_score"] or 0),
+        -float((row.get("structure_breakout_score") if row.get("tracking_scope") == "POST_BREAKOUT" else row.get("structure_score")) or 0),
     ))
     summary = dict(bloom.get("summary", {}))
     summary["source_status_dist"] = summary.get("status_dist", {})

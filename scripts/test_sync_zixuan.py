@@ -11,7 +11,7 @@ def sample_row(**overrides):
         "code": "600547", "name": "山东黄金", "last_seen": "2026-08-20",
         "model2_stage": "VCP_FORMING", "structure_score": "10",
         "model2_setup_signal": "NONE", "bloom_status": "COOLDOWN",
-        "post_breakout_state": "",
+        "post_breakout_state": "", "structure_breakout_score": "",
     }
     row.update(overrides)
     return row
@@ -19,8 +19,11 @@ def sample_row(**overrides):
 
 class SyncZixuanTargetTests(unittest.TestCase):
     def test_active_post_breakout_state_is_selected_without_stage_score(self):
-        result = target_row(sample_row(post_breakout_state="POST_BREAKOUT_HOT"), "2026-08-20")
+        result = target_row(sample_row(
+            post_breakout_state="POST_BREAKOUT_HOT", structure_breakout_score="81",
+        ), "2026-08-20")
         self.assertEqual(result["selection"], "POST_BREAKOUT_TRACKING")
+        self.assertEqual(result["structure_breakout_score"], "81")
 
     def test_terminal_post_breakout_state_is_not_selected_by_rescanned_stage(self):
         result = target_row(sample_row(

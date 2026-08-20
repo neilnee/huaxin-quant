@@ -1,7 +1,7 @@
 # 模型二：量价精筛模型（自执行指令）
 
 - **版本管理**: 由 Git 分支与提交历史管理，文件名不再携带版本号
-- **最近更新**: 2026-08-20（model2_quant_v18）
+- **最近更新**: 2026-08-20（model2_quant_v19）
 - **核心目标**: 在模型一基本面候选池中，寻找 VCP 蓄力结构和可交易触发，输出可复现、可回测、可供模型三/四复用的结构化量价结果。
 - **核心哲学**: 基本面先过滤烂公司，模型二只判断资金行为和价格位置。脚本负责确定性计算，LLM 只做可选解释，不参与结构阶段或交易触发判定。
 - **输入**: `pool/pool_<YYMMDD>.csv`，或命令行指定 `--code/--codes`
@@ -634,6 +634,8 @@ abs(Cn.pullback) <= abs(Cn-1.pullback) * 1.05
 
 原 VCP 的 `price_breakout` 发生在最后一轮收缩后，收盘价首次站上 `structure_pivot × 1.01`。突破并不立即删除原结构：它仍用于记录完整的“收缩 → 突破 → 跟随/回踩”质量，但买点权限转入突破后状态管理。
 
+突破生命周期必须同时冻结 `structure_breakout_score`：使用突破日前最后一个交易日可见数据，对本次突破所对应的原 VCP 按既有 `structure_score` 规则评分。该值与 BREAKOUT/RETEST 的 `setup_structure_score` 使用同一突破前时间锚点；突破后不得随当日重新扫描出的结构阶段、位置或量能变化而改写。若历史数据无法重建该锚点则留空，不得用当日 `structure_score` 冒充。
+
 | post_breakout_state | 含义 | 买点权限 |
 |---|---|---|
 | `PRE_BREAKOUT` | 尚未发生价格突破 | PULLBACK / BREAKOUT |
@@ -1062,6 +1064,7 @@ suggested_position
 model2_include
 
 structure_score
+structure_breakout_score
 structure_risk_score
 structure_risk_flags
 setup_pattern_score

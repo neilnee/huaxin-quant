@@ -2131,6 +2131,14 @@ def build_setup_score_context(df, structure, current_score):
     return context
 
 
+def frozen_breakout_structure_score(structure):
+    """Return the pre-breakout VCP score already frozen in setup context."""
+    if structure.get("post_breakout_state", "PRE_BREAKOUT") == "PRE_BREAKOUT":
+        return None
+    context = (structure.get("setup_score_context") or {}).get("RETEST_BUY") or {}
+    return round_or_none(context.get("structure_score"))
+
+
 def structure_stage_from_internal(state):
     stage_map = {
         "VCP_EARLY": "VCP_EARLY",
@@ -2303,6 +2311,7 @@ def screen(df, code=None):
             "post_breakout_state": "PRE_BREAKOUT",
             "post_breakout_failure": None,
             "structure_breakout_date": "",
+            "structure_breakout_score": None,
             "structure_breakout_level": None,
             "breakout_days": None,
             "vcp_quality": "D",
@@ -2327,6 +2336,7 @@ def screen(df, code=None):
     score = score_setup(df, structure, {}, {}, overheat)
     structure["structure_score_estimate"] = score["structure_score"]
     structure["setup_score_context"] = build_setup_score_context(df, structure, score)
+    structure_breakout_score = frozen_breakout_structure_score(structure)
     pullback = detect_pullback_buy(df, structure, overheat)
     breakout = detect_breakout_buy(df, structure, overheat)
     retest = detect_retest_buy(df, structure, overheat, code=code)
@@ -2393,6 +2403,7 @@ def screen(df, code=None):
         "post_breakout_state": structure.get("post_breakout_state", "PRE_BREAKOUT"),
         "post_breakout_failure": structure.get("post_breakout_failure"),
         "structure_breakout_date": (structure.get("breakout") or {}).get("date", ""),
+        "structure_breakout_score": structure_breakout_score,
         "structure_breakout_level": round_or_none((structure.get("breakout") or {}).get("level")),
         "breakout_days": structure.get("breakout_days"),
         "vcp_quality": final_quality,
@@ -2419,7 +2430,7 @@ CSV_COLUMNS = [
     "contraction_extension_tags", "contraction_extension_score", "contraction_extensions", "volume_pattern",
     "pivot_price", "structure_pivot", "market_pivot", "pivot_distance", "last_contraction_low",
     "structure_age_days", "structure_valid", "structure_invalid_reason",
-    "post_structure_gain", "post_structure_drawdown", "post_breakout_state", "structure_breakout_date", "structure_breakout_level", "breakout_days", "vcp_quality",
+    "post_structure_gain", "post_structure_drawdown", "post_breakout_state", "structure_breakout_date", "structure_breakout_score", "structure_breakout_level", "breakout_days", "vcp_quality",
     "close", "MA20", "MA60", "MA120", "MA20_slope", "MA60_slope",
     "range_10", "range_20", "range_60",
     "volume", "vol_ma5", "vol_ma20", "vol_ma60", "vol_ratio", "volume_dry_up",
@@ -2525,6 +2536,7 @@ def write_csv(results, quant_path):
                 r["post_structure_drawdown"] if r["post_structure_drawdown"] is not None else "",
                 r.get("post_breakout_state", ""),
                 r.get("structure_breakout_date", ""),
+                r["structure_breakout_score"] if r.get("structure_breakout_score") is not None else "",
                 r["structure_breakout_level"] if r.get("structure_breakout_level") is not None else "",
                 r["breakout_days"] if r.get("breakout_days") is not None else "",
                 r["vcp_quality"],

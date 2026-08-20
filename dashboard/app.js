@@ -61,6 +61,12 @@ renderVcpDetail = function (row) {
     tags?.insertAdjacentHTML("afterbegin",`<span class="status-pill status-cooldown">${esc(labels[row.post_breakout_state]||row.post_breakout_state||"突破后跟踪")}</span>`);
     const metrics=detail.querySelector(".vcp-metrics");
     metrics?.insertAdjacentHTML("afterbegin",`<div class="vcp-metric"><span>突破日期</span><b>${esc(row.structure_breakout_date||"—")}</b></div><div class="vcp-metric"><span>突破后交易日</span><b>${row.breakout_days==null||row.breakout_days===""?"—":`${esc(row.breakout_days)} 日`}</b></div><div class="vcp-metric"><span>原 Pivot</span><b>${vcpNumber(row.structure_breakout_level||row.pivot_price,2)}</b></div>`);
+    const currentScoreMetric=[...detail.querySelectorAll(".vcp-metric")].find(item=>item.querySelector("span")?.textContent==="结构评分");
+    if(currentScoreMetric){currentScoreMetric.querySelector("span").textContent="突破时结构分";currentScoreMetric.querySelector("b").textContent=vcpNumber(row.structure_breakout_score,0);}
+    const scoreGrid=detail.querySelector(".vcp-score-grid");
+    scoreGrid?.previousElementSibling?.remove();
+    scoreGrid?.remove();
+    detail.querySelectorAll(".vcp-evidence").forEach(item=>item.remove());
   }
   detail.querySelector(".vcp-contraction-summary")?.remove();
   detail.querySelectorAll(".vcp-contraction-table tr").forEach((row) => row.lastElementChild?.remove());
@@ -81,7 +87,7 @@ renderVcp = function () {
   const scopeLabel=vcpFilter==="POST_BREAKOUT"?"突破后标的":"突破前结构";
   $("vcp-filter-note").textContent=`显示 ${filtered.length}/${rows.length} 只 · ${scopeLabel}`;
   if(!filtered.some(row=>row.code===vcpSelectedCode))vcpSelectedCode=filtered[0]?.code;
-  $("vcp-table").innerHTML=`<thead><tr><th>标的</th><th>${vcpFilter==="POST_BREAKOUT"?"突破后状态":"结构"}</th><th>生命周期</th><th>${vcpFilter==="POST_BREAKOUT"?"突破后日数":"买点"}</th><th>结构分</th><th>风险</th></tr></thead><tbody>${filtered.map(row=>`<tr class="vcp-table-row ${row.code===vcpSelectedCode?"selected":""}" data-code="${esc(row.code)}"><td><b>${esc(row.name)}</b><br><span class="vcp-list-note">${esc(row.code)}</span></td><td>${esc(row.tracking_scope==="POST_BREAKOUT"?(postLabels[row.post_breakout_state]||row.post_breakout_state||"—"):(row.model2_stage||"—"))}</td><td>${row.tracking_scope==="POST_BREAKOUT"?esc(row.structure_breakout_date||"—"):vcpStatus(row.bloom_status)}</td><td>${row.tracking_scope==="POST_BREAKOUT"?(row.breakout_days==null||row.breakout_days===""?"—":`${esc(row.breakout_days)} 日`):esc(row.model2_setup_signal||"—")}</td><td>${vcpNumber(row.structure_score,0)}</td><td class="risk-${String(row.risk_level||"").toLowerCase()}">${esc(row.risk_level||"—")}</td></tr>`).join("")||"<tr><td colspan='6' class='muted'>该跟踪范围暂无标的</td></tr>"}</tbody>`;
+  $("vcp-table").innerHTML=`<thead><tr><th>标的</th><th>${vcpFilter==="POST_BREAKOUT"?"突破后状态":"结构"}</th><th>生命周期</th><th>${vcpFilter==="POST_BREAKOUT"?"突破后日数":"买点"}</th><th>${vcpFilter==="POST_BREAKOUT"?"突破时结构分":"结构分"}</th><th>风险</th></tr></thead><tbody>${filtered.map(row=>`<tr class="vcp-table-row ${row.code===vcpSelectedCode?"selected":""}" data-code="${esc(row.code)}"><td><b>${esc(row.name)}</b><br><span class="vcp-list-note">${esc(row.code)}</span></td><td>${esc(row.tracking_scope==="POST_BREAKOUT"?(postLabels[row.post_breakout_state]||row.post_breakout_state||"—"):(row.model2_stage||"—"))}</td><td>${row.tracking_scope==="POST_BREAKOUT"?esc(row.structure_breakout_date||"—"):vcpStatus(row.bloom_status)}</td><td>${row.tracking_scope==="POST_BREAKOUT"?(row.breakout_days==null||row.breakout_days===""?"—":`${esc(row.breakout_days)} 日`):esc(row.model2_setup_signal||"—")}</td><td>${vcpNumber(row.tracking_scope==="POST_BREAKOUT"?row.structure_breakout_score:row.structure_score,0)}</td><td class="risk-${String(row.risk_level||"").toLowerCase()}">${esc(row.risk_level||"—")}</td></tr>`).join("")||"<tr><td colspan='6' class='muted'>该跟踪范围暂无标的</td></tr>"}</tbody>`;
   $("vcp-table").querySelectorAll("tbody tr[data-code]").forEach(tr=>tr.onclick=()=>{vcpSelectedCode=tr.dataset.code;renderVcp();});
   renderVcpDetail(filtered.find(row=>row.code===vcpSelectedCode));
   $("vcp-meta").textContent = "";

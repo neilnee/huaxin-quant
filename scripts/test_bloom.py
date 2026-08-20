@@ -58,12 +58,13 @@ class BloomStatusMappingTests(unittest.TestCase):
     def test_state_row_keeps_model2_post_breakout_facts(self):
         row = sample_row(
             structure_breakout_date="2026-07-30", breakout_days=15,
-            structure_breakout_level=27.33,
+            structure_breakout_level=27.33, structure_breakout_score=81,
         )
         result = state_row({}, row, "2026-08-20", base_status(row))
         self.assertEqual(result["post_breakout_state"], "POST_BREAKOUT_HOT")
         self.assertEqual(result["structure_breakout_date"], "2026-07-30")
         self.assertEqual(result["breakout_days"], "15")
+        self.assertEqual(result["structure_breakout_score"], "81")
         self.assertEqual(result["consecutive_reject"], "0")
 
     def test_post_breakout_does_not_reenter_pre_breakout_focus_by_rescanned_stage(self):

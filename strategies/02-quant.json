@@ -1,5 +1,5 @@
 {
-  "strategy_version": "model2_quant_v18",
+  "strategy_version": "model2_quant_v19",
   "description": "Model 2 VCP structure and setup signal parameters. This file contains thresholds and weights only; algorithms stay in scripts/quant_filter.py.",
   "vcp": {
     "lookback_days": 120,

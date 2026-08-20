@@ -135,7 +135,7 @@ class DashboardVcpIndustryContextTests(unittest.TestCase):
             row = {
                 "code": "600547", "name": "山东黄金", "bloom_status": "COOLDOWN",
                 "post_breakout_state": "POST_BREAKOUT_HOT", "structure_breakout_date": "2026-07-30",
-                "breakout_days": "15", "structure_score": "62",
+                "structure_breakout_score": "81", "breakout_days": "15", "structure_score": "62",
             }
             bloom = {
                 "summary": {"date": "2026-08-20", "status_dist": {"COOLDOWN": 1}},
@@ -144,7 +144,8 @@ class DashboardVcpIndustryContextTests(unittest.TestCase):
             quant = {"results": [{
                 "code": "600547", "name": "山东黄金", "structure_stage": "VCP_FORMING",
                 "post_breakout_state": "POST_BREAKOUT_HOT", "structure_breakout_date": "2026-07-30",
-                "breakout_days": 15, "structure_breakout_level": 27.33, "structure_score": 62,
+                "structure_breakout_score": 81, "breakout_days": 15,
+                "structure_breakout_level": 27.33, "structure_score": 62,
             }]}
             (bloom_dir / "bloom_input_260820.json").write_text(json.dumps(bloom, ensure_ascii=False), encoding="utf-8")
             (quant_dir / "quant_260820.json").write_text(json.dumps(quant, ensure_ascii=False), encoding="utf-8")
@@ -159,6 +160,7 @@ class DashboardVcpIndustryContextTests(unittest.TestCase):
         self.assertEqual(result["summary"]["post_breakout_total"], 1)
         self.assertEqual(result["candidates"][0]["tracking_scope"], "POST_BREAKOUT")
         self.assertEqual(result["candidates"][0]["post_breakout_state"], "POST_BREAKOUT_HOT")
+        self.assertEqual(result["candidates"][0]["structure_breakout_score"], 81)
 
     def test_same_day_market_csv_enriches_historical_candidate(self):
         with tempfile.TemporaryDirectory() as tmp:

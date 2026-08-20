@@ -46,7 +46,7 @@ RETRY_PAUSE_SECONDS = 15.0
 
 MANAGED_FIELDS = [
     "code", "name", "date", "selection", "model2_stage",
-    "structure_score", "model2_setup_signal", "bloom_status", "post_breakout_state",
+    "structure_score", "structure_breakout_score", "model2_setup_signal", "bloom_status", "post_breakout_state",
 ]
 
 
@@ -131,6 +131,7 @@ def target_row(row, date_iso):
         "selection": selection,
         "model2_stage": stage,
         "structure_score": row.get("structure_score", ""),
+        "structure_breakout_score": row.get("structure_breakout_score", ""),
         "model2_setup_signal": setup,
         "bloom_status": bloom_status,
         "post_breakout_state": post_state,
@@ -144,7 +145,7 @@ def read_bloom_targets(date_yy, path=None):
     date_iso = date_to_iso(date_yy)
     required = {
         "code", "name", "last_seen", "model2_stage", "structure_score",
-        "model2_setup_signal", "bloom_status", "post_breakout_state",
+        "structure_breakout_score", "model2_setup_signal", "bloom_status", "post_breakout_state",
     }
     targets = {}
     with path.open(encoding="utf-8-sig", newline="") as f:
@@ -182,6 +183,7 @@ def read_managed(path=None):
                 "selection": str(row.get("selection") or "LEGACY_MANAGED"),
                 "model2_stage": str(row.get("model2_stage") or ""),
                 "structure_score": str(row.get("structure_score") or ""),
+                "structure_breakout_score": str(row.get("structure_breakout_score") or ""),
                 "model2_setup_signal": str(row.get("model2_setup_signal") or ""),
                 "bloom_status": str(row.get("bloom_status") or ""),
                 "post_breakout_state": str(row.get("post_breakout_state") or ""),
@@ -235,7 +237,7 @@ def sort_key(row):
         0 if "SETUP_TRIGGER" in row["selection"] else 1,
         0 if row.get("post_breakout_state") in POST_BREAKOUT_TRACKING_STATES else 1,
         -stage_rank.get(row["model2_stage"], 0),
-        -safe_float(row["structure_score"]),
+        -safe_float(row.get("structure_breakout_score") if row.get("post_breakout_state") in POST_BREAKOUT_TRACKING_STATES else row["structure_score"]),
         row["code"],
     )
 

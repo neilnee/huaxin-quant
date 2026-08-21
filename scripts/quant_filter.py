@@ -73,6 +73,7 @@ SETUP_CFG = QUANT_STRATEGY["setup_rules"]
 SCORE_CFG = QUANT_STRATEGY["scores"]
 CLASSIFICATION_CFG = QUANT_STRATEGY["classification"]
 SETUP_SCORING_CFG = QUANT_STRATEGY.get("setup_scoring", {})
+PRICE_ADJUSTMENT_CFG = QUANT_STRATEGY["price_adjustment"]
 
 TEST_CODES = [
     "688256", "301329", "300394", "300308", "002028",
@@ -2858,7 +2859,9 @@ CSV_COLUMNS = [
     "range_10", "range_20", "range_60",
     "volume", "vol_ma5", "vol_ma20", "vol_ma60", "vol_ratio", "volume_dry_up",
     "distance_ma20", "distance_ma60", "distance_high_60",
-    "chg_5", "chg_20", "reason", "run_date", "strategy_version",
+    "chg_5", "chg_20", "price_mode", "adjustment_status", "factor_version",
+    "applied_action_count", "latest_corporate_action_date",
+    "reason", "run_date", "strategy_version",
 ]
 
 
@@ -2990,6 +2993,11 @@ def write_csv(results, quant_path):
                 r["distance_high_60"] if r["distance_high_60"] is not None else "",
                 r["chg_5"] if r["chg_5"] is not None else "",
                 r["chg_20"] if r["chg_20"] is not None else "",
+                r.get("price_mode", ""),
+                r.get("adjustment_status", ""),
+                r.get("factor_version", ""),
+                r.get("applied_action_count", 0),
+                r.get("latest_corporate_action_date") or "",
                 r["reason"],
                 r["run_date"],
                 r["strategy_version"],
@@ -3024,6 +3032,11 @@ def print_single_summary(result):
         print(f"结构失效: {result['structure_invalid_reason']} | 结构后涨幅 {result['post_structure_gain']}% | 回撤 {result['post_structure_drawdown']}%")
     print(f"质量 {result['vcp_quality']}")
     print(f"收盘: {result['close']} | MA20 {result['MA20']} | MA60 {result['MA60']}")
+    print(
+        f"价格口径: {result.get('price_mode')} | 复权核验 {result.get('adjustment_status')}"
+        f" | 已应用事件 {result.get('applied_action_count', 0)}"
+        f" | 最近除权日 {result.get('latest_corporate_action_date') or '-'}"
+    )
     print(f"距MA20: {result['distance_ma20']}% | 距MA60: {result['distance_ma60']}% | 距60日高点: {result['distance_high_60']}%")
     print(f"支撑: {result['support_price']} | 失效: {result['invalid_price']} | 突破位: {result['breakout_level']}")
     print(f"结论: {result['reason']}")
@@ -3169,9 +3182,19 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True, p
         "cache_hits": 0,
         "api_calls": 0,
         "tdx_calls": 0,
+        "adjustment_no_action": 0,
+        "adjustment_verified": 0,
+        "adjustment_partial": 0,
+        "adjustment_pending": 0,
+        "adjustment_conflict": 0,
     }
     service = MarketDataService(MARKET_DATA_CONFIG)
-    frames, data_status = service.get_daily_bars(codes, run_date, max(200, BASE_CFG["min_runtime_data_days"]), force_refresh=not use_cache)
+    frames, data_status = service.get_daily_bars(
+        codes, run_date, max(200, BASE_CFG["min_runtime_data_days"]),
+        force_refresh=not use_cache,
+        price_mode=PRICE_ADJUSTMENT_CFG["mode"],
+        adjustment_config=PRICE_ADJUSTMENT_CFG,
+    )
     fatal_stop = False
     retry_queue = []
 
@@ -3185,6 +3208,10 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True, p
 
         print(f"[{i+1}/{len(codes)}] {code} {name} ...", end=" ", flush=True)
         df, source = frames.get(code), data_status.get(code, {"source": "missing", "error": "数据库未返回数据", "retryable": False})
+        adjustment_status = str(source.get("adjustment_status") or "PENDING").lower()
+        stats_key = f"adjustment_{adjustment_status}"
+        if stats_key in stats:
+            stats[stats_key] += 1
         if df is None:
             if allow_retry and source["retryable"]:
                 print(f"失败: {source['error']}，加入重试队列")
@@ -3212,6 +3239,13 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True, p
         stats["pull_ok"] += 1
         df = calc_indicators(df)
         result = result_from_df(code, name, df, run_date)
+        result.update({
+            "price_mode": source.get("price_mode", PRICE_ADJUSTMENT_CFG["mode"]),
+            "adjustment_status": source.get("adjustment_status", "PENDING"),
+            "factor_version": source.get("factor_version", PRICE_ADJUSTMENT_CFG["factor_version"]),
+            "applied_action_count": int(source.get("applied_action_count", 0)),
+            "latest_corporate_action_date": source.get("latest_corporate_action_date"),
+        })
         results.append(result)
         print(f"{result['structure_stage']} / {result['setup_signal']} | score={result['structure_score']} | {result['reason'][:48]}")
         _write_quant_progress(
@@ -3295,6 +3329,10 @@ def main():
             "schema": "quant_vcp_structure_v2",
             "strategy_version": STRATEGY_VERSION,
             "strategy_file": f"strategies/{QUANT_STRATEGY_FILE}",
+            "price_mode": PRICE_ADJUSTMENT_CFG["mode"],
+            "adjustment_factor_version": PRICE_ADJUSTMENT_CFG["factor_version"],
+            "corporate_action_source": PRICE_ADJUSTMENT_CFG["primary_source"],
+            "adjustment_verification_source": PRICE_ADJUSTMENT_CFG["verification_source"],
         },
         "stats": stats,
         "llm": llm_payload,

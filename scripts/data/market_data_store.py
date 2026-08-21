@@ -62,6 +62,31 @@ def create_schema(conn: sqlite3.Connection) -> None:
             source TEXT NOT NULL, fetched_at TEXT NOT NULL, PRIMARY KEY (code, trade_date)
         );
         CREATE INDEX IF NOT EXISTS idx_daily_bars_date ON daily_bars(trade_date);
+        CREATE TABLE IF NOT EXISTS corporate_actions (
+            code TEXT NOT NULL, ex_date TEXT NOT NULL,
+            cash_dividend_per_10 REAL NOT NULL DEFAULT 0,
+            bonus_shares_per_10 REAL NOT NULL DEFAULT 0,
+            rights_shares_per_10 REAL NOT NULL DEFAULT 0,
+            rights_price REAL NOT NULL DEFAULT 0,
+            source TEXT NOT NULL, source_hash TEXT NOT NULL,
+            first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
+            PRIMARY KEY (code, ex_date, source)
+        );
+        CREATE INDEX IF NOT EXISTS idx_corporate_actions_date ON corporate_actions(ex_date);
+        CREATE TABLE IF NOT EXISTS corporate_action_syncs (
+            code TEXT NOT NULL, source TEXT NOT NULL, as_of_date TEXT NOT NULL,
+            status TEXT NOT NULL, action_count INTEGER NOT NULL DEFAULT 0,
+            source_hash TEXT, error_message TEXT, fetched_at TEXT NOT NULL,
+            PRIMARY KEY (code, source, as_of_date)
+        );
+        CREATE TABLE IF NOT EXISTS adjustment_verifications (
+            code TEXT NOT NULL, ex_date TEXT NOT NULL,
+            primary_source TEXT NOT NULL, verification_source TEXT NOT NULL,
+            status TEXT NOT NULL, sample_count INTEGER NOT NULL DEFAULT 0,
+            max_factor_diff_pct REAL, max_raw_close_diff_pct REAL,
+            detail_json TEXT NOT NULL, verified_at TEXT NOT NULL,
+            PRIMARY KEY (code, ex_date, primary_source, verification_source)
+        );
         CREATE TABLE IF NOT EXISTS block_snapshots (
             snapshot_date TEXT NOT NULL, block_kind TEXT NOT NULL, block_name TEXT NOT NULL,
             source_file TEXT NOT NULL, source_hash TEXT NOT NULL, member_count INTEGER NOT NULL,
@@ -93,5 +118,5 @@ def create_schema(conn: sqlite3.Connection) -> None:
         );
         """
     )
-    conn.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema_version', '2')")
+    conn.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema_version', '3')")
     conn.commit()

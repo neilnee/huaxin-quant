@@ -145,6 +145,23 @@ class DailyAiReportTests(unittest.TestCase):
         self.assertEqual(counts["display_vcp_items"]["total"], 1)
         self.assertEqual(counts["display_vcp_items"]["counts"]["FORMING"], 1)
 
+    def test_display_vcp_status_counts_include_data_issues(self):
+        payloads = contexts()
+        data_issue = dict(payloads["vcp"]["candidates"][0])
+        data_issue["code"] = "000002"
+        data_issue["bloom_status"] = "DATA_ISSUE"
+        payloads["vcp"]["candidates"].append(data_issue)
+
+        report = daily_ai_report.build_report(
+            payloads, {key: f"{key}.js" for key in daily_ai_report.MODULES}, "260817", "2026-08-17"
+        )
+        display = report["vcp_structures"]["summary"]["status_counts"]["display_vcp_items"]
+
+        self.assertEqual(display["total"], 2)
+        self.assertEqual(display["counts"]["FORMING"], 1)
+        self.assertEqual(display["counts"]["DATA_ISSUE"], 1)
+        daily_ai_report.validate_report(report)
+
     def test_invalid_declared_vcp_sector_type_fails(self):
         payloads = contexts()
         payloads["vcp"]["candidates"][0]["sector"]["short_pulse"] = "maybe"

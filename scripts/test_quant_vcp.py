@@ -511,6 +511,65 @@ class CloseBasedContractionTests(unittest.TestCase):
         self.assertFalse(result["hit"])
         self.assertIn("禁止旧结构PULLBACK_BUY", result["reason"])
 
+    def test_provisional_low_day_cannot_self_confirm_pullback_from_intraday_low(self):
+        df = pd.DataFrame([{
+            "date": "2026-08-21", "close": 100.0, "low": 95.0, "volume": 70.0,
+            "distance_ma20": 0.0, "distance_ma60": 0.0, "volume_dry_up": 0.7,
+            "MA20_slope": 1.0, "MA20": 100.0, "MA60": 100.0,
+            "vol_ma20": 100.0, "low_20": 95.0,
+        }])
+        structure = {
+            "state": "VCP_FORMING", "post_breakout_state": "PRE_BREAKOUT",
+            "volume_pattern": "decreasing", "last_contraction_low": 95.0,
+            "contraction_group": [{
+                "low_price": 95.0, "end_close": 100.0, "avg_volume": 100.0,
+                "confirmation_status": "PROVISIONAL", "right_confirm_days": 0,
+            }],
+            "setup_score_context": {"PULLBACK_BUY": {"structure_score": 71.0}},
+        }
+
+        result = quant.detect_pullback_buy(
+            df, structure, {"risk_flags": [], "risk_score": 0}
+        )
+
+        self.assertGreater(df.iloc[-1]["close"], structure["last_contraction_low"] * 1.02)
+        self.assertFalse(result["hit"])
+        self.assertIn("最近收缩低点未守住", result["setup_misses"])
+        self.assertEqual(result["plan_inputs"]["last_low_confirmation_anchor"], "end_close")
+        self.assertEqual(result["plan_inputs"]["last_low_required_price"], 102.0)
+
+    def test_later_close_can_confirm_pullback_above_end_close(self):
+        df = pd.DataFrame([{
+            "date": "2026-08-24", "close": 102.1, "low": 99.0, "volume": 70.0,
+            "distance_ma20": 2.1, "distance_ma60": 2.1, "volume_dry_up": 0.7,
+            "MA20_slope": 1.0, "MA20": 100.0, "MA60": 100.0,
+            "vol_ma20": 100.0, "low_20": 95.0,
+        }])
+        structure = {
+            "state": "VCP_FORMING", "post_breakout_state": "PRE_BREAKOUT",
+            "volume_pattern": "decreasing", "last_contraction_low": 95.0,
+            "contraction_group": [{
+                "low_price": 95.0, "end_close": 100.0, "avg_volume": 100.0,
+                "confirmation_status": "PROVISIONAL", "right_confirm_days": 1,
+            }],
+            "setup_score_context": {"PULLBACK_BUY": {"structure_score": 71.0}},
+        }
+
+        result = quant.detect_pullback_buy(
+            df, structure, {"risk_flags": [], "risk_score": 0}
+        )
+
+        self.assertTrue(result["hit"])
+        self.assertEqual(result["reason"], "缩量回踩MA20")
+
+    def test_pullback_does_not_fall_back_to_intraday_low_without_end_close(self):
+        structure = {
+            "contraction_group": [{"low_price": 95.0}],
+            "last_contraction_low": 95.0,
+        }
+
+        self.assertIsNone(quant.pullback_confirmation_close(structure))
+
     def test_breakout_score_uses_pre_breakout_structure_anchor(self):
         structure = {
             "state": "VCP_FORMING",

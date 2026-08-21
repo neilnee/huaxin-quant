@@ -1481,6 +1481,16 @@ def pullback_volume_confirmed(df, structure, cfg):
     return False, "recent_volume_not_low"
 
 
+def pullback_confirmation_close(structure):
+    """Return the close-swing low used to confirm PULLBACK stabilization."""
+    group = structure.get("contraction_group") or []
+    if group:
+        end_close = safe_float(group[-1].get("end_close"))
+        if end_close is not None and end_close > 0:
+            return end_close
+    return None
+
+
 def setup_quality(score):
     if score >= SETUP_QUALITY_THRESHOLDS.get("A", 80):
         return "A"
@@ -1706,12 +1716,12 @@ def score_pullback_setup(df, structure, volume_ok, volume_reason):
     else:
         misses.append("缩量质量不足")
 
-    last_low = safe_float(structure.get("last_contraction_low"))
+    confirmation_close = pullback_confirmation_close(structure)
     ma20_slope = safe_float(latest.get("MA20_slope"), 0)
-    if last_low and latest["close"] > last_low * 1.05 and ma20_slope >= 0:
+    if confirmation_close and latest["close"] > confirmation_close * 1.05 and ma20_slope >= 0:
         score += 5
         reasons.append("前低上方确认强")
-    elif last_low and latest["close"] > last_low * 1.02 and ma20_slope >= -0.03:
+    elif confirmation_close and latest["close"] > confirmation_close * 1.02 and ma20_slope >= -0.03:
         score += 2
         reasons.append("前低守住")
     else:
@@ -1859,10 +1869,11 @@ def detect_pullback_buy(df, structure, overheat):
     near_ma60 = pd.notna(latest.get("distance_ma60")) and ma60_min <= latest["distance_ma60"] <= ma60_max
     low20 = latest.get("low_20")
     last_low = safe_float(structure.get("last_contraction_low"))
+    confirmation_close = pullback_confirmation_close(structure)
     early_gate = cfg.get("post_breakout_early_gate") or {}
     last_low_distance = (
-        (safe_float(latest.get("close")) - last_low) / last_low * 100
-        if last_low else None
+        (safe_float(latest.get("close")) - confirmation_close) / confirmation_close * 100
+        if confirmation_close else None
     )
     last_low_distance_range = early_gate.get("last_low_distance_range_pct", [0, 0])
     near_last_low = bool(
@@ -1876,7 +1887,8 @@ def detect_pullback_buy(df, structure, overheat):
         if early_post_breakout else cfg["last_low_buffer_pct"]
     )
     last_low_required_price = (
-        last_low * (1 + last_low_confirm_pct / 100) if last_low is not None else None
+        confirmation_close * (1 + last_low_confirm_pct / 100)
+        if confirmation_close is not None else None
     )
     volume_ok, volume_reason = pullback_volume_confirmed(df, structure, cfg)
     volume_floor_ok = volume_ok or safe_float(latest.get("volume_dry_up"), 999) < 0.9
@@ -1908,15 +1920,17 @@ def detect_pullback_buy(df, structure, overheat):
         "ma60_price_low": ma60 * (1 + ma60_min / 100) if ma60 is not None else None,
         "ma60_price_high": ma60 * (1 + ma60_max / 100) if ma60 is not None else None,
         "last_low_required_price": last_low_required_price,
+        "last_low_confirmation_anchor": "end_close",
+        "last_low_confirmation_price": confirmation_close,
         "last_low_price_low": last_low_required_price if near_last_low else None,
         "last_low_price_high": (
-            last_low * (1 + early_gate.get("entry_max_distance_pct", last_low_confirm_pct) / 100)
-            if near_last_low and last_low is not None else None
+            confirmation_close * (1 + early_gate.get("entry_max_distance_pct", last_low_confirm_pct) / 100)
+            if near_last_low and confirmation_close is not None else None
         ),
         "last_low_ideal_price_low": last_low_required_price if near_last_low else None,
         "last_low_ideal_price_high": (
-            last_low * (1 + min(3.0, early_gate.get("entry_max_distance_pct", 3.0)) / 100)
-            if near_last_low and last_low is not None else None
+            confirmation_close * (1 + min(3.0, early_gate.get("entry_max_distance_pct", 3.0)) / 100)
+            if near_last_low and confirmation_close is not None else None
         ),
         "volume_dry_up_threshold": cfg["volume_dry_up_lt"],
         "volume_floor_threshold": vol_ma20 * 0.9 if vol_ma20 is not None else None,

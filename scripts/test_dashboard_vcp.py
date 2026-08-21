@@ -216,9 +216,11 @@ class DashboardVcpIndustryContextTests(unittest.TestCase):
 
         self.assertIn('["PRE_BREAKOUT_FOCUS","突破前跟踪"]', app)
         self.assertIn('["PRE_BREAKOUT_ALL","全部"]', app)
-        self.assertIn('$("vcp-detail").scrollTop=0', app)
+        self.assertNotIn('$("vcp-detail").scrollTop=0', app)
         self.assertIn('id="vcp-list-scroll"', page)
-        self.assertIn(".vcp-list-scroll,.vcp-detail-scroll", css)
+        self.assertNotIn("vcp-detail-scroll", page)
+        self.assertIn("max-height:1236px", css)
+        self.assertIn("#vcp-table tbody tr{height:60px}", css)
 
     def test_same_day_market_csv_enriches_historical_candidate(self):
         with tempfile.TemporaryDirectory() as tmp:

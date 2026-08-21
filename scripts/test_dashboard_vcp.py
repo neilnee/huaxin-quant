@@ -12,6 +12,19 @@ from scripts import dashboard_vcp
 
 
 class DashboardVcpIndustryContextTests(unittest.TestCase):
+    def test_compact_candidate_keeps_prior_breakout_reference(self):
+        quant = {
+            "prior_breakout_bonus_score": 47,
+            "prior_breakout_bonus_reasons": ["前序突破", "强势整理形成新VCP"],
+            "prior_breakout_context_tag": "之前已有突破并强势整理",
+        }
+
+        result = dashboard_vcp.compact_candidate({}, quant, {})
+
+        self.assertEqual(result["prior_breakout_bonus_score"], 47)
+        self.assertEqual(result["prior_breakout_bonus_reasons"], ["前序突破", "强势整理形成新VCP"])
+        self.assertEqual(result["prior_breakout_context_tag"], "之前已有突破并强势整理")
+
     def test_compact_candidate_keeps_standard_and_extension_contractions_separate(self):
         quant = {
             "structure_stage": "VCP_EARLY",

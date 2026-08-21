@@ -171,6 +171,7 @@ def compact_candidate(row: dict, quant: dict, industry: dict) -> dict:
         "days_tracked", "days_in_observation", "score_change", "watch_reason", "next_watch_point",
         "llm_insight", "valuation_candidate", "valuation_priority", "post_breakout_state",
         "structure_breakout_date", "structure_breakout_score", "breakout_days", "structure_breakout_level",
+        "prior_breakout_bonus_score", "prior_breakout_bonus_reasons", "prior_breakout_context_tag",
     )
     result = {field: row.get(field, "") for field in fields}
     quant_overrides = {
@@ -202,6 +203,9 @@ def compact_candidate(row: dict, quant: dict, industry: dict) -> dict:
         "structure_breakout_score": "structure_breakout_score",
         "breakout_days": "breakout_days",
         "structure_breakout_level": "structure_breakout_level",
+        "prior_breakout_bonus_score": "prior_breakout_bonus_score",
+        "prior_breakout_bonus_reasons": "prior_breakout_bonus_reasons",
+        "prior_breakout_context_tag": "prior_breakout_context_tag",
     }
     for target, source in quant_overrides.items():
         if source in quant:

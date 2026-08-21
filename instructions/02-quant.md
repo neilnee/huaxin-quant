@@ -138,6 +138,16 @@ VCP 结构已经成立
 
 `PULLBACK_BUY` 买的是风险收益比。价格较低，失效位清楚，但突破尚未确认，确定性低于 `RETEST_BUY`。
 
+强势突破后新 VCP 例外：若旧 VCP 已被确认突破消耗、当前新 VCP 的全部收缩均发生在突破后，且前序突破附加参考有效，则允许一轮收缩的 `VCP_EARLY` 进入 `PULLBACK_BUY` 判断。该例外不改变普通 `VCP_EARLY`，并必须同时满足：
+
+- 前序突破仍处于 HOT / RETEST / CONSOLIDATING，未失败、未过期；
+- 前序突破冻结结构分不低于策略门槛；
+- 当前新 VCP 至少一轮有效收缩，`volume_pattern in {decreasing, drying}`；
+- 当前新结构低点高于旧 Pivot 的失效线；
+- 继续满足原 PULLBACK 的缩量、最近收缩低点、均线斜率和风险硬条件；位置允许使用 MA20 / MA60，或当前新收缩低点形成的收敛下沿。使用新收缩低点时必须先站上确认缓冲，计划价格区不得与该确认价冲突。
+
+它仍属于新 VCP 的 `PULLBACK_BUY`，旧 VCP 只作为附加参考；不得改写为 `RETEST_BUY`，也不得把旧收缩轮次重新计入当前结构。
+
 仓位建议：
 
 ```text
@@ -647,6 +657,16 @@ abs(Cn.pullback) <= abs(Cn-1.pullback) * 1.05
 
 硬边界：一旦进入任何 `POST_BREAKOUT_*` 状态，原 `contraction_group` 永久禁止 `PULLBACK_BUY` 与重复 `BREAKOUT_BUY`。`POST_BREAKOUT_FAILED` 由突破日至当前日的完整路径判定，不是当日状态：命中任一失效事件后不可因后续反弹恢复为 `RETEST` 或重新成为 `VCP_FORMING`。当状态失败或过期后，旧结构仅保留审计；之后必须从失效日后开始形成新的 contraction group，才能重新产生 PULLBACK / BREAKOUT。
 
+候选组还必须遵守突破消耗边界：若候选组的至少两轮前缀已经在后一轮收缩开始前确认 `price_breakout`，该前缀已被突破消耗，候选组不得再把突破后的收缩拼回旧 VCP。突破后的收缩从新结构重新计数；旧 VCP 继续按原 Pivot 负责 `RETEST_BUY`，新 VCP 独立负责后续 `PULLBACK_BUY` / `BREAKOUT_BUY`，两条路径不得混用收缩轮次。
+
+若当前新 VCP 形成于一轮仍未失败的强势突破整理中，输出前序突破附加参考：
+
+- `prior_breakout_bonus_score`：前序 VCP 突破日前冻结的 `structure_score`；仅展示，不累加进当前 `structure_score`，也不参与阶段或买点硬条件。
+- `prior_breakout_bonus_reasons`：附加参考成立原因，至少说明前序突破日期、原 Pivot 和“突破后强势整理形成新 VCP”。
+- `prior_breakout_context_tag`：固定为“之前已有突破并强势整理”，供信号发现页按需展示；无有效前序突破时为空。
+
+前序突破必须来自至少两轮有效收缩，发生在当前新 VCP 第一轮开始前，且截至当前仍处于 `POST_BREAKOUT_HOT`、`POST_BREAKOUT_RETEST` 或 `POST_BREAKOUT_CONSOLIDATING`。失败、过期、无法重建突破前结构分或当前结构仍混用旧收缩时，均不得生成附加参考。
+
 相邻收缩轮次允许轻微扩张，但明显扩张会打断旧 VCP 组，后一轮应视为新结构的起点：
 
 ```text
@@ -736,7 +756,7 @@ vol_ma20 < vol_ma60
 
 ### PULLBACK_BUY：结构内缩量回踩
 
-必须先有 `VCP_FORMING`、`VCP_MATURE` 或 `VCP_TIGHT`，`VCP_EARLY` 只观察，不触发 `PULLBACK_BUY`。
+必须先有 `VCP_FORMING`、`VCP_MATURE` 或 `VCP_TIGHT`。普通 `VCP_EARLY` 只观察；仅满足“强势突破后新 VCP”专用门槛时允许进入 `PULLBACK_BUY` 判断。
 
 且 `post_breakout_state = PRE_BREAKOUT`。已经突破的旧 VCP 即使价格回到 MA20 或旧 Pivot 附近，也不得重新触发 PULLBACK。
 

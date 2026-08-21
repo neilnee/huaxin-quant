@@ -1,5 +1,5 @@
 {
-  "strategy_version": "model2_quant_v19",
+  "strategy_version": "model2_quant_v20",
   "description": "Model 2 VCP structure and setup signal parameters. This file contains thresholds and weights only; algorithms stay in scripts/quant_filter.py.",
   "vcp": {
     "lookback_days": 120,
@@ -131,6 +131,20 @@
         "VCP_MATURE",
         "VCP_TIGHT"
       ],
+      "post_breakout_early_gate": {
+        "min_prior_breakout_score": 40.0,
+        "allowed_volume_patterns": [
+          "decreasing",
+          "drying"
+        ],
+        "min_low_vs_prior_pivot_ratio": 0.97,
+        "last_low_distance_range_pct": [
+          0.0,
+          5.0
+        ],
+        "entry_confirm_buffer_pct": 2.0,
+        "entry_max_distance_pct": 4.0
+      },
       "min_setup_score": 55,
       "volume_dry_up_lt": 0.8,
       "ideal_volume_dry_up_lt": 0.8,

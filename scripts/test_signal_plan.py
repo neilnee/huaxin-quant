@@ -3,7 +3,7 @@
 
 import unittest
 
-from scripts.signal_plan import lifecycle_plan_permission, plans_for_row
+from scripts.signal_plan import lifecycle_plan_permission, plans_for_row, valid_candidate
 
 
 def sample_row(state="PRE_BREAKOUT", signal="NONE"):
@@ -45,6 +45,47 @@ def sample_row(state="PRE_BREAKOUT", signal="NONE"):
 
 
 class SignalPlanLifecycleTests(unittest.TestCase):
+    def test_strong_post_breakout_early_vcp_emits_only_pullback_plan(self):
+        candidate = sample_row()
+        candidate.update({
+            "code": "603132", "name": "金徽股份",
+            "model2_include": True, "structure_type": "VCP", "structure_valid": True,
+            "structure_stage": "VCP_EARLY", "structure_score": 58.0,
+            "volume_pattern": "drying", "pivot_distance": -6.16,
+            "prior_breakout_bonus_score": 47.0,
+            "prior_breakout_context_tag": "之前已有突破并强势整理",
+            "last_contraction_low": 18.32, "structure_pivot": 19.82,
+            "close": 18.60, "MA20": 17.59, "vol_ma20": 85711,
+            "contraction_group": [{"start_date": "2026-08-06"}],
+            "setup_plan_inputs": {"pullback": {
+                "post_breakout_early_context": True,
+                "anchor": "last_contraction_low", "support_price": 18.32,
+                "last_low_price_low": 18.6864, "last_low_price_high": 19.0528,
+                "last_low_ideal_price_low": 18.6864, "last_low_ideal_price_high": 18.8696,
+                "volume_floor_threshold": 77140, "ideal_volume_max": 68569,
+                "invalid_price": 17.9536,
+            }},
+        })
+
+        self.assertTrue(valid_candidate(candidate)[0])
+        plans = plans_for_row(candidate)
+        self.assertEqual([(plan["setup_family"], plan["plan_action"]) for plan in plans], [("PULLBACK", "NEW")])
+        self.assertEqual(plans[0]["trigger_price_low"], 18.69)
+        self.assertEqual(plans[0]["trigger_price_high"], 19.05)
+        self.assertEqual(plans[0]["invalid_price"], 17.95)
+        self.assertEqual(plans[0]["plan_reason"], "强势突破后新VCP缩量回踩计划")
+        self.assertEqual(plans[0]["target_quality"], "B")
+        self.assertEqual(plans[0]["plan_priority"], "MEDIUM")
+
+    def test_ordinary_low_score_plan_remains_c(self):
+        candidate = sample_row()
+        candidate["structure_score"] = 58.0
+
+        plans = plans_for_row(candidate)
+
+        self.assertEqual(plans[0]["target_quality"], "C")
+        self.assertEqual(plans[0]["plan_priority"], "LOW")
+
     def test_pre_breakout_keeps_pullback_and_breakout_plans(self):
         plans = plans_for_row(sample_row())
         self.assertEqual([p["setup_family"] for p in plans], ["PULLBACK", "BREAKOUT"])

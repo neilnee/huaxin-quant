@@ -1,7 +1,7 @@
 # Signal Plan: 次日信号计划层指令卡
 
 - **版本管理**: 由 Git 分支与提交历史管理
-- **最近更新**: 2026-08-20（model4_signal_plan_v7）
+- **最近更新**: 2026-08-21（model4_signal_plan_v9）
 - **所属模型**: 模型四 Tracker
 - **策略配置**: `strategies/04-signal-plan.json`
 - **核心目标**: 基于模型二已经识别出的有效 VCP 结构和当日买点事实，生成下一交易日可执行的量价触发计划，提前标出 A/B 类买点所需的收盘价区间、成交量区间和失效位。
@@ -184,7 +184,7 @@ contraction_group
 
 ## 三、候选范围
 
-NEW Plan 以 `VCP_MATURE`、`VCP_TIGHT` 为常规候选。`VCP_FORMING` 只有达到近成熟高质量门槛时才允许提前生成 NEW Plan，避免两轮收缩刚形成就大范围预测；`VCP_EARLY` 不进入计划。
+NEW Plan 以 `VCP_MATURE`、`VCP_TIGHT` 为常规候选。`VCP_FORMING` 只有达到近成熟高质量门槛时才允许提前生成 NEW Plan，避免两轮收缩刚形成就大范围预测。普通 `VCP_EARLY` 不进入计划；仅“前序突破仍强势且突破后新 VCP 已形成一轮有效缩量收缩”的专用例外可以生成 `PULLBACK` NEW Plan，不生成该新结构的 `BREAKOUT` Plan。
 
 纳入条件：
 
@@ -194,13 +194,14 @@ structure_type = VCP
 structure_valid = true
 且满足以下之一：
   structure_stage in {VCP_FORMING, VCP_MATURE, VCP_TIGHT}
+  structure_stage = VCP_EARLY 且满足强势突破后新VCP专用门槛
   setup_signal in {PULLBACK_BUY, BREAKOUT_BUY, RETEST_BUY}
 ```
 
 排除条件：
 
 ```text
-structure_stage in {VCP_EARLY, TREND_WATCH, TREND_REBUILD, STRUCTURE_INVALID, NONE, DATA_ISSUE}
+structure_stage in {TREND_WATCH, TREND_REBUILD, STRUCTURE_INVALID, NONE, DATA_ISSUE}
 structure_valid = false
 structure_risk_score >= risk_block_min_score
 structure_risk_flags 命中 hard_risk_flags
@@ -208,6 +209,10 @@ structure_risk_flags 命中 hard_risk_flags
 ```
 
 `VCP_FORMING` 生成 NEW Plan 必须同时满足：`structure_score ≥ 80`、`structure_risk_score ≤ 15`、`volume_pattern in {decreasing,drying}`、`pivot_distance ≥ -8%`、`post_breakout_state=PRE_BREAKOUT`。它只覆盖虽然仍为两轮收缩、但量能和位置已经接近成熟的少数结构。未达门槛的 FORMING 继续观察；当日已经触发买点时仍可按普通分支生成 FOLLOW Plan。风险硬阻断、结构有效性和生命周期门槛继续生效。
+
+强势突破后 `VCP_EARLY` 生成 NEW Plan 必须同时满足：模型二提供“之前已有突破并强势整理”上下文、前序突破冻结结构分达到策略门槛、当前只有突破后的新收缩、`volume_pattern in {decreasing,drying}`、当前结构分与风险分达到专用门槛、`post_breakout_state=PRE_BREAKOUT`。该计划只生成 `PULLBACK`，使用当前新 VCP 的 MA20 / MA60 / 最近收缩低点作为支撑与失效依据；旧 Pivot 和前序结构分只作附加参考，不生成或替代 `RETEST` 计划。
+
+该专用计划已经通过“前序突破有效 + 强势整理 + 新结构缩量”的组合门槛，最高潜在等级固定为 `B`、计划优先级为 `MEDIUM`。这只是对现有 `target_quality` 的专用映射：不得把前序冻结分累加进当前结构分，也不得提前标为 `A`；下一交易日真正触发后，实际买点等级仍由模型二按触发日量价重新计算。
 
 成熟结构若价格已经超过突破计划上沿，不输出追高计划，需进入 `excluded` 并在 summary 中计数。
 

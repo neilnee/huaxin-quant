@@ -1,5 +1,5 @@
 {
-  "strategy_version": "model4_signal_plan_v7",
+  "strategy_version": "model4_signal_plan_v9",
   "description": "Signal Plan parameters. This model-4 signal layer consumes Model 2 quant JSON and emits next-session concrete price/volume setup plans.",
   "inputs": {
     "quant_run_dir": "cache/quant_runs"
@@ -24,6 +24,16 @@
       "allowed_volume_patterns": ["decreasing", "drying"],
       "min_pivot_distance_pct": -8.0,
       "required_post_breakout_state": "PRE_BREAKOUT"
+    },
+    "post_breakout_early_gate": {
+      "min_structure_score": 55.0,
+      "max_risk_score": 15.0,
+      "min_prior_breakout_score": 40.0,
+      "target_quality": "B",
+      "allowed_volume_patterns": ["decreasing", "drying"],
+      "min_pivot_distance_pct": -12.0,
+      "required_post_breakout_state": "PRE_BREAKOUT",
+      "required_context_tag": "之前已有突破并强势整理"
     },
     "min_structure_score": 60.0,
     "risk_block_min_score": 40.0,

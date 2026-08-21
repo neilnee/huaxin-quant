@@ -1,5 +1,5 @@
 {
-  "strategy_version": "model2_quant_v22",
+  "strategy_version": "model2_quant_v23",
   "description": "Model 2 VCP structure and setup signal parameters. This file contains thresholds and weights only; algorithms stay in scripts/quant_filter.py.",
   "vcp": {
     "lookback_days": 120,
@@ -16,6 +16,9 @@
     "min_recovery_pullback_ratio": 0.25,
     "recovery_grace_days": 5,
     "intraday_close_divergence_pct": 8.0,
+    "right_edge_provisional": {
+      "enabled": true
+    },
     "post_group_reset": {
       "enabled": true,
       "max_days_after_group": 30,

@@ -272,6 +272,71 @@ class CloseBasedContractionTests(unittest.TestCase):
         closes = [90, 94, 98, 100, 99, 98, 97, 96.1, 97, 98, 99]
         self.assertEqual(quant.detect_contractions(make_frame(closes)), [])
 
+    def test_right_edge_standard_pullback_is_provisional_without_three_future_days(self):
+        closes = [18.0] * 74 + [18.4, 18.7, 19.16, 18.64, 18.27, 18.94]
+        df = make_frame(closes)
+        confirmed = [{"end_idx": 73}]
+
+        result = quant.detect_right_edge_provisional_contraction(df, confirmed)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["start_close"], 19.16)
+        self.assertEqual(result["end_close"], 18.27)
+        self.assertEqual(result["close_pullback_pct"], -4.65)
+        self.assertEqual(result["confirmation_status"], "PROVISIONAL")
+        self.assertEqual(result["right_confirm_days"], 1)
+        self.assertEqual(result["required_right_confirm_days"], 3)
+
+    def test_right_edge_provisional_low_extends_when_latest_close_is_lower(self):
+        base = [100.0] * 72 + [101.0, 102.0, 104.0, 102.0, 99.0, 98.0]
+        confirmed = [{"end_idx": 70}]
+        first = quant.detect_right_edge_provisional_contraction(make_frame(base), confirmed)
+        extended = quant.detect_right_edge_provisional_contraction(
+            make_frame([*base, 97.0]), confirmed
+        )
+
+        self.assertEqual(first["end_idx"], 77)
+        self.assertEqual(first["end_close"], 98.0)
+        self.assertEqual(extended["end_idx"], 78)
+        self.assertEqual(extended["end_close"], 97.0)
+        self.assertEqual(extended["right_confirm_days"], 0)
+        self.assertLess(extended["close_pullback_pct"], first["close_pullback_pct"])
+
+    def test_right_edge_provisional_becomes_confirmed_after_three_future_days(self):
+        closes = [100.0] * 72 + [101.0, 102.0, 104.0, 102.0, 99.0, 97.0, 99.0, 100.0, 101.0]
+        df = make_frame(closes)
+
+        contractions = quant.detect_contractions(df)
+        result = contractions[-1]
+
+        self.assertEqual(result["start_close"], 104.0)
+        self.assertEqual(result["end_close"], 97.0)
+        self.assertEqual(result["confirmation_status"], "CONFIRMED")
+        self.assertEqual(result["right_confirm_days"], 3)
+        self.assertIsNone(
+            quant.detect_right_edge_provisional_contraction(df, contractions)
+        )
+
+    def test_provisional_standard_contraction_advances_live_structure_stage(self):
+        trend = [10.0 + index * 8.0 / 69 for index in range(70)]
+        closes = trend + [
+            18.4, 18.8, 19.2, 20.0, 19.5, 19.0, 18.0,
+            18.4, 18.8, 19.2, 19.5, 19.0, 18.6, 18.9,
+        ]
+
+        result = quant.detect_vcp_structure(quant.calc_indicators(make_frame(closes)))
+
+        self.assertEqual(result["state"], "VCP_FORMING")
+        self.assertEqual(result["contraction_count"], 2)
+        self.assertEqual(result["confirmed_contraction_count"], 1)
+        self.assertEqual(result["provisional_contraction_count"], 1)
+        self.assertEqual(result["effective_contraction_count"], 2)
+        self.assertEqual(result["contraction_confirmation_status"], "PROVISIONAL")
+        self.assertEqual(
+            [item["confirmation_status"] for item in result["contraction_group"]],
+            ["CONFIRMED", "PROVISIONAL"],
+        )
+
     def test_contraction_ordering_and_reset_use_close_measure(self):
         contractions = [
             {"close_pullback_pct": -12.0, "pullback_pct": -30.0},

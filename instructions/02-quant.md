@@ -1,7 +1,7 @@
 # 模型二：量价精筛模型（自执行指令）
 
 - **版本管理**: 由 Git 分支与提交历史管理，文件名不再携带版本号
-- **最近更新**: 2026-08-21（model2_quant_v22）
+- **最近更新**: 2026-08-22（model2_quant_v23）
 - **核心目标**: 在模型一基本面候选池中，寻找 VCP 蓄力结构和可交易触发，输出可复现、可回测、可供模型三/四复用的结构化量价结果。
 - **核心哲学**: 基本面先过滤烂公司，模型二只判断资金行为和价格位置。脚本负责确定性计算，LLM 只做可选解释，不参与结构阶段或交易触发判定。
 - **输入**: `pool/pool_<YYMMDD>.csv`，或命令行指定 `--code/--codes`
@@ -121,6 +121,8 @@ VCP 结构观察的交易含义：
 - 后续需要等待 `PULLBACK_BUY` 或 `RETEST_BUY`。
 
 > **收缩幅度测量口径**（model2_quant_v8 起）：VCP 收缩的转折点与振幅都使用**收盘价 Swing**。每轮回调从收盘价局部高点到后续收盘价局部低点计算：`close_pullback_pct = (end_close - start_close) / start_close`，且必须 `end_close < start_close`。日内最高/最低价不参与收缩轮次、递减判定或收盘修复；它们只用于 Pivot、失效位和影线风险审计。这样收缩的定位与测量口径一致，排除影线造成的伪收缩。
+
+> **最右端候选收缩**（model2_quant_v23 起）：历史区间继续使用左右各 3 个交易日确认的收盘价 Swing；当最新低点右侧不足 3 个交易日时，只要起点满足左侧 Swing High、当前低点是该段最低收盘，且幅度、持续时间等标准收缩条件成立，就先以 `PROVISIONAL` 计入当前有效轮次和实时结构阶段。输出同时区分 `confirmed_contraction_count`、`provisional_contraction_count` 与 `effective_contraction_count`，并记录 `right_confirm_days / required_right_confirm_days`。后续出现更低收盘时，候选轮次向后延伸并重算；违反收缩阈值或结构约束时移除；右侧满 3 个交易日且低点未被刷新后自动升级为 `CONFIRMED`。历史回测审计可用确认数，实时观察与阶段判断使用有效数，禁止把候选状态伪装成已确认事实。
 
 若同一收缩段的日内振幅比收盘振幅大 8pct 以上，标记 `INTRADAY_CLOSE_DIVERGENCE`：保留收盘结构，但降低买点评分并提示人工复核。
 
@@ -572,14 +574,18 @@ pullback_pct（兼容字段，等同于 close_pullback_pct）
 duration_days
 avg_volume
 recovery_pct
+confirmation_status（CONFIRMED / PROVISIONAL）
+right_confirm_days / required_right_confirm_days
 ```
 
 `duration_days = low_idx - high_idx + 1`，与 `avg_volume` 的取样区间一致，均包含局部高点日和局部低点日。
 
 ### 1.1.1 扩展收缩类型
 
-标准 contraction 继续是结构骨架，只有标准 contraction 参与 `contraction_count`、收缩递减和
-`VCP_EARLY / VCP_FORMING / VCP_MATURE / VCP_TIGHT` 阶段判定。模型二在标准结构之外识别两类
+标准 contraction 继续是结构骨架；已确认与最右端候选标准 contraction 都参与实时
+`effective_contraction_count`（兼容字段 `contraction_count`）、收缩递减和
+`VCP_EARLY / VCP_FORMING / VCP_MATURE / VCP_TIGHT` 阶段判定，历史审计使用
+`confirmed_contraction_count`。模型二在标准结构之外识别两类
 扩展收缩，用于评价同阶段结构的供求质量：
 
 | 类型 | 成立条件 | 用途 |
@@ -1105,6 +1111,10 @@ support_price
 invalid_price
 breakout_level
 contraction_count
+confirmed_contraction_count
+provisional_contraction_count
+effective_contraction_count
+contraction_confirmation_status
 contraction_pcts
 contraction_days
 contraction_extension_tags

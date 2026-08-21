@@ -60,6 +60,7 @@
 .vcp-special-tags { display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 5px; min-width: 0; }
 .vcp-special-pill { display: inline-flex; align-items: center; min-height: 22px; padding: 2px 7px; border: 1px solid var(--line); border-radius: 999px; font-size: 10px; font-weight: 700; line-height: 1.2; white-space: nowrap; }
 .vcp-special-pill.special-bonus { border-color: #b37a2b; background: #4a3217; color: #ffd58a; }
+.vcp-special-pill.special-context { border-color: #2f8f7d; background: #173f39; color: #9ce8d8; }
 .vcp-special-pill.special-extension { border-color: #6c5aa0; background: #322a4b; color: #d8c8ff; }
 #vcp-table th, #vcp-table td { vertical-align: middle; }
 #vcp-table th:nth-child(4), #vcp-table td:nth-child(4) { text-align: center; }

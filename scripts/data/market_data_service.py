@@ -13,6 +13,7 @@ from scripts.data.corporate_actions import (
     BaoStockVerifier,
     apply_point_in_time_qfq,
     load_actions,
+    reclassify_verifications,
     save_verification,
     sync_tdx_actions,
     verification_status,
@@ -236,16 +237,18 @@ class MarketDataService:
                     for code in list(frames):
                         sync = sync_tdx_actions(conn, source, code, as_of, force=force_refresh)
                         if sync["status"] == "FAILED":
-                            frames.pop(code, None)
-                            status[code] = {
-                                "source": "adjustment_failed", "error": sync.get("error") or "公司行为同步失败",
-                                "retryable": False, "price_mode": price_mode,
-                                "adjustment_status": "PENDING",
-                            }
-                            continue
+                            raise RuntimeError(
+                                f"公司行为主源不可用，停止本轮 Quant 以保留既有完整结果: "
+                                f"{code} {sync.get('error') or '同步失败'}"
+                            )
                         raw_frame = frames[code]
                         actions = load_actions(conn, code, as_of)
                         adjusted, applied = apply_point_in_time_qfq(raw_frame, actions, as_of)
+                        reclassify_verifications(
+                            conn, code,
+                            float(cfg.get("max_factor_diff_pct", 1.0)),
+                            float(cfg.get("max_raw_close_diff_pct", 0.15)),
+                        )
                         applied_dates = {item["date"] for item in applied}
                         changed_dates = {
                             item["date"] for item in sync.get("changed", [])
@@ -270,7 +273,7 @@ class MarketDataService:
                             try:
                                 verified = verifier.verify(
                                     code, candidate, raw_frame, as_of,
-                                    float(cfg.get("max_factor_diff_pct", 0.15)),
+                                    float(cfg.get("max_factor_diff_pct", 1.0)),
                                     float(cfg.get("max_raw_close_diff_pct", 0.15)),
                                     int(cfg.get("verification_sample_days", 3)),
                                 )

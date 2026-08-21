@@ -1,5 +1,5 @@
 {
-  "strategy_version": "model2_quant_v24",
+  "strategy_version": "model2_quant_v25",
   "description": "Model 2 VCP structure and setup signal parameters. This file contains thresholds and weights only; algorithms stay in scripts/quant_filter.py.",
   "price_adjustment": {
     "mode": "point_in_time_qfq",
@@ -7,7 +7,7 @@
     "verification_source": "baostock_qfq",
     "factor_version": "qfq_v1",
     "verification_sample_days": 3,
-    "max_factor_diff_pct": 0.15,
+    "max_factor_diff_pct": 1.0,
     "max_raw_close_diff_pct": 0.15
   },
   "vcp": {

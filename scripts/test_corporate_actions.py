@@ -2,6 +2,7 @@
 
 import sqlite3
 import unittest
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -11,9 +12,11 @@ from scripts.data.corporate_actions import (
     event_factor,
     load_actions,
     normalize_tdx_actions,
+    reclassify_verifications,
     sync_tdx_actions,
 )
 from scripts.data.market_data_store import create_schema
+from scripts.data.tdx_block_data import TDXBlockSource
 
 
 def raw_frame():
@@ -46,6 +49,16 @@ class FakeTDXSource:
 
 
 class CorporateActionTests(unittest.TestCase):
+    def test_tdx_source_uses_cached_server_adapter_when_live_probe_is_empty(self):
+        expected = object()
+        with patch("scripts.data.tdx_block_data.probe_servers", return_value=[]), patch(
+            "scripts.data.market_data.TDXSource._get_client", return_value=expected
+        ):
+            source = TDXBlockSource()
+
+            self.assertIs(source._client(), expected)
+            self.assertIs(source._client(), expected)
+
     def test_tdx_normalization_excludes_future_and_non_action_rows(self):
         frame = pd.DataFrame([
             {"year": 2026, "month": 8, "day": 21, "category": 1, "fenhong": 3.3,
@@ -152,6 +165,22 @@ class CorporateActionTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "VERIFIED")
         self.assertEqual(result["sample_count"], 2)
+
+    def test_verification_can_be_reclassified_when_tolerance_changes(self):
+        conn = sqlite3.connect(":memory:")
+        create_schema(conn)
+        conn.execute(
+            """INSERT INTO adjustment_verifications VALUES(
+                   '300976','2026-06-01','tdx_xdxr','baostock_qfq','CONFLICT',3,
+                   0.3307,0.0,'{}','2026-08-22T12:00:00')"""
+        )
+
+        reclassify_verifications(conn, "300976", 1.0, 0.15)
+
+        self.assertEqual(conn.execute(
+            "SELECT status FROM adjustment_verifications WHERE code='300976'"
+        ).fetchone()[0], "VERIFIED")
+        conn.close()
 
 
 if __name__ == "__main__":

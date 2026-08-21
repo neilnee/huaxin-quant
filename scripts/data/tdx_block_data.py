@@ -61,9 +61,18 @@ class TDXBlockSource:
     def _client(self):
         if self._quotes is not None:
             return self._quotes
-        servers = probe_servers(index="HQ", limit=5, sync=False)
+        try:
+            servers = probe_servers(index="HQ", limit=5, sync=False)
+        except Exception:
+            servers = []
         if not servers:
-            raise RuntimeError("通达信 HQ 服务器探测失败")
+            from scripts.data.market_data import TDXSource
+
+            try:
+                self._quotes = TDXSource()._get_client()
+                return self._quotes
+            except Exception as exc:
+                raise RuntimeError(f"通达信 HQ 服务器探测失败: {exc}") from exc
         errors = []
         for ip, port in servers:
             try:
@@ -74,6 +83,13 @@ class TDXBlockSource:
                     return quotes
             except Exception as exc:
                 errors.append(f"{ip}:{port} {exc}")
+        from scripts.data.market_data import TDXSource
+
+        try:
+            self._quotes = TDXSource()._get_client()
+            return self._quotes
+        except Exception as exc:
+            errors.append(str(exc))
         raise RuntimeError(f"通达信 HQ 服务器连接失败: {'; '.join(errors[:3])}")
 
     def fetch_block_file(self, filename: str) -> BlockFile:

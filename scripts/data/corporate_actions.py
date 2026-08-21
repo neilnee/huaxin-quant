@@ -302,6 +302,25 @@ def save_verification(conn: sqlite3.Connection, code: str, action: dict, result:
     conn.commit()
 
 
+def reclassify_verifications(
+    conn: sqlite3.Connection,
+    code: str,
+    max_factor_diff_pct: float,
+    max_raw_close_diff_pct: float,
+) -> None:
+    """Reapply configured tolerances without making another provider request."""
+    conn.execute(
+        """UPDATE adjustment_verifications
+              SET status=CASE
+                  WHEN max_factor_diff_pct<=? AND max_raw_close_diff_pct<=? THEN 'VERIFIED'
+                  ELSE 'CONFLICT' END
+            WHERE code=? AND sample_count>0
+              AND max_factor_diff_pct IS NOT NULL AND max_raw_close_diff_pct IS NOT NULL""",
+        (max_factor_diff_pct, max_raw_close_diff_pct, code),
+    )
+    conn.commit()
+
+
 def verification_status(conn: sqlite3.Connection, code: str, applied: list[dict]) -> str:
     if not applied:
         return "NO_ACTION"

@@ -1,0 +1,27 @@
+{
+  "strategy_version": "global_macro_data_v1",
+  "description": "Official-source health monitoring and normalized Global Macro P0 collection.",
+  "http": {
+    "connect_timeout_seconds": 8,
+    "read_timeout_seconds": 40,
+    "maximum_retries": 3,
+    "backoff_seconds": 1.0,
+    "minimum_interval_seconds": 0.2,
+    "user_agent": "HuaxinQuant-GlobalMacro/1.0"
+  },
+  "health": {
+    "green_success_rate": 0.98,
+    "default_window_days": 7
+  },
+  "sources": {
+    "nyfed_rates": {"enabled": true, "kind": "data", "format": "json", "frequency": "daily", "freshness_days": 4},
+    "nyfed_onrrp": {"enabled": true, "kind": "data", "format": "json", "frequency": "daily", "freshness_days": 4, "lookback_days": 21},
+    "fiscaldata_tga": {"enabled": true, "kind": "data", "format": "json", "frequency": "daily", "freshness_days": 4},
+    "fiscaldata_debt": {"enabled": true, "kind": "data", "format": "json", "frequency": "daily", "freshness_days": 4},
+    "treasury_yield": {"enabled": true, "kind": "data", "format": "csv", "frequency": "daily", "freshness_days": 4},
+    "ecb_fx": {"enabled": true, "kind": "data", "format": "csv", "frequency": "daily", "freshness_days": 4, "lookback_days": 31},
+    "cboe_vix": {"enabled": true, "kind": "data", "format": "csv", "frequency": "daily", "freshness_days": 4},
+    "fed_press_rss": {"enabled": true, "kind": "event", "format": "xml", "frequency": "event", "freshness_days": null},
+    "ecb_press_rss": {"enabled": true, "kind": "event", "format": "xml", "frequency": "event", "freshness_days": null}
+  }
+}

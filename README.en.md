@@ -3,7 +3,7 @@
 [中文](README.md) | English
 
 [![Version](https://img.shields.io/github/v/tag/neilnee/huaxin-quant?sort=semver&label=version&color=0f766e)](https://github.com/neilnee/huaxin-quant/tags)
-[![Python](https://img.shields.io/badge/Python-3.9%2B-2563eb)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-2563eb)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-c59b2a)](LICENSE)
 
 **An auditable research and review workflow for China A-shares.** Huaxin Quant combines fundamental screening, VCP price-volume structures, cross-session signal lifecycles, and independent market and capital-flow validation into reproducible, date-scoped research runs.
@@ -97,6 +97,7 @@ See the [screenshot notes](docs/SCREENSHOT_PLAN.md) for selection, redaction, an
 git clone https://github.com/neilnee/huaxin-quant.git
 cd huaxin-quant
 
+python3 --version  # Python 3.11+ is required
 python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install -r requirements.txt

@@ -1,7 +1,7 @@
 # 模型二：量价精筛模型（自执行指令）
 
 - **版本管理**: 由 Git 分支与提交历史管理，文件名不再携带版本号
-- **最近更新**: 2026-08-14（model2_quant_v17）
+- **最近更新**: 2026-08-20（model2_quant_v19）
 - **核心目标**: 在模型一基本面候选池中，寻找 VCP 蓄力结构和可交易触发，输出可复现、可回测、可供模型三/四复用的结构化量价结果。
 - **核心哲学**: 基本面先过滤烂公司，模型二只判断资金行为和价格位置。脚本负责确定性计算，LLM 只做可选解释，不参与结构阶段或交易触发判定。
 - **输入**: `pool/pool_<YYMMDD>.csv`，或命令行指定 `--code/--codes`
@@ -137,6 +137,16 @@ VCP 结构已经成立
 ```
 
 `PULLBACK_BUY` 买的是风险收益比。价格较低，失效位清楚，但突破尚未确认，确定性低于 `RETEST_BUY`。
+
+强势突破后新 VCP 例外：若旧 VCP 已被确认突破消耗、当前新 VCP 的全部收缩均发生在突破后，且前序突破附加参考有效，则允许一轮收缩的 `VCP_EARLY` 进入 `PULLBACK_BUY` 判断。该例外不改变普通 `VCP_EARLY`，并必须同时满足：
+
+- 前序突破仍处于 HOT / RETEST / CONSOLIDATING，未失败、未过期；
+- 前序突破冻结结构分不低于策略门槛；
+- 当前新 VCP 至少一轮有效收缩，`volume_pattern in {decreasing, drying}`；
+- 当前新结构低点高于旧 Pivot 的失效线；
+- 继续满足原 PULLBACK 的缩量、最近收缩低点、均线斜率和风险硬条件；位置允许使用 MA20 / MA60，或当前新收缩低点形成的收敛下沿。使用新收缩低点时必须先站上确认缓冲，计划价格区不得与该确认价冲突。
+
+它仍属于新 VCP 的 `PULLBACK_BUY`，旧 VCP 只作为附加参考；不得改写为 `RETEST_BUY`，也不得把旧收缩轮次重新计入当前结构。
 
 仓位建议：
 
@@ -634,6 +644,8 @@ abs(Cn.pullback) <= abs(Cn-1.pullback) * 1.05
 
 原 VCP 的 `price_breakout` 发生在最后一轮收缩后，收盘价首次站上 `structure_pivot × 1.01`。突破并不立即删除原结构：它仍用于记录完整的“收缩 → 突破 → 跟随/回踩”质量，但买点权限转入突破后状态管理。
 
+突破生命周期必须同时冻结 `structure_breakout_score`：使用突破日前最后一个交易日可见数据，对本次突破所对应的原 VCP 按既有 `structure_score` 规则评分。该值与 BREAKOUT/RETEST 的 `setup_structure_score` 使用同一突破前时间锚点；突破后不得随当日重新扫描出的结构阶段、位置或量能变化而改写。若历史数据无法重建该锚点则留空，不得用当日 `structure_score` 冒充。
+
 | post_breakout_state | 含义 | 买点权限 |
 |---|---|---|
 | `PRE_BREAKOUT` | 尚未发生价格突破 | PULLBACK / BREAKOUT |
@@ -644,6 +656,16 @@ abs(Cn.pullback) <= abs(Cn-1.pullback) * 1.05
 | `POST_BREAKOUT_EXPIRED` | 突破后超过 20 日，旧买点窗口结束 | WAIT_REBUILD |
 
 硬边界：一旦进入任何 `POST_BREAKOUT_*` 状态，原 `contraction_group` 永久禁止 `PULLBACK_BUY` 与重复 `BREAKOUT_BUY`。`POST_BREAKOUT_FAILED` 由突破日至当前日的完整路径判定，不是当日状态：命中任一失效事件后不可因后续反弹恢复为 `RETEST` 或重新成为 `VCP_FORMING`。当状态失败或过期后，旧结构仅保留审计；之后必须从失效日后开始形成新的 contraction group，才能重新产生 PULLBACK / BREAKOUT。
+
+候选组还必须遵守突破消耗边界：若候选组的至少两轮前缀已经在后一轮收缩开始前确认 `price_breakout`，该前缀已被突破消耗，候选组不得再把突破后的收缩拼回旧 VCP。突破后的收缩从新结构重新计数；旧 VCP 继续按原 Pivot 负责 `RETEST_BUY`，新 VCP 独立负责后续 `PULLBACK_BUY` / `BREAKOUT_BUY`，两条路径不得混用收缩轮次。
+
+若当前新 VCP 形成于一轮仍未失败的强势突破整理中，输出前序突破附加参考：
+
+- `prior_breakout_bonus_score`：前序 VCP 突破日前冻结的 `structure_score`；仅展示，不累加进当前 `structure_score`，也不参与阶段或买点硬条件。
+- `prior_breakout_bonus_reasons`：附加参考成立原因，至少说明前序突破日期、原 Pivot 和“突破后强势整理形成新 VCP”。
+- `prior_breakout_context_tag`：固定为“之前已有突破并强势整理”，供信号发现页按需展示；无有效前序突破时为空。
+
+前序突破必须来自至少两轮有效收缩，发生在当前新 VCP 第一轮开始前，且截至当前仍处于 `POST_BREAKOUT_HOT`、`POST_BREAKOUT_RETEST` 或 `POST_BREAKOUT_CONSOLIDATING`。失败、过期、无法重建突破前结构分或当前结构仍混用旧收缩时，均不得生成附加参考。
 
 相邻收缩轮次允许轻微扩张，但明显扩张会打断旧 VCP 组，后一轮应视为新结构的起点：
 
@@ -734,7 +756,7 @@ vol_ma20 < vol_ma60
 
 ### PULLBACK_BUY：结构内缩量回踩
 
-必须先有 `VCP_FORMING`、`VCP_MATURE` 或 `VCP_TIGHT`，`VCP_EARLY` 只观察，不触发 `PULLBACK_BUY`。
+必须先有 `VCP_FORMING`、`VCP_MATURE` 或 `VCP_TIGHT`。普通 `VCP_EARLY` 只观察；仅满足“强势突破后新 VCP”专用门槛时允许进入 `PULLBACK_BUY` 判断。
 
 且 `post_breakout_state = PRE_BREAKOUT`。已经突破的旧 VCP 即使价格回到 MA20 或旧 Pivot 附近，也不得重新触发 PULLBACK。
 
@@ -1062,6 +1084,7 @@ suggested_position
 model2_include
 
 structure_score
+structure_breakout_score
 structure_risk_score
 structure_risk_flags
 setup_pattern_score
@@ -1105,6 +1128,8 @@ reason
 run_date
 strategy_version
 ```
+
+顶层 `support_price`、`invalid_price`、`breakout_level` 只描述当前最终 `setup_signal` 对应的买点；必须从选中的 `setup_detail` 读取，不得按 RETEST / BREAKOUT / PULLBACK 候选的固定优先级跨类型借值。`setup_signal=NONE` 时不输出其他候选买点的价格；RETEST 卖压硬阻断可保留其自身价格供失败原因审计。
 
 `setup_plan_inputs` 为模型四 Signal Plan 使用的结构化中间阈值，不参与模型二自身排序和买点判定。模型二必须先按原逻辑完成 `setup_signal` 与 `setup_score` 判定，再把判定过程中已经计算出的阈值透出：
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Daily pipeline: 数据更新 → Pool → Quant → Bloom → Signal Plan → 信号财务提示
-→ 完整资金观测 → 页面发布（含信号股资金补查）→ 打开面板 → 东方财富自选同步。
+→ 完整资金观测 → 页面发布（含信号股资金补查）→ AI研读数据包
+→ 完整性核验 → 打开面板 → 东方财富自选同步。
 
 Launches each stage via subprocess, writes step-level progress to a shared
 JSON file consumed by monitor.py. This script is non-interactive and designed
@@ -32,6 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.shared import PROJECT_ROOT, default_pipeline_date
 from scripts.progress_utils import ProgressTracker
 from scripts.io_utils import FileLock, LockBusyError
+from scripts.daily_ai_report import SCHEMA_VERSION as AI_REPORT_SCHEMA_VERSION
 
 PROGRESS_DIR = Path(PROJECT_ROOT) / ".tmp"
 DAILY_LOCK_PATH = PROGRESS_DIR / "locks" / "daily.lock"
@@ -234,6 +236,14 @@ def run_dashboard_publish(date_yy):
     return result
 
 
+def run_ai_daily_report(date_yy):
+    """Generate the deterministic AI packet after all analysis packages exist."""
+    return run_command_with_retries(
+        [sys.executable, "scripts/daily_ai_report.py", "--date", date_yy],
+        label="AI研读数据包",
+    )
+
+
 def verify_pipeline_outputs(date_yy):
     """Confirm every downstream module published the requested date."""
     root = Path(PROJECT_ROOT)
@@ -251,6 +261,7 @@ def verify_pipeline_outputs(date_yy):
         month_dir / f"vcp_context_{date_yy}.js",
         month_dir / f"signals_context_{date_yy}.js",
         month_dir / f"backtest_context_{date_yy}.js",
+        root / "reports" / "ai_daily" / f"20{date_yy[:4]}" / f"huaxin_quant_ai_report_{date_yy}.json",
     ]
     missing = [str(path.relative_to(root)) for path in required if not path.exists()]
     index_path = root / "dashboard" / "data" / "index.js"
@@ -314,10 +325,22 @@ def verify_pipeline_outputs(date_yy):
                 missing.append("signals context 存在缺少 capital_support 的信号")
         except (OSError, ValueError, json.JSONDecodeError):
             missing.append(f"dashboard signals:{date_yy}（格式无效）")
+
+    ai_report_path = root / "reports" / "ai_daily" / f"20{date_yy[:4]}" / f"huaxin_quant_ai_report_{date_yy}.json"
+    if ai_report_path.exists():
+        try:
+            ai_report = json.loads(ai_report_path.read_text(encoding="utf-8"))
+            expected_date = datetime.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
+            if ai_report.get("schema_version") != AI_REPORT_SCHEMA_VERSION:
+                missing.append(f"AI日报 schema:{ai_report.get('schema_version')}")
+            if ai_report.get("report_date") != expected_date:
+                missing.append(f"AI日报日期:{ai_report.get('report_date')}")
+        except (OSError, json.JSONDecodeError):
+            missing.append(f"reports/ai_daily/{ai_report_path.parent.name}/{ai_report_path.name}（格式无效）")
     if missing:
         print("[daily] 页面/产物完整性核验失败：" + "；".join(missing))
         return False
-    print(f"[daily] ✓ 完整性核验通过：{date_yy} 资金/市场/VCP/信号/回测日期数据均已发布")
+    print(f"[daily] ✓ 完整性核验通过：{date_yy} 资金/市场/VCP/信号/回测/AI日报均已发布")
     return True
 
 
@@ -386,7 +409,7 @@ def main():
 
     progress_path = _progress_path(date_yy)
     tracker = ProgressTracker(progress_path)
-    tracker.init(["data_update", "pool", "quant", "bloom", "signal_plan", "signal_fundamentals", "capital_observer", "dashboard", "verify", "open_dashboard", "zixuan"])
+    tracker.init(["data_update", "pool", "quant", "bloom", "signal_plan", "signal_fundamentals", "capital_observer", "dashboard", "ai_daily_report", "verify", "open_dashboard", "zixuan"])
     tracker.set_date(date_yy)
 
     print(f"[daily] 流水线启动 {date_yy}")
@@ -519,7 +542,18 @@ def main():
     tracker.step_done("dashboard")
     print("[daily] ✓ dashboard done")
 
-    # ── Step 9: Verify all date-scoped outputs ──
+    # ── Step 9: Final deterministic AI research packet ──
+    tracker.step_start("ai_daily_report")
+    print("[daily] → 生成 AI 研读数据包")
+    result = run_ai_daily_report(date_yy)
+    if result.returncode != 0:
+        errors.append(f"ai_daily_report: exit {result.returncode}")
+        tracker.step_done("ai_daily_report", error=f"exit {result.returncode}")
+        stop_after("AI研读数据包")
+    tracker.step_done("ai_daily_report")
+    print("[daily] ✓ AI daily report done")
+
+    # ── Step 10: Verify all date-scoped outputs ──
     tracker.step_start("verify")
     if not verify_pipeline_outputs(date_yy):
         errors.append("verify: missing date-scoped output")
@@ -527,7 +561,7 @@ def main():
         stop_after("完整性核验")
     tracker.step_done("verify")
 
-    # ── Step 10: Open dashboard ──
+    # ── Step 11: Open dashboard ──
     tracker.step_start("open_dashboard")
     print("[daily] → 打开数据分析面板")
     result = open_dashboard()
@@ -538,7 +572,7 @@ def main():
         tracker.step_done("open_dashboard")
         print("[daily] ✓ dashboard opened")
 
-    # ── Step 11: Eastmoney all-watchlist rebuild ──
+    # ── Step 12: Eastmoney all-watchlist rebuild ──
     if not _env_flag("ENABLE_ZIXUAN_SYNC"):
         tracker.step_skipped("zixuan", "ENABLE_ZIXUAN_SYNC disabled")
         print("[daily] - zixuan disabled (set ENABLE_ZIXUAN_SYNC=true in .env to enable)")

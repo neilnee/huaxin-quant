@@ -302,6 +302,8 @@ def lifecycle_plan_permission(row):
 def new_plan_stage_allowed(row):
     rules = CONFIG["candidate_rules"]
     stage = row.get("structure_stage")
+    if stage == "VCP_EARLY":
+        return post_breakout_early_plan_allowed(row)
     if stage not in rules["allowed_new_stages"]:
         return False
     if stage != "VCP_FORMING":
@@ -314,6 +316,33 @@ def new_plan_stage_allowed(row):
         safe_float(row.get("pivot_distance"), -999.0) >= gate["min_pivot_distance_pct"],
         post_breakout_state(row) == gate["required_post_breakout_state"],
     ])
+
+
+def post_breakout_early_plan_allowed(row):
+    gate = CONFIG["candidate_rules"].get("post_breakout_early_gate") or {}
+    return all([
+        bool(gate),
+        row.get("structure_stage") == "VCP_EARLY",
+        row.get("prior_breakout_context_tag") == gate.get("required_context_tag"),
+        safe_float(row.get("prior_breakout_bonus_score"), -1.0)
+        >= gate.get("min_prior_breakout_score", 0.0),
+        safe_float(row.get("structure_score"), 0.0) >= gate.get("min_structure_score", 0.0),
+        safe_float(row.get("structure_risk_score"), 999.0) <= gate.get("max_risk_score", 999.0),
+        row.get("volume_pattern") in set(gate.get("allowed_volume_patterns", [])),
+        safe_float(row.get("pivot_distance"), -999.0) >= gate.get("min_pivot_distance_pct", -999.0),
+        post_breakout_state(row) == gate.get("required_post_breakout_state", "PRE_BREAKOUT"),
+        normalize_bool((setup_plan_inputs(row, "pullback") or {}).get("post_breakout_early_context")),
+    ])
+
+
+def post_breakout_early_target_quality(row):
+    """Map the qualified early rebuild to its existing Plan quality field."""
+    if not post_breakout_early_plan_allowed(row):
+        return None
+    quality = str(
+        CONFIG["candidate_rules"].get("post_breakout_early_gate", {}).get("target_quality") or "B"
+    ).upper()
+    return quality if quality in {"A", "B", "C"} else "B"
 
 
 def base_plan(row, setup_family, plan_action, setup_type, quality):
@@ -415,7 +444,7 @@ def build_pullback_plan(row, follow=False):
     if safe_float(inputs.get("support_price")) is not None:
         anchor = safe_float(inputs.get("support_price"))
     vol_ma20 = safe_float(row.get("vol_ma20"))
-    quality = target_quality(row)
+    quality = post_breakout_early_target_quality(row) or target_quality(row)
     trigger_low = anchor * cfg["trigger_low_ratio"]
     if anchor_name == "MA20":
         trigger_low = safe_float(inputs.get("ma20_price_low"), trigger_low)
@@ -423,6 +452,9 @@ def build_pullback_plan(row, follow=False):
     elif anchor_name == "MA60":
         trigger_low = safe_float(inputs.get("ma60_price_low"), trigger_low)
         trigger_high = safe_float(inputs.get("ma60_price_high"), anchor * cfg["trigger_high_ratio"])
+    elif anchor_name == "last_contraction_low":
+        trigger_low = safe_float(inputs.get("last_low_price_low"), trigger_low)
+        trigger_high = safe_float(inputs.get("last_low_price_high"), anchor * cfg["trigger_high_ratio"])
     else:
         trigger_high = anchor * cfg["trigger_high_ratio"]
     invalid_candidates = [
@@ -448,8 +480,8 @@ def build_pullback_plan(row, follow=False):
     plan.update({
         "trigger_price_low": round_price(trigger_low),
         "trigger_price_high": round_price(trigger_high),
-        "ideal_price_low": round_price(anchor * cfg["ideal_low_ratio"]),
-        "ideal_price_high": round_price(anchor * cfg["ideal_high_ratio"]),
+        "ideal_price_low": round_price(inputs.get("last_low_ideal_price_low") or anchor * cfg["ideal_low_ratio"]),
+        "ideal_price_high": round_price(inputs.get("last_low_ideal_price_high") or anchor * cfg["ideal_high_ratio"]),
         "volume_max": round_volume(inputs.get("volume_floor_threshold") or vol_ma20 * cfg["volume_max_ratio"]),
         "ideal_volume_max": round_volume(inputs.get("ideal_volume_max") or vol_ma20 * cfg["ideal_volume_max_ratio"]),
         "invalid_price": round_price(invalid),
@@ -462,7 +494,11 @@ def build_pullback_plan(row, follow=False):
             "last_contraction_low": round_price(row.get("last_contraction_low")),
             "config": cfg,
         },
-        "plan_reason": "回踩买点延续有效区" if follow else "成熟 VCP 结构内缩量回踩计划",
+        "plan_reason": (
+            "回踩买点延续有效区" if follow
+            else "强势突破后新VCP缩量回踩计划" if post_breakout_early_plan_allowed(row)
+            else "成熟 VCP 结构内缩量回踩计划"
+        ),
         "risk_note": "跌破失效价则不按当前回踩计划处理",
     })
     return plan
@@ -493,15 +529,15 @@ def build_retest_plan(row, follow=False):
         volume_max_ratio = cfg["pullback_volume_max_ratio"]
         ideal_volume_max_ratio = cfg["ideal_pullback_volume_max_ratio"]
     plan.update({
-        "trigger_price_low": round_price(inputs.get("price_low") or pivot * cfg["trigger_low_ratio"]),
-        "trigger_price_high": round_price(inputs.get("price_high") or pivot * cfg["trigger_high_ratio"]),
-        "ideal_price_low": round_price(inputs.get("ideal_price_low") or pivot * cfg["ideal_low_ratio"]),
-        "ideal_price_high": round_price(inputs.get("ideal_price_high") or pivot * cfg["ideal_high_ratio"]),
+        "trigger_price_low": round_price(pivot * cfg["trigger_low_ratio"]),
+        "trigger_price_high": round_price(pivot * cfg["trigger_high_ratio"]),
+        "ideal_price_low": round_price(pivot * cfg["ideal_low_ratio"]),
+        "ideal_price_high": round_price(pivot * cfg["ideal_high_ratio"]),
         "volume_max": round_volume(inputs.get("volume_threshold") or current_volume * volume_max_ratio),
         "ideal_volume_max": round_volume(inputs.get("ideal_volume_max") or current_volume * ideal_volume_max_ratio),
         "invalid_price": round_price(inputs.get("invalid_price") or max_not_none(row.get("invalid_price"), pivot * cfg["invalid_pivot_ratio"])),
         "formula_ref": {
-            "source": "model2.setup_plan_inputs.retest" if inputs else "signal_plan_fallback",
+            "source": "signal_plan.retest_execution_with_model2_facts" if inputs else "signal_plan_fallback",
             "model2_plan_inputs": inputs,
             "pivot": round_price(pivot),
             "reference_volume": round_volume(current_volume),
@@ -545,7 +581,7 @@ def valid_candidate(row):
         return False, "不是成熟结构，也不是当日买点触发"
 
     score = safe_float(row.get("structure_score"), 0.0)
-    if score < rules["min_structure_score"]:
+    if score < rules["min_structure_score"] and not post_breakout_early_plan_allowed(row):
         return False, "结构分低于 Signal Plan 门槛"
 
     missing = required_fields_missing(row, ["close", "volume", "vol_ma20"])
@@ -600,6 +636,8 @@ def plans_for_row(row):
         if pivot and close and close > pivot * CONFIG["breakout_buy"]["overextended_ratio"]:
             return plans
         plans.append(build_pullback_plan(row, follow=False))
+        if post_breakout_early_plan_allowed(row):
+            return plans
         plans.append(build_breakout_plan(row, follow=False))
         return plans
 

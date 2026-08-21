@@ -2,6 +2,15 @@
 
 本文档定义 Huaxin Quant 的日常执行流程。模型细节以 `instructions/` 和 `scripts/` 为准。
 
+运行任何项目脚本前先激活 Python 3.11+ 虚拟环境：
+
+```bash
+source .venv/bin/activate
+python3 --version
+```
+
+本地运行实例当前使用 Python 3.12；未激活环境时，项目会拒绝使用 macOS 自带的 Python 3.9。
+
 ## 每日执行
 
 一条命令启动全流程：

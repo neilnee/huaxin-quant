@@ -33,6 +33,10 @@ def python_files() -> list[str]:
 
 
 def main() -> int:
+    if sys.version_info < (3, 11):
+        raise SystemExit(
+            "[check] Python 3.11 or newer is required; activate the project .venv first"
+        )
     env = os.environ.copy()
     env.setdefault("PYTHONPYCACHEPREFIX", "/tmp/huaxin_check_pycache")
     run("Python syntax", [sys.executable, "-m", "py_compile", *python_files()], env=env)

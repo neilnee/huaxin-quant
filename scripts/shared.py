@@ -2,8 +2,17 @@
 
 import os
 import random
+import sys
 import time
 from datetime import datetime, timedelta
+
+
+MIN_PYTHON = (3, 11)
+if sys.version_info < MIN_PYTHON:
+    raise RuntimeError(
+        "Huaxin Quant requires Python 3.11 or newer. "
+        "Create and activate .venv before running project scripts."
+    )
 
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

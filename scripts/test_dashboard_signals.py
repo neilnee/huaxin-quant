@@ -12,6 +12,21 @@ from scripts import dashboard_signals
 
 
 class DashboardSignalsMarketNoticeTests(unittest.TestCase):
+    def test_plan_row_keeps_optional_prior_breakout_context(self):
+        quant = {
+            "code": "603132", "name": "金徽股份", "structure_score": 58,
+            "prior_breakout_bonus_score": 47,
+            "prior_breakout_bonus_reasons": ["前序VCP突破", "强势整理形成新VCP"],
+            "prior_breakout_context_tag": "之前已有突破并强势整理",
+        }
+        plan = {"setup_signal": "PULLBACK_BUY", "target_quality": "A"}
+
+        result = dashboard_signals.plan_row(plan, quant)
+
+        self.assertEqual(result["prior_breakout_bonus_score"], 47)
+        self.assertEqual(result["prior_breakout_bonus_reasons"], ["前序VCP突破", "强势整理形成新VCP"])
+        self.assertEqual(result["prior_breakout_context_tag"], "之前已有突破并强势整理")
+
     def test_previous_plan_hit_does_not_create_an_independent_trigger(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

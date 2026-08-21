@@ -12,6 +12,19 @@ from scripts import dashboard_vcp
 
 
 class DashboardVcpIndustryContextTests(unittest.TestCase):
+    def test_compact_candidate_keeps_prior_breakout_reference(self):
+        quant = {
+            "prior_breakout_bonus_score": 47,
+            "prior_breakout_bonus_reasons": ["前序突破", "强势整理形成新VCP"],
+            "prior_breakout_context_tag": "之前已有突破并强势整理",
+        }
+
+        result = dashboard_vcp.compact_candidate({}, quant, {})
+
+        self.assertEqual(result["prior_breakout_bonus_score"], 47)
+        self.assertEqual(result["prior_breakout_bonus_reasons"], ["前序突破", "强势整理形成新VCP"])
+        self.assertEqual(result["prior_breakout_context_tag"], "之前已有突破并强势整理")
+
     def test_compact_candidate_keeps_standard_and_extension_contractions_separate(self):
         quant = {
             "structure_stage": "VCP_EARLY",
@@ -126,6 +139,41 @@ class DashboardVcpIndustryContextTests(unittest.TestCase):
         self.assertTrue(result["candidates"][0]["previous_plan_hit"])
         self.assertEqual(result["candidates"][0]["bloom_status"], "TRIGGERED")
         self.assertEqual(result["summary"]["plan_hit_total"], 1)
+
+    def test_post_breakout_section_is_published_as_separate_tracking_scope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bloom_dir = root / "bloom"; quant_dir = root / "quant"
+            bloom_dir.mkdir(); quant_dir.mkdir()
+            row = {
+                "code": "600547", "name": "山东黄金", "bloom_status": "COOLDOWN",
+                "post_breakout_state": "POST_BREAKOUT_HOT", "structure_breakout_date": "2026-07-30",
+                "structure_breakout_score": "81", "breakout_days": "15", "structure_score": "62",
+            }
+            bloom = {
+                "summary": {"date": "2026-08-20", "status_dist": {"COOLDOWN": 1}},
+                "sections": {"active": [], "post_breakout": [row]},
+            }
+            quant = {"results": [{
+                "code": "600547", "name": "山东黄金", "structure_stage": "VCP_FORMING",
+                "post_breakout_state": "POST_BREAKOUT_HOT", "structure_breakout_date": "2026-07-30",
+                "structure_breakout_score": 81, "breakout_days": 15,
+                "structure_breakout_level": 27.33, "structure_score": 62,
+            }]}
+            (bloom_dir / "bloom_input_260820.json").write_text(json.dumps(bloom, ensure_ascii=False), encoding="utf-8")
+            (quant_dir / "quant_260820.json").write_text(json.dumps(quant, ensure_ascii=False), encoding="utf-8")
+            with patch.object(dashboard_vcp, "BLOOM_INPUT_DIR", bloom_dir), patch.object(
+                dashboard_vcp, "QUANT_RUN_DIR", quant_dir
+            ), patch.object(dashboard_vcp, "realized_events_for_date", return_value=[]), patch.object(
+                dashboard_vcp, "load_industry_context", return_value={}
+            ):
+                result = dashboard_vcp.build_context("260820")
+
+        self.assertEqual(result["summary"]["pre_breakout_total"], 0)
+        self.assertEqual(result["summary"]["post_breakout_total"], 1)
+        self.assertEqual(result["candidates"][0]["tracking_scope"], "POST_BREAKOUT")
+        self.assertEqual(result["candidates"][0]["post_breakout_state"], "POST_BREAKOUT_HOT")
+        self.assertEqual(result["candidates"][0]["structure_breakout_score"], 81)
 
     def test_same_day_market_csv_enriches_historical_candidate(self):
         with tempfile.TemporaryDirectory() as tmp:

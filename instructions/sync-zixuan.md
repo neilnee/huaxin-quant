@@ -36,9 +36,12 @@ model2_stage=VCP_TIGHT 或 VCP_MATURE
 model2_stage=VCP_FORMING 或 VCP_EARLY，且 structure_score >= 60
 model2_setup_signal=PULLBACK_BUY / BREAKOUT_BUY / RETEST_BUY
 bloom_status=TRIGGERED
+post_breakout_state=POST_BREAKOUT_HOT / POST_BREAKOUT_RETEST / POST_BREAKOUT_CONSOLIDATING，且 structure_breakout_score >= 55
 ```
 
 三类买点和 `TRIGGERED` 不受结构分门槛限制，必须入选。`pool_decision=KEEP_FOCUS` 本身不是入选条件，避免低分 FORMING 标的进入自选列表。
+
+突破后目标直接沿用 Bloom 的“突破后跟踪”有效状态和冻结分门槛，不再借用当日重扫得到的 `model2_stage` 或 `structure_score` 入选，也不对 RETEST 单独豁免。`POST_BREAKOUT_FAILED` / `POST_BREAKOUT_EXPIRED` 当日退出，不进入自选目标。
 
 ---
 
@@ -55,7 +58,7 @@ bloom_status=TRIGGERED
 ### 添加当日目标
 
 - 对当日目标集合按重点排序的反向顺序逐只调用添加接口：低权重标的先添加，高权重标的后添加，使高权重标的最终更靠前。
-- 重点排序从高到低为：已触发买点 > VCP_TIGHT > VCP_MATURE > FORMING / EARLY（按结构分降序）；同级按代码排序。
+- 重点排序从高到低为：已触发买点 > 突破后跟踪（按 `structure_breakout_score` 降序）> VCP_TIGHT > VCP_MATURE > FORMING / EARLY（按当日结构分降序）；同级按代码排序。
 - 添加成功后写入受管账本。
 - 如果添加接口提示该股票已存在或调用失败，不接管删除权，并由下一次工作流重新尝试添加。
 
@@ -99,7 +102,7 @@ ENABLE_ZIXUAN_SYNC=true
 ## 六、验收标准
 
 - 脚本只操作本地账本中有删除权限的股票，不读取或清空远端“全部”列表。
-- 低分 FORMING / EARLY 且无买点的标的不得进入自选列表。
+- 低分 FORMING / EARLY 且无买点、冻结结构分低于55分、以及 FAILED / EXPIRED 的突破后标的不得进入自选列表。
 - Bloom 目标为空时不得进行删除或添加。
 - 每日工作流仅在 Tracker 成功后执行此步骤。
 - dry-run 不改变远端或本地状态。

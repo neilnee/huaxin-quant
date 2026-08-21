@@ -3,4 +3,3 @@ pandas>=2.0
 requests>=2.31
 mootdx>=0.11
 tdxpy>=0.2,<0.3
-urllib3<2; python_version < "3.10"

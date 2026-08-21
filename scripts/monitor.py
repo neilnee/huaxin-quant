@@ -121,6 +121,7 @@ def _step_label(step):
         "signal_fundamentals": "信号财务提示",
         "capital_observer": "当天完整资金观测",
         "dashboard": "数据分析面板",
+        "ai_daily_report": "AI研读数据包",
         "verify": "产物完整性核验",
         "open_dashboard": "打开数据分析面板",
         "zixuan": "东方财富自选同步",
@@ -148,7 +149,7 @@ def _build_progress_markdown(progress):
         "|------|------|------|",
     ]
 
-    for key in ("data_update", "pool", "quant", "bloom", "signal_plan", "signal_fundamentals", "capital_observer", "dashboard", "verify", "open_dashboard", "zixuan"):
+    for key in ("data_update", "pool", "quant", "bloom", "signal_plan", "signal_fundamentals", "capital_observer", "dashboard", "ai_daily_report", "verify", "open_dashboard", "zixuan"):
         step = steps.get(key, {})
         status = step.get("status", "waiting")
         icon = _status_icon(status)

@@ -69,6 +69,16 @@ MODEL2_STAGE_RANK = {
     "VCP_FORMING": 2,
     "VCP_EARLY": 1,
 }
+POST_BREAKOUT_TRACKING_STATES = {
+    "POST_BREAKOUT_HOT",
+    "POST_BREAKOUT_RETEST",
+    "POST_BREAKOUT_CONSOLIDATING",
+}
+POST_BREAKOUT_TERMINAL_STATES = {
+    "POST_BREAKOUT_FAILED",
+    "POST_BREAKOUT_EXPIRED",
+}
+POST_BREAKOUT_STATES = POST_BREAKOUT_TRACKING_STATES | POST_BREAKOUT_TERMINAL_STATES
 
 STATE_FIELDS = [
     "code",
@@ -105,6 +115,11 @@ STATE_FIELDS = [
     "distance_ma20",
     "volume_dry_up",
     "pivot_distance",
+    "post_breakout_state",
+    "structure_breakout_date",
+    "structure_breakout_score",
+    "breakout_days",
+    "structure_breakout_level",
     "score_change",
     "best_status",
     "best_score",
@@ -344,6 +359,8 @@ def has_setup_trigger(row):
 
 
 def is_watching_row(row):
+    if row.get("post_breakout_state") in POST_BREAKOUT_STATES:
+        return False
     if row.get("bloom_status") == "TRIGGERED" or has_setup_trigger(row):
         return True
 
@@ -358,6 +375,14 @@ def is_watching_row(row):
     return False
 
 
+def is_post_breakout_focus_row(row):
+    return (
+        row.get("post_breakout_state") in POST_BREAKOUT_TRACKING_STATES
+        and safe_float(row.get("structure_breakout_score"))
+        >= safe_float(CONFIG.get("reporting", {}).get("post_breakout_min_structure_score"), 55.0)
+    )
+
+
 def watch_sort_key(row):
     return (
         0 if row.get("bloom_status") == "TRIGGERED" or has_setup_trigger(row) else 1,
@@ -365,6 +390,11 @@ def watch_sort_key(row):
         -safe_float(row.get("structure_score")),
         row.get("code", ""),
     )
+
+
+def should_call_llm_insight(row):
+    min_score = safe_float(CONFIG.get("reporting", {}).get("llm_min_structure_score"), 70.0)
+    return safe_float(row.get("structure_score")) >= min_score
 
 
 def status_rank(status):
@@ -610,7 +640,13 @@ def bloom_signal(row, status, event_type, delta):
     return "CONTINUED"
 
 
-def apply_exit_rules(prev_row, status):
+def post_breakout_state(row):
+    return str(row.get("post_breakout_state") or "").upper()
+
+
+def apply_exit_rules(prev_row, status, row):
+    if post_breakout_state(row) in POST_BREAKOUT_TERMINAL_STATES:
+        return "EXIT"
     if status == "DATA_ISSUE":
         # 统计连续 DATA_ISSUE 天数，超期后移出观察池
         prev_days = safe_int(prev_row.get("days_in_data_issue")) if prev_row else 0
@@ -619,6 +655,10 @@ def apply_exit_rules(prev_row, status):
         if days > threshold:
             return "EXIT"
         return status
+    post_state = post_breakout_state(row)
+    if status == "COOLDOWN" and post_state in POST_BREAKOUT_TRACKING_STATES:
+        return status
+
     consecutive = safe_int(prev_row.get("consecutive_reject")) if prev_row else 0
     if status in {"COOLDOWN", "INVALID"}:
         consecutive += 1
@@ -670,6 +710,12 @@ def watch_text(status, signal, row, risk):
             "等待第二、第三轮收缩确认",
         )
     if status == "COOLDOWN":
+        post_state = post_breakout_state(row)
+        if post_state in POST_BREAKOUT_TRACKING_STATES:
+            return (
+                f"{post_state}：原 VCP 突破后生命周期跟踪",
+                "继续观察突破后强弱、回踩承接与原 Pivot 防守",
+            )
         return (
             reason or "模型二临时出局，进入冷却观察",
             "观察是否重新形成有效结构，否则达到保留期后移出",
@@ -699,7 +745,7 @@ def state_row(prev_row, row, date_iso, status):
     risk_score = safe_float(quant_risk_score(row), 0.0)
     risk = risk_level(row)
     contraction_display = contraction_display_fields(row)
-    status = apply_exit_rules(prev_row, status)
+    status = apply_exit_rules(prev_row, status, row)
     event_type = lifecycle_event(prev_row, status)
     signal = bloom_signal(row, status, event_type, delta)
     quality = quality_for(status, risk, score)
@@ -725,7 +771,8 @@ def state_row(prev_row, row, date_iso, status):
     prev_data_issue_days = safe_int(prev_row.get("days_in_data_issue"))
     days_in_data_issue = prev_data_issue_days + 1 if status == "DATA_ISSUE" else 0
     consecutive_reject = safe_int(prev_row.get("consecutive_reject"))
-    if status in {"COOLDOWN", "INVALID", "EXIT"}:
+    post_state = post_breakout_state(row)
+    if status in {"COOLDOWN", "INVALID", "EXIT"} and post_state not in POST_BREAKOUT_TRACKING_STATES:
         consecutive_reject += 1
     elif status != "DATA_ISSUE":
         consecutive_reject = 0
@@ -765,6 +812,11 @@ def state_row(prev_row, row, date_iso, status):
         "distance_ma20": fmt_num(row.get("distance_ma20")),
         "volume_dry_up": fmt_num(row.get("volume_dry_up")),
         "pivot_distance": fmt_num(row.get("pivot_distance")),
+        "post_breakout_state": post_state,
+        "structure_breakout_date": str(row.get("structure_breakout_date") or ""),
+        "structure_breakout_score": fmt_num(row.get("structure_breakout_score")),
+        "breakout_days": str(row.get("breakout_days") if row.get("breakout_days") is not None else ""),
+        "structure_breakout_level": fmt_num(row.get("structure_breakout_level")),
         "score_change": "" if delta is None else fmt_num(delta),
         "best_status": best_status,
         "best_score": fmt_num(best_score),
@@ -825,6 +877,11 @@ def missing_data_row(prev_row, date_iso):
         "structure_score": prev_row.get("structure_score", ""),
         "structure_risk_score": prev_row.get("structure_risk_score", ""),
         "structure_risk_flags": prev_row.get("structure_risk_flags", ""),
+        "post_breakout_state": prev_row.get("post_breakout_state", ""),
+        "structure_breakout_date": prev_row.get("structure_breakout_date", ""),
+        "structure_breakout_score": prev_row.get("structure_breakout_score", ""),
+        "breakout_days": prev_row.get("breakout_days", ""),
+        "structure_breakout_level": prev_row.get("structure_breakout_level", ""),
         "reason": "今日模型二结果缺失，可能为 API 失败或输入池缺失",
     }
     output = state_row(prev_row, row, date_iso, "DATA_ISSUE")
@@ -1225,7 +1282,15 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False, progres
 
     sections = {
         "new_entries": [r for r in rows if r["event_type"] == "NEW_ENTRY"],
-        "active": [r for r in rows if is_active_status(r.get("bloom_status"))],
+        "active": [
+            r for r in rows
+            if is_active_status(r.get("bloom_status"))
+            and r.get("post_breakout_state") not in POST_BREAKOUT_STATES
+        ],
+        "post_breakout": [
+            r for r in rows
+            if is_post_breakout_focus_row(r) and r.get("bloom_status") != "EXIT"
+        ],
         "upgrades": [r for r in rows if r["bloom_signal"] == "UPGRADE"],
         "triggered": [r for r in rows if r["bloom_status"] == "TRIGGERED" or r["bloom_signal"] == "SETUP_TRIGGER"],
         "focus": [r for r in rows if r["pool_decision"] == "KEEP_FOCUS"],
@@ -1237,23 +1302,27 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False, progres
         "watching": watching_rows,
     }
 
-    # ── LLM 解读：为重点观察标的生成自然语言洞察 ──
+    # ── LLM 解读：只为达到独立分数门槛的重点观察标的生成自然语言洞察 ──
     watching = sections.get("watching", [])
+    llm_min_score = safe_float(CONFIG.get("reporting", {}).get("llm_min_structure_score"), 70.0)
+    llm_watching = [r for r in watching if should_call_llm_insight(r)]
     llm_status = {
         "status": "skipped",
-        "reason": "no watching rows",
+        "reason": f"no watching rows at or above structure score {fmt_num(llm_min_score)}",
         "requested": 0,
         "returned": 0,
+        "minimum_structure_score": llm_min_score,
     }
-    if watching:
+    if llm_watching:
         if progress_file:
             try:
                 pt = ProgressTracker(progress_file)
-                pt.step_update("bloom", current_stage="LLM解读", total=len(watching), completed=0)
+                pt.step_update("bloom", current_stage="LLM解读", total=len(llm_watching), completed=0)
             except Exception:
                 pass
-        insights, llm_status = call_llm_insights(watching, results, progress_file=progress_file)
-        for r in watching:
+        insights, llm_status = call_llm_insights(llm_watching, results, progress_file=progress_file)
+        llm_status["minimum_structure_score"] = llm_min_score
+        for r in llm_watching:
             code = r.get("code", "")
             if code in insights:
                 r["llm_insight"] = insights[code]
@@ -1266,7 +1335,8 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False, progres
         "input_total": meta.get("total"),
         "result_total": len(results),
         "state_total": len(persisted_rows),
-        "active_total": sum(1 for r in rows if is_active_status(r.get("bloom_status"))),
+        "active_total": len(sections["active"]),
+        "post_breakout_total": len(sections["post_breakout"]),
         "new_entries": len(sections["new_entries"]),
         "upgrades": len(sections["upgrades"]),
         "triggered": len(sections["triggered"]),
@@ -1404,6 +1474,7 @@ def build_markdown(bloom):
     new_n = summary.get("new_entries", 0)
     exit_n = summary.get("exits", 0)
     active = summary.get("active_total", 0)
+    post_breakout_n = summary.get("post_breakout_total", 0)
 
     alert_parts = []
     if triggered_n:
@@ -1430,7 +1501,7 @@ def build_markdown(bloom):
         "## 📊 今日概要",
         "",
         f"模型二扫描 {summary.get('input_total')} 只 → 产出 {summary.get('result_total')} 只。"
-        f"Bloom 活跃观察 **{active}** 只，{alert_text}。"
+        f"Bloom 突破前跟踪 **{active}** 只、突破后跟踪 **{post_breakout_n}** 只，{alert_text}。"
         f"新进入 {new_n} 只，移出 {exit_n} 只。",
         llm_text,
         "",
@@ -1485,8 +1556,24 @@ def build_markdown(bloom):
         score_str = f" / {score}分" if score else ""
         return f"`{code}` {name}{tag}<br>{status}{score_str}"
 
-    append_compact_stock_table(lines, "活跃观察", active_rows, "*无活跃观察标的*",
+    append_compact_stock_table(lines, "突破前跟踪", active_rows, "*无突破前跟踪标的*",
                                cols_per_row=6, format_cell=_format_active_cell)
+
+    post_rows = sections.get("post_breakout", [])
+
+    def _format_post_breakout_cell(r):
+        state = r.get("post_breakout_state", "")
+        breakout_date = r.get("structure_breakout_date", "") or "日期待补"
+        breakout_days = r.get("breakout_days", "")
+        day_text = f"第 {breakout_days} 日" if breakout_days != "" else "日数待补"
+        pivot_distance = r.get("pivot_distance", "")
+        distance_text = f" / 距 Pivot {pivot_distance}%" if pivot_distance != "" else ""
+        score = r.get("structure_breakout_score", "")
+        score_text = f" / 原结构 {score}分" if score != "" else " / 原结构分待补"
+        return f"`{r.get('code', '')}` {r.get('name', '')}<br>{state}{score_text} / {breakout_date} / {day_text}{distance_text}"
+
+    append_compact_stock_table(lines, "突破后跟踪", post_rows, "*无突破后跟踪标的*",
+                               cols_per_row=4, format_cell=_format_post_breakout_cell)
 
     exits = sections.get("exits", [])
     append_compact_stock_table(lines, "移出", exits, "*无移出*", cols_per_row=6)

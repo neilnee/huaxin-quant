@@ -2,6 +2,7 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -29,6 +30,103 @@ def make_frame(closes, highs=None, lows=None):
 
 
 class CloseBasedContractionTests(unittest.TestCase):
+    def test_confirmed_breakout_consumes_old_contractions_before_new_vcp(self):
+        df = quant.calc_indicators(make_frame([100.0] * 80))
+        contractions = [
+            {"start_idx": 50, "end_idx": 54, "start_date": "2026-03-12", "end_date": "2026-03-18", "high_price": 110.0, "low_price": 98.0, "close_pullback_pct": -10.0, "avg_volume": 100.0},
+            {"start_idx": 56, "end_idx": 59, "start_date": "2026-03-20", "end_date": "2026-03-25", "high_price": 108.0, "low_price": 100.0, "close_pullback_pct": -7.0, "avg_volume": 90.0},
+            {"start_idx": 65, "end_idx": 69, "start_date": "2026-04-02", "end_date": "2026-04-08", "high_price": 120.0, "low_price": 115.0, "close_pullback_pct": -4.0, "avg_volume": 80.0},
+        ]
+        prior = {
+            "group": contractions[:2],
+            "breakout": {"idx": 62, "date": "2026-03-30", "level": 110.0},
+            "post_breakout_state": "POST_BREAKOUT_HOT",
+        }
+
+        def evaluate(_df, group):
+            return {
+                "group": group, "structure_pivot": max(item["high_price"] for item in group),
+                "market_pivot": 120.0, "pivot_price": max(item["high_price"] for item in group),
+                "pivot_distance": -1.0, "last_contraction_low": group[-1]["low_price"],
+                "structure_age_days": len(_df) - group[-1]["end_idx"] - 1,
+                "structure_valid": True, "structure_invalid_reason": "", "post_structure_gain": 1.0,
+                "post_structure_drawdown": -1.0, "post_breakout_state": "PRE_BREAKOUT",
+                "post_breakout_failure": None, "post_group_support_break": None,
+                "breakout": None, "breakout_days": None,
+            }
+
+        with patch.object(quant, "find_latest_consumed_breakout", return_value=prior), patch.object(
+            quant, "evaluate_vcp_group", side_effect=evaluate
+        ):
+            current, _ = quant.select_current_vcp_group(df, contractions)
+
+        self.assertEqual(current["group"], [contractions[2]])
+        self.assertIs(current["prior_breakout_context"], prior)
+
+    def test_prior_breakout_bonus_is_reference_only(self):
+        structure = {
+            "contraction_group": [{"start_idx": 20}],
+            "structure_score_estimate": 58,
+            "prior_breakout_context": {
+                "breakout": {"date": "2026-08-03"},
+                "structure_pivot": 16.76,
+                "post_breakout_state": "POST_BREAKOUT_HOT",
+                "post_breakout_failure": None,
+            },
+            "setup_score_context": {"RETEST_BUY": {"structure_score": 47}},
+        }
+
+        quant.attach_prior_breakout_bonus(structure)
+
+        self.assertEqual(structure["structure_score_estimate"], 58)
+        self.assertEqual(structure["prior_breakout_bonus_score"], 47)
+        self.assertEqual(structure["prior_breakout_context_tag"], "之前已有突破并强势整理")
+        self.assertIn("不计入当前结构分", structure["prior_breakout_bonus_reasons"][-1])
+
+    def test_new_vcp_keeps_prior_retest_lifecycle_available(self):
+        breakout = {"idx": 60, "date": "2026-03-30", "level": 110.0}
+        old_group = [{"start_idx": 50}, {"start_idx": 56}]
+        structure = {
+            "state": "VCP_EARLY", "structure_valid": True,
+            "post_breakout_state": "PRE_BREAKOUT", "contraction_group": [{"start_idx": 65}],
+            "prior_breakout_context": {
+                "post_breakout_state": "POST_BREAKOUT_RETEST", "structure_valid": True,
+                "breakout": breakout, "group": old_group, "volume_pattern": "decreasing",
+            },
+            "setup_score_context": {"RETEST_BUY": {"structure_stage": "VCP_FORMING"}},
+        }
+
+        retest_structure = quant.retest_structure_for_detection(structure)
+
+        self.assertEqual(retest_structure["post_breakout_state"], "POST_BREAKOUT_RETEST")
+        self.assertEqual(retest_structure["breakout"], breakout)
+        self.assertEqual(retest_structure["contraction_group"], old_group)
+        self.assertEqual(retest_structure["state"], "VCP_FORMING")
+        self.assertEqual(structure["post_breakout_state"], "PRE_BREAKOUT")
+
+    def test_strong_post_breakout_early_vcp_can_use_pullback_gate(self):
+        structure = {
+            "state": "VCP_EARLY", "volume_pattern": "drying",
+            "last_contraction_low": 18.32,
+            "contraction_group": [{"start_idx": 65}],
+            "prior_breakout_bonus_score": 47,
+            "prior_breakout_context_tag": "之前已有突破并强势整理",
+            "prior_breakout_context": {"structure_pivot": 16.76},
+        }
+
+        self.assertTrue(quant.post_breakout_early_pullback_allowed(structure))
+        structure["prior_breakout_context_tag"] = ""
+        self.assertFalse(quant.post_breakout_early_pullback_allowed(structure))
+
+    def test_top_level_prices_follow_the_selected_setup(self):
+        pullback = {"support_price": 22.31, "invalid_price": 14.94}
+        breakout = {"support_price": 25.20, "invalid_price": 24.44, "breakout_level": 25.20}
+        retest = {"support_price": 26.00, "invalid_price": 25.00, "breakout_level": 26.00}
+
+        detail = quant.choose_setup_detail("PULLBACK_BUY", pullback, breakout, retest)
+
+        self.assertEqual(quant.setup_reference_prices(detail), (22.31, 14.94, None))
+
     def test_contraction_uses_close_swings_and_keeps_intraday_audit_range(self):
         closes = [90, 94, 100, 104, 106, 103, 100, 97, 95, 96, 98, 101, 103]
         highs = [91, 95, 101, 105, 120, 104, 101, 98, 96, 97, 99, 102, 104]
@@ -262,6 +360,17 @@ class CloseBasedContractionTests(unittest.TestCase):
         self.assertEqual(context["setup_structure_score"], 89)
         self.assertEqual(context["setup_structure_anchor_date"], "2026-08-07")
         self.assertEqual(context["setup_structure_base"], 53)
+
+    def test_post_breakout_score_reuses_frozen_pre_breakout_anchor(self):
+        structure = {
+            "post_breakout_state": "POST_BREAKOUT_HOT",
+            "setup_score_context": {
+                "RETEST_BUY": {"structure_score": 89, "anchor_date": "2026-08-07"},
+            },
+        }
+        self.assertEqual(quant.frozen_breakout_structure_score(structure), 89)
+        structure["post_breakout_state"] = "PRE_BREAKOUT"
+        self.assertIsNone(quant.frozen_breakout_structure_score(structure))
 
     def test_retest_action_score_combines_breakout_and_retest_quality(self):
         structure = {

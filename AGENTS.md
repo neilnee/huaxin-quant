@@ -94,6 +94,17 @@ python3 scripts/position.py
 
 Codex 执行时优先用 `rg`、`sed`、`python3 -m py_compile`、项目脚本等稳定命令。不要用 ad-hoc 命令污染项目根目录。
 
+### 6. Python 使用项目虚拟环境
+
+项目要求 Python 3.11+。本地运行实例使用根目录 `.venv/`，执行脚本和检查时优先显式调用：
+
+```bash
+.venv/bin/python scripts/check.py
+.venv/bin/python scripts/daily.py
+```
+
+也可以先执行 `source .venv/bin/activate`，再使用文档中的 `python3 scripts/...` 命令。不要使用 macOS 自带的 `/usr/bin/python3`（Python 3.9 / LibreSSL）。
+
 ## 目录职责
 
 ```text
@@ -109,6 +120,7 @@ quant_lab/  # Huaxin Quant 本地运行实例
 ├── pool/              模型一输出
 ├── quant/             模型二输出
 ├── bloom/             Bloom 信号报告与 state/
+├── macro/             全球宏观信源健康与采集摘要
 ├── reports/           估值报告与 indexes/
 ├── position/          本地持仓账本
 ├── .tmp/              临时脚本和临时文件（用完清理）
@@ -149,6 +161,16 @@ python3 scripts/market_regime.py update               # 盘后增量更新
 python3 scripts/market_regime.py run                  # 生成市场报告与面板数据
 python3 scripts/market_regime.py run --no-llm         # 跳过 LLM 解读
 python3 scripts/market_regime.py status               # 检查数据就绪状态
+```
+
+### 全球宏观与流动性雷达（Global Macro）
+
+独立的官方信源数据层：记录信源健康，采集美元流动性、利率、汇率、波动率代理变量和央行官方事件；不读取或改写 Pool、Quant、Bloom、Market Regime 或资金观测结果。执行方式参考 `instructions/global-macro.md`。
+
+```bash
+python3 scripts/global_macro.py probe
+python3 scripts/global_macro.py fetch
+python3 scripts/global_macro.py status --days 7
 ```
 
 ### Bloom 信号层

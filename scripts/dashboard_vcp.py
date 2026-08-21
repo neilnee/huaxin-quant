@@ -234,8 +234,15 @@ def build_context(date_yy: str) -> dict:
     quant_path = QUANT_RUN_DIR / f"quant_{date_yy}.json"
     quant_results = load_json(quant_path).get("results", []) if quant_path.exists() else []
     quant_by_code = {str(row.get("code", "")).zfill(6): row for row in quant_results}
-    active = bloom.get("sections", {}).get("active", [])
-    post_breakout = bloom.get("sections", {}).get("post_breakout", [])
+    sections = bloom.get("sections", {})
+    active = sections.get("active", [])
+    post_breakout = sections.get("post_breakout", [])
+    has_watching_section = "watching" in sections
+    watching_codes = {
+        str(row.get("code", "")).zfill(6)
+        for row in sections.get("watching", [])
+        if row.get("code")
+    }
     display_rows = [(row, "PRE_BREAKOUT") for row in active]
     display_rows.extend((row, "POST_BREAKOUT") for row in post_breakout)
     realized = realized_events_for_date(date_yy, SIGNAL_PLAN_DIR, QUANT_RUN_DIR, MARKET_DATA_DB)
@@ -252,6 +259,10 @@ def build_context(date_yy: str) -> dict:
         bloom_row, tracking_scope = bloom_by_code.get(code, ({}, "PRE_BREAKOUT"))
         candidate = compact_candidate(bloom_row, quant_by_code.get(code, {}), industry_by_code.get(code, {}))
         candidate["tracking_scope"] = tracking_scope
+        candidate["pre_breakout_focus"] = (
+            tracking_scope == "PRE_BREAKOUT"
+            and (code in watching_codes if has_watching_section else True)
+        )
         candidate.update(pool_sources.get(code, {
             "pool_channel": "UNKNOWN", "source_label": "来源待确认", "source_tone": "unknown",
         }))
@@ -274,6 +285,7 @@ def build_context(date_yy: str) -> dict:
     summary["plan_hit_total"] = sum(row.get("previous_plan_hit", False) for row in candidates)
     summary["display_total"] = len(candidates)
     summary["pre_breakout_total"] = sum(row.get("tracking_scope") == "PRE_BREAKOUT" for row in candidates)
+    summary["pre_breakout_focus_total"] = sum(row.get("pre_breakout_focus", False) for row in candidates)
     summary["post_breakout_total"] = sum(row.get("tracking_scope") == "POST_BREAKOUT" for row in candidates)
     return {
         "meta": {"run_date": bloom.get("summary", {}).get("date"), "source": bloom_path.name,

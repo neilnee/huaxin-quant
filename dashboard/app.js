@@ -1,7 +1,7 @@
 const MODULES = { market: "市场环境", capital: "资金观测", vcp: "VCP结构", signals: "信号发现", backtest: "回测表现", valuation: "投研分析" };
 const LABELS = { industry_sw_l1: "申万一级", industry_sw_l2: "申万二级", gn: "概念题材", fg: "风格特征" };
 const INDEX_LABELS = { shanghai_composite: "上证综指", csi300: "沪深300", csi500: "中证500", csi1000: "中证1000", chinext: "创业板指", star50: "科创50" };
-let context, capitalContext, vcpContext, signalsContext, backtestContext, vcpFilter = "PRE_BREAKOUT", signalsFilter="ALL", backtestFilter="ALL", backtestSampleWindow="90D", backtestConditionHorizon=10, backtestStructurePage=1, backtestStructureStage="ALL", backtestStructureWindow="90D", vcpSelectedCode, signalsSelectedCode, capitalSelectedCode, calendarMonth, currentKind = "industry_sw_l2", rankWindow = "rank_20", selectedName, matrixSelectedName, activeModule = "market";
+let context, capitalContext, vcpContext, signalsContext, backtestContext, vcpFilter = "PRE_BREAKOUT_FOCUS", signalsFilter="ALL", backtestFilter="ALL", backtestSampleWindow="90D", backtestConditionHorizon=10, backtestStructurePage=1, backtestStructureStage="ALL", backtestStructureWindow="90D", vcpSelectedCode, signalsSelectedCode, capitalSelectedCode, calendarMonth, currentKind = "industry_sw_l2", rankWindow = "rank_20", selectedName, matrixSelectedName, activeModule = "market";
 const BACKTEST_STRUCTURE_PAGE_SIZE=20;
 const $ = (id) => document.getElementById(id), pct = (v, d = 2) => v == null ? "—" : `${Number(v).toFixed(d)}%`, cls = (v) => v > 0 ? "positive" : v < 0 ? "negative" : "";
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
@@ -82,17 +82,18 @@ renderVcpDetail = function (row) {
 const renderVcpBase = renderVcp;
 renderVcp = function () {
   const summary=vcpContext.summary||{},rows=vcpContext.candidates||[],status=summary.status_dist||{};
-  const filters=[["PRE_BREAKOUT","突破前跟踪"],["TRIGGERED","已触发"],["MATURE","成熟"],["FORMING","形成中"],["EARLY","早期"],["RISK_BLOCKED","风险阻断"],["POST_BREAKOUT","突破后跟踪"]];
-  const filtered=vcpFilter==="PRE_BREAKOUT"?rows.filter(row=>row.tracking_scope!=="POST_BREAKOUT"):vcpFilter==="POST_BREAKOUT"?rows.filter(row=>row.tracking_scope==="POST_BREAKOUT"):rows.filter(row=>row.tracking_scope!=="POST_BREAKOUT"&&row.bloom_status===vcpFilter);
+  const filters=[["PRE_BREAKOUT_FOCUS","突破前跟踪"],["PRE_BREAKOUT_ALL","全部"],["TRIGGERED","已触发"],["MATURE","成熟"],["FORMING","形成中"],["EARLY","早期"],["RISK_BLOCKED","风险阻断"],["POST_BREAKOUT","突破后跟踪"]];
+  const filtered=vcpFilter==="PRE_BREAKOUT_FOCUS"?rows.filter(row=>row.tracking_scope!=="POST_BREAKOUT"&&row.pre_breakout_focus===true):vcpFilter==="PRE_BREAKOUT_ALL"?rows.filter(row=>row.tracking_scope!=="POST_BREAKOUT"):vcpFilter==="POST_BREAKOUT"?rows.filter(row=>row.tracking_scope==="POST_BREAKOUT"):rows.filter(row=>row.tracking_scope!=="POST_BREAKOUT"&&row.bloom_status===vcpFilter);
   const postLabels={POST_BREAKOUT_HOT:{label:"强势",tone:"hot"},POST_BREAKOUT_RETEST:{label:"回踩",tone:"retest"},POST_BREAKOUT_CONSOLIDATING:{label:"整理",tone:"consolidating"},POST_BREAKOUT_FAILED:{label:"失败",tone:"failed"},POST_BREAKOUT_EXPIRED:{label:"到期",tone:"expired"}};
-  $("vcp-summary").innerHTML=[["突破前跟踪",summary.pre_breakout_total||0],["突破后跟踪",summary.post_breakout_total||0],["已触发",status.TRIGGERED||0],["结构成熟",status.MATURE||0],["形成中",status.FORMING||0],["风险阻断",status.RISK_BLOCKED||0]].map(([k,v])=>`<div><span>${k}</span><b>${v}</b></div>`).join("");
+  $("vcp-summary").innerHTML=[["突破前跟踪",summary.pre_breakout_focus_total||0],["突破前全部",summary.pre_breakout_total||0],["突破后跟踪",summary.post_breakout_total||0],["已触发",status.TRIGGERED||0],["结构成熟",status.MATURE||0],["形成中",status.FORMING||0]].map(([k,v])=>`<div><span>${k}</span><b>${v}</b></div>`).join("");
   $("vcp-filters").innerHTML=filters.map(([key,label])=>`<button class="${key===vcpFilter?"active":""}" data-filter="${key}">${label}</button>`).join("");
   $("vcp-filters").querySelectorAll("button").forEach(button=>button.onclick=()=>{vcpFilter=button.dataset.filter;renderVcp();});
-  const scopeLabel=vcpFilter==="POST_BREAKOUT"?"突破后标的":"突破前结构";
-  $("vcp-filter-note").textContent=`显示 ${filtered.length}/${rows.length} 只 · ${scopeLabel}`;
+  const scopeLabel=vcpFilter==="POST_BREAKOUT"?"突破后标的":vcpFilter==="PRE_BREAKOUT_FOCUS"?"达到重点观察门槛":"突破前结构";
+  const scopeTotal=vcpFilter==="POST_BREAKOUT"?(summary.post_breakout_total||0):(summary.pre_breakout_total||0);
+  $("vcp-filter-note").textContent=`显示 ${filtered.length}/${scopeTotal} 只 · ${scopeLabel}`;
   if(!filtered.some(row=>row.code===vcpSelectedCode))vcpSelectedCode=filtered[0]?.code;
   $("vcp-table").innerHTML=`<thead><tr><th>标的</th><th>${vcpFilter==="POST_BREAKOUT"?"突破后状态":"结构"}</th><th>生命周期</th><th>${vcpFilter==="POST_BREAKOUT"?"突破后日数":"特殊标注"}</th><th>${vcpFilter==="POST_BREAKOUT"?"突破时结构分":"结构分"}</th><th>风险</th></tr></thead><tbody>${filtered.map(row=>{const post=postLabels[row.post_breakout_state];return `<tr class="vcp-table-row ${row.code===vcpSelectedCode?"selected":""}" data-code="${esc(row.code)}"><td><b>${esc(row.name)}</b><br><span class="vcp-list-note">${esc(row.code)}</span></td><td>${row.tracking_scope==="POST_BREAKOUT"?`<span class="post-breakout-pill post-${esc(post?.tone||"unknown")}">${esc(post?.label||row.post_breakout_state||"—")}</span>`:esc(row.model2_stage||"—")}</td><td>${row.tracking_scope==="POST_BREAKOUT"?esc(row.structure_breakout_date||"—"):vcpStatus(row.bloom_status)}</td><td>${row.tracking_scope==="POST_BREAKOUT"?(row.breakout_days==null||row.breakout_days===""?"—":`${esc(row.breakout_days)} 日`):vcpSpecialAnnotations(row)}</td><td>${vcpNumber(row.tracking_scope==="POST_BREAKOUT"?row.structure_breakout_score:row.structure_score,0)}</td><td class="risk-${String(row.risk_level||"").toLowerCase()}">${esc(row.risk_level||"—")}</td></tr>`;}).join("")||"<tr><td colspan='6' class='muted'>该跟踪范围暂无标的</td></tr>"}</tbody>`;
-  $("vcp-table").querySelectorAll("tbody tr[data-code]").forEach(tr=>tr.onclick=()=>{vcpSelectedCode=tr.dataset.code;renderVcp();});
+  $("vcp-table").querySelectorAll("tbody tr[data-code]").forEach(tr=>tr.onclick=()=>{const list=$("vcp-list-scroll"),listTop=list?.scrollTop||0;vcpSelectedCode=tr.dataset.code;renderVcp();if(list)list.scrollTop=listTop;$("vcp-detail").scrollTop=0;});
   renderVcpDetail(filtered.find(row=>row.code===vcpSelectedCode));
   $("vcp-meta").textContent = "";
 };

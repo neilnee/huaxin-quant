@@ -41,6 +41,7 @@ class CloseBasedContractionTests(unittest.TestCase):
             "group": contractions[:2],
             "breakout": {"idx": 62, "date": "2026-03-30", "level": 110.0},
             "post_breakout_state": "POST_BREAKOUT_HOT",
+            "vcp_eligible": True,
         }
 
         def evaluate(_df, group):
@@ -63,6 +64,63 @@ class CloseBasedContractionTests(unittest.TestCase):
         self.assertEqual(current["group"], [contractions[2]])
         self.assertIs(current["prior_breakout_context"], prior)
 
+    def test_price_breakout_boundary_does_not_promote_rejected_prior_group(self):
+        df = quant.calc_indicators(make_frame([100.0] * 80))
+        contractions = [
+            {"start_idx": 50, "end_idx": 54, "high_price": 110.0, "low_price": 98.0, "close_pullback_pct": -10.0, "avg_volume": 100.0},
+            {"start_idx": 56, "end_idx": 59, "high_price": 108.0, "low_price": 100.0, "close_pullback_pct": -7.0, "avg_volume": 90.0},
+            {"start_idx": 65, "end_idx": 69, "high_price": 120.0, "low_price": 115.0, "close_pullback_pct": -4.0, "avg_volume": 80.0},
+        ]
+        boundary = {
+            "group": contractions[:2],
+            "breakout": {"idx": 62, "date": "2026-03-30", "level": 110.0},
+            "post_breakout_state": "POST_BREAKOUT_HOT",
+            "vcp_eligible": False,
+        }
+
+        def evaluate(_df, group):
+            return {
+                "group": group, "structure_pivot": max(item["high_price"] for item in group),
+                "market_pivot": 120.0, "pivot_price": max(item["high_price"] for item in group),
+                "pivot_distance": -1.0, "last_contraction_low": group[-1]["low_price"],
+                "structure_age_days": len(_df) - group[-1]["end_idx"] - 1,
+                "structure_valid": True, "structure_invalid_reason": "", "post_structure_gain": 1.0,
+                "post_structure_drawdown": -1.0, "post_breakout_state": "PRE_BREAKOUT",
+                "post_breakout_failure": None, "post_group_support_break": None,
+                "breakout": None, "breakout_days": None,
+            }
+
+        with patch.object(quant, "find_latest_consumed_breakout", return_value=boundary), patch.object(
+            quant, "evaluate_vcp_group", side_effect=evaluate
+        ):
+            current, _ = quant.select_current_vcp_group(df, contractions)
+
+        self.assertEqual(current["group"], [contractions[2]])
+        self.assertIsNone(current.get("prior_breakout_context"))
+
+    def test_consumed_breakout_requires_same_valid_vcp_on_previous_session(self):
+        df = quant.calc_indicators(make_frame([100.0] * 80))
+        group = [
+            {"start_idx": 50, "end_idx": 54},
+            {"start_idx": 56, "end_idx": 59},
+        ]
+        valid = {
+            "has_structure": True,
+            "state": "VCP_FORMING",
+            "contraction_group": group,
+            "structure_pivot": 110.0,
+        }
+        rejected = dict(valid, has_structure=False, state="REJECT")
+
+        with patch.object(quant, "detect_vcp_structure", return_value=valid):
+            self.assertTrue(quant.prior_breakout_vcp_eligible(df, group, 110.0, 62))
+        with patch.object(quant, "detect_vcp_structure", return_value=rejected):
+            self.assertFalse(quant.prior_breakout_vcp_eligible(df, group, 110.0, 62))
+
+        different_group = dict(valid, contraction_group=[{"start_idx": 51, "end_idx": 54}])
+        with patch.object(quant, "detect_vcp_structure", return_value=different_group):
+            self.assertFalse(quant.prior_breakout_vcp_eligible(df, group, 110.0, 62))
+
     def test_prior_breakout_bonus_is_reference_only(self):
         structure = {
             "contraction_group": [{"start_idx": 20}],
@@ -82,6 +140,46 @@ class CloseBasedContractionTests(unittest.TestCase):
         self.assertEqual(structure["prior_breakout_bonus_score"], 47)
         self.assertEqual(structure["prior_breakout_context_tag"], "之前已有突破并强势整理")
         self.assertIn("不计入当前结构分", structure["prior_breakout_bonus_reasons"][-1])
+
+    def test_strong_impulse_context_is_tag_only(self):
+        closes = [100.0] * 70 + [101, 102, 104, 107, 111, 116, 119, 118, 117, 116]
+        df = quant.calc_indicators(make_frame(closes))
+        df.loc[70:75, "volume"] = [110, 120, 140, 180, 240, 300]
+        df.loc[76:79, "volume"] = [180, 130, 90, 80]
+        structure = {
+            "state": "VCP_EARLY",
+            "structure_valid": True,
+            "volume_pattern": "drying",
+            "contraction_group": [{
+                "start_idx": 75, "end_idx": 79, "close_pullback_pct": -5.0,
+            }],
+            "prior_breakout_bonus_score": None,
+            "prior_breakout_bonus_reasons": [],
+            "prior_breakout_context_tag": "",
+        }
+
+        quant.attach_strong_impulse_context(df, structure)
+
+        self.assertEqual(structure["prior_breakout_context_tag"], "放量启动后强势整理")
+        self.assertIsNone(structure["prior_breakout_bonus_score"])
+        self.assertIn("不计入当前结构分或买点权限", structure["prior_breakout_bonus_reasons"][-1])
+
+    def test_strong_impulse_context_does_not_replace_valid_vcp_bonus(self):
+        df = quant.calc_indicators(make_frame([100.0] * 80))
+        structure = {
+            "state": "VCP_EARLY",
+            "structure_valid": True,
+            "volume_pattern": "drying",
+            "contraction_group": [{"start_idx": 75, "end_idx": 79, "close_pullback_pct": -5.0}],
+            "prior_breakout_bonus_score": 72,
+            "prior_breakout_bonus_reasons": ["有效前序VCP"],
+            "prior_breakout_context_tag": "之前已有突破并强势整理",
+        }
+
+        quant.attach_strong_impulse_context(df, structure)
+
+        self.assertEqual(structure["prior_breakout_context_tag"], "之前已有突破并强势整理")
+        self.assertEqual(structure["prior_breakout_bonus_score"], 72)
 
     def test_new_vcp_keeps_prior_retest_lifecycle_available(self):
         breakout = {"idx": 60, "date": "2026-03-30", "level": 110.0}
@@ -116,6 +214,20 @@ class CloseBasedContractionTests(unittest.TestCase):
 
         self.assertTrue(quant.post_breakout_early_pullback_allowed(structure))
         structure["prior_breakout_context_tag"] = ""
+        self.assertFalse(quant.post_breakout_early_pullback_allowed(structure))
+
+    def test_early_vcp_without_valid_prior_context_cannot_use_pullback_gate(self):
+        structure = {
+            "state": "VCP_EARLY", "volume_pattern": "drying",
+            "last_contraction_low": 18.32,
+            "contraction_group": [{"start_idx": 65}],
+            "prior_breakout_bonus_score": None,
+            "prior_breakout_context_tag": "",
+            "prior_breakout_context": None,
+        }
+
+        self.assertFalse(quant.post_breakout_early_pullback_allowed(structure))
+        structure["prior_breakout_context_tag"] = "放量启动后强势整理"
         self.assertFalse(quant.post_breakout_early_pullback_allowed(structure))
 
     def test_top_level_prices_follow_the_selected_setup(self):

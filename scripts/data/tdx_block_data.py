@@ -144,6 +144,10 @@ class TDXBlockSource:
     def fetch_stock_bars(self, code: str, offset: int):
         return self._client().bars(symbol=code, frequency=9, offset=offset)
 
+    def fetch_corporate_actions(self, code: str):
+        """Return the raw TDX XDXR frame; normalization belongs to the data layer."""
+        return self._client().xdxr(symbol=code)
+
     def fetch_security_lists(self):
         quotes = self._client()
         return {0: quotes.stocks(market=0), 1: quotes.stocks(market=1)}

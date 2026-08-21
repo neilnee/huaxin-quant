@@ -9,6 +9,14 @@ from datetime import datetime
 import pandas as pd
 
 from scripts.data.market_data_store import BLOCK_DIR, DB_PATH, connect_db, create_schema
+from scripts.data.corporate_actions import (
+    BaoStockVerifier,
+    apply_point_in_time_qfq,
+    load_actions,
+    save_verification,
+    sync_tdx_actions,
+    verification_status,
+)
 from scripts.data.tdx_block_data import TDXBlockSource
 from scripts.data.market_data import MiaoxiangSource
 from scripts.shared import expected_trade_date, normalize_date_arg
@@ -191,8 +199,18 @@ class MarketDataService:
         conn.commit()
         return stats
 
-    def get_daily_bars(self, codes: list[tuple[str, str]], as_of: str, minimum_days: int, force_refresh: bool = False) -> tuple[dict[str, pd.DataFrame], dict[str, dict]]:
-        """Read canonical bars first; repair only codes missing history or target-date coverage."""
+    def get_daily_bars(
+        self,
+        codes: list[tuple[str, str]],
+        as_of: str,
+        minimum_days: int,
+        force_refresh: bool = False,
+        price_mode: str = "raw",
+        adjustment_config: dict | None = None,
+    ) -> tuple[dict[str, pd.DataFrame], dict[str, dict]]:
+        """Read canonical raw bars, optionally deriving point-in-time qfq in memory."""
+        if price_mode not in {"raw", "point_in_time_qfq"}:
+            raise ValueError(f"不支持的价格口径: {price_mode}")
         conn = connect_db(); create_schema(conn)
         try:
             requested = [code for code, _ in codes]
@@ -210,6 +228,86 @@ class MarketDataService:
             for code in repair.get("repaired_codes", []):
                 if code in status:
                     status[code]["source"] = str(frames[code].iloc[-1]["source"])
+            if price_mode == "point_in_time_qfq":
+                cfg = adjustment_config or {}
+                source = TDXBlockSource()
+                verifier = BaoStockVerifier()
+                try:
+                    for code in list(frames):
+                        sync = sync_tdx_actions(conn, source, code, as_of, force=force_refresh)
+                        if sync["status"] == "FAILED":
+                            frames.pop(code, None)
+                            status[code] = {
+                                "source": "adjustment_failed", "error": sync.get("error") or "公司行为同步失败",
+                                "retryable": False, "price_mode": price_mode,
+                                "adjustment_status": "PENDING",
+                            }
+                            continue
+                        raw_frame = frames[code]
+                        actions = load_actions(conn, code, as_of)
+                        adjusted, applied = apply_point_in_time_qfq(raw_frame, actions, as_of)
+                        applied_dates = {item["date"] for item in applied}
+                        changed_dates = {
+                            item["date"] for item in sync.get("changed", [])
+                            if item["date"] in applied_dates
+                        }
+                        pending = [item for item in actions if item["date"] in changed_dates]
+                        if not pending and sync["status"] == "SUCCESS":
+                            pending_dates = {
+                                row[0] for row in conn.execute(
+                                    """SELECT ex_date FROM adjustment_verifications
+                                        WHERE code=? AND primary_source='tdx_xdxr'
+                                          AND verification_source='baostock_qfq' AND status='PENDING'""",
+                                    (code,),
+                                )
+                            }
+                            pending = [
+                                item for item in actions
+                                if item["date"] in applied_dates and item["date"] in pending_dates
+                            ]
+                        if pending:
+                            candidate = max(pending, key=lambda item: item["date"])
+                            try:
+                                verified = verifier.verify(
+                                    code, candidate, raw_frame, as_of,
+                                    float(cfg.get("max_factor_diff_pct", 0.15)),
+                                    float(cfg.get("max_raw_close_diff_pct", 0.15)),
+                                    int(cfg.get("verification_sample_days", 3)),
+                                )
+                            except Exception as exc:
+                                verified = {
+                                    "status": "PENDING", "sample_count": 0,
+                                    "max_factor_diff_pct": None, "max_raw_close_diff_pct": None,
+                                    "detail": {"error": str(exc)},
+                                }
+                            save_verification(conn, code, candidate, verified)
+                        adjustment_status = verification_status(conn, code, applied)
+                        metadata = {
+                            "price_mode": price_mode,
+                            "adjustment_status": adjustment_status,
+                            "factor_version": str(cfg.get("factor_version", "qfq_v1")),
+                            "applied_action_count": len(applied),
+                            "latest_corporate_action_date": applied[-1]["date"] if applied else None,
+                        }
+                        status[code].update(metadata)
+                        if adjustment_status == "CONFLICT":
+                            frames.pop(code, None)
+                            status[code].update({
+                                "source": "adjustment_conflict",
+                                "error": "通达信公司行为与 BaoStock 抽样核验冲突",
+                                "retryable": False,
+                            })
+                        else:
+                            frames[code] = adjusted
+                finally:
+                    verifier.close()
+            else:
+                for code in status:
+                    status[code].update({
+                        "price_mode": "raw", "adjustment_status": "NOT_REQUESTED",
+                        "factor_version": None, "applied_action_count": 0,
+                        "latest_corporate_action_date": None,
+                    })
             return frames, status
         finally:
             conn.close()

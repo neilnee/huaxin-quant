@@ -1,7 +1,7 @@
 # 模型二：量价精筛模型（自执行指令）
 
 - **版本管理**: 由 Git 分支与提交历史管理，文件名不再携带版本号
-- **最近更新**: 2026-08-21（model2_quant_v22）
+- **最近更新**: 2026-08-22（model2_quant_v26）
 - **核心目标**: 在模型一基本面候选池中，寻找 VCP 蓄力结构和可交易触发，输出可复现、可回测、可供模型三/四复用的结构化量价结果。
 - **核心哲学**: 基本面先过滤烂公司，模型二只判断资金行为和价格位置。脚本负责确定性计算，LLM 只做可选解释，不参与结构阶段或交易触发判定。
 - **输入**: `pool/pool_<YYMMDD>.csv`，或命令行指定 `--code/--codes`
@@ -122,6 +122,8 @@ VCP 结构观察的交易含义：
 
 > **收缩幅度测量口径**（model2_quant_v8 起）：VCP 收缩的转折点与振幅都使用**收盘价 Swing**。每轮回调从收盘价局部高点到后续收盘价局部低点计算：`close_pullback_pct = (end_close - start_close) / start_close`，且必须 `end_close < start_close`。日内最高/最低价不参与收缩轮次、递减判定或收盘修复；它们只用于 Pivot、失效位和影线风险审计。这样收缩的定位与测量口径一致，排除影线造成的伪收缩。
 
+> **最右端候选收缩**（model2_quant_v23 起）：历史区间继续使用左右各 3 个交易日确认的收盘价 Swing；当最新低点右侧不足 3 个交易日时，只要起点满足左侧 Swing High、当前低点是该段最低收盘，且幅度、持续时间等标准收缩条件成立，就先以 `PROVISIONAL` 计入当前有效轮次和实时结构阶段。输出同时区分 `confirmed_contraction_count`、`provisional_contraction_count` 与 `effective_contraction_count`，并记录 `right_confirm_days / required_right_confirm_days`。后续出现更低收盘时，候选轮次向后延伸并重算；违反收缩阈值或结构约束时移除；右侧满 3 个交易日且低点未被刷新后自动升级为 `CONFIRMED`。历史回测审计可用确认数，实时观察与阶段判断使用有效数，禁止把候选状态伪装成已确认事实。
+
 若同一收缩段的日内振幅比收盘振幅大 8pct 以上，标记 `INTRADAY_CLOSE_DIVERGENCE`：保留收盘结构，但降低买点评分并提示人工复核。
 
 ### PULLBACK_BUY：结构内缩量回踩低吸
@@ -220,11 +222,31 @@ SQLite 日线库 → 缺口检测与补数 → 通达信 TDX/mootdx → 妙想 A
 
 统一数据服务先按 `run_date` 从 `cache/market_data/market_data.sqlite` 读取所需窗口；仅当目标日缺失或历史不足时补取。主源失败、返回空数据或未覆盖目标日时，才使用妙想 API 备用源；两者均标准化为 OHLCV 后写回数据库并记录来源。
 
+`daily_bars` 永远保存数据源返回的原始不复权 OHLCV，不允许用复权结果覆盖。模型二读取窗口后，必须另外同步通达信 `xdxr` 公司行为记录，并只使用 `除权日 <= run_date` 的事件实时计算时点前复权价格。前复权只变换 OHLC，成交量和成交额保持原始口径；市场状态等未显式申请复权的消费者继续读取原始价格。
+
+公司行为与核验结果分别写入 `corporate_actions`、`adjustment_verifications`，不得改写 `daily_bars`。同一股票同一 `run_date` 的通达信记录只同步一次；新发现或内容变化、且会影响当前模型窗口的事件才触发 BaoStock 核验。核验只抽取除权日前一交易日、除权日及已有时的后一交易日，比较归一化复权因子，并同时检查 BaoStock 原始收盘价与本地原始收盘价。由于不同数据源的前复权锚点可能不同，不得直接比较两端绝对前复权价。
+
+免费源对送转与极小额现金分红的复权因子可能存在交易所舍入差异：归一化因子相对误差不超过 `1%`、原始收盘价误差不超过 `0.15%` 视为通过；超过任一阈值才记为 `CONFLICT`。阈值调整时允许根据已保存的误差重新分类，不重复请求核验源。
+
+免费核验适配器依赖 `baostock`（项目虚拟环境执行 `.venv/bin/pip install baostock`）。依赖缺失或服务暂时不可用时记录 `PENDING`，不得回写或伪造核验成功。
+
+复权状态口径：
+
+```text
+NO_ACTION  当前窗口无公司行为
+VERIFIED   当前窗口应用的事件均已通过 BaoStock 抽样核验
+PENDING    通达信事件已应用，但免费核验源暂不可用或尚待核验
+PARTIAL    只核验了当前批次最新事件，窗口内仍有历史事件未核验
+CONFLICT   复权因子或原始价格超出容差；该标的本轮不得进入模型计算
+```
+
+输出必须记录 `price_mode=point_in_time_qfq`、复权状态、因子版本、已应用事件数和最近除权日。复盘历史日期时不得使用该日期之后的公司行为，避免未来信息污染。
+
 模型二必须把本次 `run_date` 传入统一数据服务。未指定 `--date` 时，`run_date` 由共享数据层按 15:00 分隔线确定：15:00 前取前一交易日，15:00 后取当日，周末回退到周五。指定 `--date` 时，数据库覆盖校验、缺口补数和回源后数据截断都以该指定交易日为准。
 
 通达信 mootdx 是主数据源；当通达信限流、返回空数据、结构异常、异常抛出或未覆盖目标交易日时，脚本才尝试妙想 API。若本地未配置 `MX_APIKEY`，则通达信失败会直接返回取数失败。通达信数据统一写入 SQLite；模型二判定不得依赖 `turnover`。
 
-数据库只保存原始日线，不保存指标列；指标每次实时计算，避免规则变更后旧指标污染。数据库命中必须同时满足：
+数据库只保存原始日线和独立公司行为记录，不保存复权日线或指标列；复权价格与指标每次实时计算，避免锚点或规则变化后旧结果污染。数据库命中必须同时满足：
 
 ```text
 文件名日期 = 当前运行日期；或运行日缓存未命中时，为该股票不晚于运行日的最近可用缓存
@@ -406,6 +428,7 @@ PULLBACK_BUY
 - 结构内缩量回踩买点。
 - 前提阶段：VCP_FORMING / VCP_MATURE / VCP_TIGHT。
 - 硬条件：回踩 MA20 / MA60 / 收敛下沿，具备基础缩量，最近收缩低点不破，MA20 斜率未明显走坏，无放量长上影，无趋势硬风险。
+- 最近收缩低点的企稳确认必须使用该收缩低点日的收盘价 `end_close`：最新收盘需高于 `end_close × 1.02`。不得使用日内最低价 `low_price` 作为企稳确认锚点，避免最右端候选收缩在低点形成当天用自身下影线完成自我确认。`low_price` 继续用于盘中破位与失效价风险边界。
 - 评分项：买点类型基础分、回踩位置、缩量质量、前低确认。
 - 缩量确认：`volume_dry_up < 0.80`，或收缩段均量逐轮递减且当前 1-3 日量能仍处于最近收缩段低量区。单日地量只能作为确认，不得单独触发买点。
 - 交易含义：低吸试探，风险收益比优先，确定性低于 RETEST_BUY。
@@ -572,14 +595,18 @@ pullback_pct（兼容字段，等同于 close_pullback_pct）
 duration_days
 avg_volume
 recovery_pct
+confirmation_status（CONFIRMED / PROVISIONAL）
+right_confirm_days / required_right_confirm_days
 ```
 
 `duration_days = low_idx - high_idx + 1`，与 `avg_volume` 的取样区间一致，均包含局部高点日和局部低点日。
 
 ### 1.1.1 扩展收缩类型
 
-标准 contraction 继续是结构骨架，只有标准 contraction 参与 `contraction_count`、收缩递减和
-`VCP_EARLY / VCP_FORMING / VCP_MATURE / VCP_TIGHT` 阶段判定。模型二在标准结构之外识别两类
+标准 contraction 继续是结构骨架；已确认与最右端候选标准 contraction 都参与实时
+`effective_contraction_count`（兼容字段 `contraction_count`）、收缩递减和
+`VCP_EARLY / VCP_FORMING / VCP_MATURE / VCP_TIGHT` 阶段判定，历史审计使用
+`confirmed_contraction_count`。模型二在标准结构之外识别两类
 扩展收缩，用于评价同阶段结构的供求质量：
 
 | 类型 | 成立条件 | 用途 |
@@ -772,7 +799,7 @@ vol_ma20 < vol_ma60
 volume_dry_up < 0.80
 或：收缩段 avg_volume 逐轮下降，且最近 1-3 日均量 <= 最近收缩段 avg_volume × 1.10
 distance_ma20 在 [-4%, +3%]，或 distance_ma60 在 [-5%, +5%]
-close > 最近一轮 contraction low × 1.02
+close > 最近一轮 contraction end_close × 1.02
 MA20_slope >= -0.03%/日
 无放量长阴
 setup_score >= 55
@@ -1105,6 +1132,10 @@ support_price
 invalid_price
 breakout_level
 contraction_count
+confirmed_contraction_count
+provisional_contraction_count
+effective_contraction_count
+contraction_confirmation_status
 contraction_pcts
 contraction_days
 contraction_extension_tags

@@ -248,10 +248,10 @@ def build_vcp_summary(source: dict, vcp_items: list) -> dict:
     legacy_counts = dict(summary.pop("status_dist", {}) or {})
     source_counts = dict(summary.pop("source_status_dist", {}) or legacy_counts)
     display_statuses = ("TRIGGERED", "MATURE", "FORMING", "EARLY", "RISK_BLOCKED", "COOLDOWN")
-    display_counts = {
-        status: sum(row.get("bloom_status") == status for row in vcp_items)
-        for status in display_statuses
-    }
+    display_counts = {status: 0 for status in display_statuses}
+    for row in vcp_items:
+        status = str(row.get("bloom_status") or "UNKNOWN").strip() or "UNKNOWN"
+        display_counts[status] = display_counts.get(status, 0) + 1
     summary["status_counts"] = {
         "source_lifecycle_snapshot": {
             "count_basis": "bloom_lifecycle_snapshot_after_state_merge",

@@ -360,7 +360,9 @@ VCP Dashboard 的历史起点与系统回放起点一致，为 `2026-05-06`。�
 
 Markdown 的“全量观察”分区中，“突破前跟踪”展示全部突破前活跃标的（EARLY/FORMING/MATURE/TRIGGERED/RISK_BLOCKED）；“突破后跟踪”展示尚未退出的 `POST_BREAKOUT_*` 标的，并明确显示突破后状态、突破日期、突破后交易日和距 Pivot。每只显示代码、名称、状态和结构评分，今日新进入的额外标注 🆕；“移出”使用紧凑多列表格展示，表头保持为空，单元格包含股票代码、名称和 Bloom 状态；不得把大量移出标的拼成单行长文本。
 
-VCP Dashboard 默认页签名称为“突破前跟踪”，替代原“全部”；原有 Bloom 状态筛选继续只筛突破前标的，最后增加“突破后跟踪”页签。突破后页签使用模型二 `post_breakout_state` 作为主状态，结构分只显示冻结的 `structure_breakout_score`；不得用 `VCP_FORMING` 等当前重扫阶段或当日 `structure_score` 掩盖、改写旧 VCP 突破时的结构质量。
+VCP Dashboard 默认页签为“突破前跟踪”，只展示符合下述“重点观察纳入规则”的突破前活跃标的；紧随其后的“全部”页签展示所有突破前活跃标的，不受重点观察分数门槛限制。原有 Bloom 状态筛选继续只筛突破前标的，最后保留“突破后跟踪”页签。Dashboard 发布器必须复用 Bloom 当日 `sections.watching` 的判定结果，不得在前端另写一套分数规则。突破后页签使用模型二 `post_breakout_state` 作为主状态，结构分只显示冻结的 `structure_breakout_score`；不得用 `VCP_FORMING` 等当前重扫阶段或当日 `structure_score` 掩盖、改写旧 VCP 突破时的结构质量。
+
+VCP Dashboard 桌面端只限制左侧标的列表高度：最多显示表头和约 20 条记录，超出后由列表独立纵向滚动；右侧详情不得设置独立纵向滚动条，随页面自然展开。切换标的时必须保留左侧列表滚动位置。窄屏改为单列时恢复页面自然滚动。
 
 VCP Dashboard 的突破前列表不再展示“买点”列；当日买点与次日计划统一在“信号发现”页面展示。原列改为“特殊标注”，只读取已有结构事实：存在 `prior_breakout_bonus_score` 时显示“附加分 +N”，存在 `contraction_extensions` 时显示“扩展收缩 N段”，并可附带 `contraction_extension_score`；两者同时存在时纵向排列，没有特殊信息时显示“—”。表头、标签与空值在该列统一水平居中，所有 VCP 列表单元格垂直居中。这些标签只用于提高机会辨识度，不参与筛选、排序、结构分或买点判断。突破后列表同一位置继续显示“突破后日数”。
 

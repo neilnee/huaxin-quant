@@ -73,6 +73,7 @@ SETUP_CFG = QUANT_STRATEGY["setup_rules"]
 SCORE_CFG = QUANT_STRATEGY["scores"]
 CLASSIFICATION_CFG = QUANT_STRATEGY["classification"]
 SETUP_SCORING_CFG = QUANT_STRATEGY.get("setup_scoring", {})
+PRICE_ADJUSTMENT_CFG = QUANT_STRATEGY["price_adjustment"]
 
 TEST_CODES = [
     "688256", "301329", "300394", "300308", "002028",
@@ -453,6 +454,7 @@ def has_intraday_close_divergence(contraction):
 def detect_contractions(df):
     swings = find_close_swings(df)
     contractions = []
+    required_right_days = VCP_SWING_WINDOW
     for i, swing in enumerate(swings[:-1]):
         if swing["type"] != "high" or swings[i + 1]["type"] != "low":
             continue
@@ -506,8 +508,96 @@ def detect_contractions(df):
             "duration_days": int(duration),
             "avg_volume": float(segment["volume"].mean()),
             "recovery_pct": round(float(recovery_pct), 2),
+            "confirmation_status": "CONFIRMED",
+            "right_confirm_days": required_right_days,
+            "required_right_confirm_days": required_right_days,
         })
     return contractions
+
+
+def detect_right_edge_provisional_contraction(df, confirmed_contractions):
+    """Recognize one still-unconfirmed standard contraction at the live right edge."""
+    cfg = VCP_CFG.get("right_edge_provisional", {})
+    if not cfg.get("enabled", False) or df is None or df.empty:
+        return None
+
+    required_right_days = VCP_SWING_WINDOW
+    if required_right_days <= 0 or len(df) < VCP_MIN_PULLBACK_DAYS + VCP_SWING_WINDOW:
+        return None
+
+    start = max(0, len(df) - VCP_LOOKBACK)
+    latest_confirmed_end = max(
+        (item["end_idx"] for item in confirmed_contractions),
+        default=start - 1,
+    )
+    first_high_idx = max(start + VCP_SWING_WINDOW, latest_confirmed_end + 1)
+    first_edge_low_idx = max(first_high_idx + VCP_MIN_PULLBACK_DAYS - 1, len(df) - required_right_days)
+    candidates = []
+
+    for low_idx in range(first_edge_low_idx, len(df)):
+        low_close = float(df.iloc[low_idx]["close"])
+        right_closes = df.iloc[low_idx + 1:]["close"].astype(float)
+        if not right_closes.empty and not (right_closes > low_close).all():
+            continue
+
+        min_high_idx = max(first_high_idx, low_idx - VCP_MAX_PULLBACK_DAYS + 1)
+        max_high_idx = low_idx - VCP_MIN_PULLBACK_DAYS + 1
+        for high_idx in range(min_high_idx, max_high_idx + 1):
+            high_close = float(df.iloc[high_idx]["close"])
+            left_closes = df.iloc[high_idx - VCP_SWING_WINDOW:high_idx]["close"].astype(float)
+            if len(left_closes) < VCP_SWING_WINDOW or not (high_close > left_closes).all():
+                continue
+            pullback_closes = df.iloc[high_idx + 1:low_idx + 1]["close"].astype(float)
+            if pullback_closes.empty or not (high_close > pullback_closes).all():
+                continue
+
+            after_high = df.iloc[high_idx + 1:]["close"].astype(float)
+            if after_high.empty or not (low_close < after_high.drop(index=df.index[low_idx])).all():
+                continue
+
+            duration = low_idx - high_idx + 1
+            pullback_pct = (low_close - high_close) / high_close * 100 if high_close else 0
+            abs_pullback = abs(pullback_pct)
+            if pullback_pct >= 0 or not VCP_MIN_PULLBACK_PCT <= abs_pullback <= VCP_MAX_PULLBACK_PCT:
+                continue
+
+            segment = df.iloc[high_idx:low_idx + 1]
+            intraday_high = float(segment["high"].max())
+            intraday_low = float(segment["low"].min())
+            intraday_pullback_pct = (
+                (intraday_low - intraday_high) / intraday_high * 100
+                if intraday_high else 0
+            )
+            recovery_pct = (
+                (float(right_closes.max()) - low_close) / low_close * 100
+                if not right_closes.empty and low_close else 0
+            )
+            candidates.append({
+                "start_idx": high_idx,
+                "end_idx": low_idx,
+                "start_date": str(df.iloc[high_idx]["date"]),
+                "end_date": str(df.iloc[low_idx]["date"]),
+                "high_price": intraday_high,
+                "low_price": intraday_low,
+                "start_close": round(high_close, 2),
+                "end_close": round(low_close, 2),
+                "close_pullback_pct": round(pullback_pct, 2),
+                "intraday_high": round(intraday_high, 2),
+                "intraday_low": round(intraday_low, 2),
+                "intraday_pullback_pct": round(intraday_pullback_pct, 2),
+                "pullback_pct": round(pullback_pct, 2),
+                "duration_days": int(duration),
+                "avg_volume": float(segment["volume"].mean()),
+                "recovery_pct": round(recovery_pct, 2),
+                "confirmation_status": "PROVISIONAL",
+                "right_confirm_days": int(len(df) - low_idx - 1),
+                "required_right_confirm_days": required_right_days,
+            })
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item["end_idx"], item["start_idx"]), reverse=True)
+    return candidates[0]
 
 
 def contraction_decrease_status(contractions):
@@ -1099,6 +1189,10 @@ def detect_vcp_structure(df, detect_consumed_breakout=True):
         "structure_count": 0,
         "contractions": [],
         "contraction_count": 0,
+        "confirmed_contraction_count": 0,
+        "provisional_contraction_count": 0,
+        "effective_contraction_count": 0,
+        "contraction_confirmation_status": "NONE",
         "contraction_pcts": "",
         "contraction_days": "",
         "contraction_extension_tags": [],
@@ -1142,7 +1236,13 @@ def detect_vcp_structure(df, detect_consumed_breakout=True):
         base_ok = False
         misses.append("近120日回撤过深")
 
-    contractions = detect_contractions(df)
+    confirmed_contractions = detect_contractions(df)
+    provisional_contraction = detect_right_edge_provisional_contraction(
+        df, confirmed_contractions
+    )
+    contractions = [*confirmed_contractions]
+    if provisional_contraction:
+        contractions.append(provisional_contraction)
     current, invalid_group = select_current_vcp_group(
         df, contractions, detect_consumed_breakout=detect_consumed_breakout
     )
@@ -1152,6 +1252,15 @@ def detect_vcp_structure(df, detect_consumed_breakout=True):
     group = current["group"] if current else []
     recent = group[-CONTRACTION_CFG["max_recent_contractions"]:]
     count = len(group)
+    confirmed_count = sum(
+        item.get("confirmation_status", "CONFIRMED") == "CONFIRMED"
+        for item in group
+    )
+    provisional_count = sum(
+        item.get("confirmation_status") == "PROVISIONAL"
+        for item in group
+    )
+    confirmation_status = "PROVISIONAL" if provisional_count else "CONFIRMED" if count else "NONE"
     decrease = contraction_decrease_status(group)
     volume_pattern = volume_pattern_for_contractions(group, latest)
     pivot_price = current["pivot_price"] if current else None
@@ -1187,10 +1296,17 @@ def detect_vcp_structure(df, detect_consumed_breakout=True):
         breakout = invalid_group["breakout"]
         breakout_days = invalid_group["breakout_days"]
 
-    if contractions:
-        conditions.append(f"历史扫描共{len(contractions)}轮收缩")
+    if confirmed_contractions:
+        conditions.append(f"历史扫描共{len(confirmed_contractions)}轮确认收缩")
+    if provisional_contraction:
+        right_days = provisional_contraction["right_confirm_days"]
+        required_days = provisional_contraction["required_right_confirm_days"]
+        conditions.append(f"最右端候选收缩，右侧确认{right_days}/{required_days}日")
     if count:
-        conditions.append(f"{min(count, CONTRACTION_CFG['max_recent_contractions'])}轮有效收缩")
+        conditions.append(
+            f"{min(count, CONTRACTION_CFG['max_recent_contractions'])}轮有效收缩"
+            f"（{confirmed_count}确认+{provisional_count}候选）"
+        )
     else:
         misses.append("未识别当前有效收缩轮次")
         if structure_invalid_reason:
@@ -1306,6 +1422,10 @@ def detect_vcp_structure(df, detect_consumed_breakout=True):
         "contractions": contractions,
         "contraction_group": group,
         "contraction_count": count,
+        "confirmed_contraction_count": confirmed_count,
+        "provisional_contraction_count": provisional_count,
+        "effective_contraction_count": count,
+        "contraction_confirmation_status": confirmation_status,
         "contraction_pcts": " -> ".join(f'{contraction_pullback_pct(c):.2f}%' for c in recent),
         "contraction_days": " -> ".join(str(c["duration_days"]) for c in recent),
         "contraction_extension_tags": contraction_extension_tags,
@@ -1359,6 +1479,16 @@ def pullback_volume_confirmed(df, structure, cfg):
     if recent_avg_volume <= last_avg_volume * cfg.get("current_low_volume_ratio", 1.0):
         return True, "segment_low_volume"
     return False, "recent_volume_not_low"
+
+
+def pullback_confirmation_close(structure):
+    """Return the close-swing low used to confirm PULLBACK stabilization."""
+    group = structure.get("contraction_group") or []
+    if group:
+        end_close = safe_float(group[-1].get("end_close"))
+        if end_close is not None and end_close > 0:
+            return end_close
+    return None
 
 
 def setup_quality(score):
@@ -1586,12 +1716,12 @@ def score_pullback_setup(df, structure, volume_ok, volume_reason):
     else:
         misses.append("缩量质量不足")
 
-    last_low = safe_float(structure.get("last_contraction_low"))
+    confirmation_close = pullback_confirmation_close(structure)
     ma20_slope = safe_float(latest.get("MA20_slope"), 0)
-    if last_low and latest["close"] > last_low * 1.05 and ma20_slope >= 0:
+    if confirmation_close and latest["close"] > confirmation_close * 1.05 and ma20_slope >= 0:
         score += 5
         reasons.append("前低上方确认强")
-    elif last_low and latest["close"] > last_low * 1.02 and ma20_slope >= -0.03:
+    elif confirmation_close and latest["close"] > confirmation_close * 1.02 and ma20_slope >= -0.03:
         score += 2
         reasons.append("前低守住")
     else:
@@ -1739,10 +1869,11 @@ def detect_pullback_buy(df, structure, overheat):
     near_ma60 = pd.notna(latest.get("distance_ma60")) and ma60_min <= latest["distance_ma60"] <= ma60_max
     low20 = latest.get("low_20")
     last_low = safe_float(structure.get("last_contraction_low"))
+    confirmation_close = pullback_confirmation_close(structure)
     early_gate = cfg.get("post_breakout_early_gate") or {}
     last_low_distance = (
-        (safe_float(latest.get("close")) - last_low) / last_low * 100
-        if last_low else None
+        (safe_float(latest.get("close")) - confirmation_close) / confirmation_close * 100
+        if confirmation_close else None
     )
     last_low_distance_range = early_gate.get("last_low_distance_range_pct", [0, 0])
     near_last_low = bool(
@@ -1756,7 +1887,8 @@ def detect_pullback_buy(df, structure, overheat):
         if early_post_breakout else cfg["last_low_buffer_pct"]
     )
     last_low_required_price = (
-        last_low * (1 + last_low_confirm_pct / 100) if last_low is not None else None
+        confirmation_close * (1 + last_low_confirm_pct / 100)
+        if confirmation_close is not None else None
     )
     volume_ok, volume_reason = pullback_volume_confirmed(df, structure, cfg)
     volume_floor_ok = volume_ok or safe_float(latest.get("volume_dry_up"), 999) < 0.9
@@ -1788,15 +1920,17 @@ def detect_pullback_buy(df, structure, overheat):
         "ma60_price_low": ma60 * (1 + ma60_min / 100) if ma60 is not None else None,
         "ma60_price_high": ma60 * (1 + ma60_max / 100) if ma60 is not None else None,
         "last_low_required_price": last_low_required_price,
+        "last_low_confirmation_anchor": "end_close",
+        "last_low_confirmation_price": confirmation_close,
         "last_low_price_low": last_low_required_price if near_last_low else None,
         "last_low_price_high": (
-            last_low * (1 + early_gate.get("entry_max_distance_pct", last_low_confirm_pct) / 100)
-            if near_last_low and last_low is not None else None
+            confirmation_close * (1 + early_gate.get("entry_max_distance_pct", last_low_confirm_pct) / 100)
+            if near_last_low and confirmation_close is not None else None
         ),
         "last_low_ideal_price_low": last_low_required_price if near_last_low else None,
         "last_low_ideal_price_high": (
-            last_low * (1 + min(3.0, early_gate.get("entry_max_distance_pct", 3.0)) / 100)
-            if near_last_low and last_low is not None else None
+            confirmation_close * (1 + min(3.0, early_gate.get("entry_max_distance_pct", 3.0)) / 100)
+            if near_last_low and confirmation_close is not None else None
         ),
         "volume_dry_up_threshold": cfg["volume_dry_up_lt"],
         "volume_floor_threshold": vol_ma20 * 0.9 if vol_ma20 is not None else None,
@@ -2679,6 +2813,10 @@ def screen(df, code=None):
         "structure_conditions": structure.get("conditions", []),
         "structure_misses": structure.get("misses", []),
         "contraction_count": structure.get("contraction_count", 0),
+        "confirmed_contraction_count": structure.get("confirmed_contraction_count", 0),
+        "provisional_contraction_count": structure.get("provisional_contraction_count", 0),
+        "effective_contraction_count": structure.get("effective_contraction_count", 0),
+        "contraction_confirmation_status": structure.get("contraction_confirmation_status", "NONE"),
         "contraction_pcts": structure.get("contraction_pcts", ""),
         "contraction_days": structure.get("contraction_days", ""),
         "contraction_extension_tags": structure.get("contraction_extension_tags", []),
@@ -2724,7 +2862,8 @@ CSV_COLUMNS = [
     "setup_structure_base", "setup_action_score", "setup_current_action_score", "setup_breakout_action_score", "setup_score_components",
     "setup_reasons", "setup_misses", "setup_risk_flags", "setup_timing", "structure_volume_alignment",
     "structure_risk_flags", "support_price", "invalid_price", "breakout_level",
-    "contraction_count", "contraction_pcts", "contraction_days",
+    "contraction_count", "confirmed_contraction_count", "provisional_contraction_count",
+    "effective_contraction_count", "contraction_confirmation_status", "contraction_pcts", "contraction_days",
     "contraction_extension_tags", "contraction_extension_score", "contraction_extensions", "volume_pattern",
     "pivot_price", "structure_pivot", "market_pivot", "pivot_distance", "last_contraction_low",
     "structure_age_days", "structure_valid", "structure_invalid_reason",
@@ -2734,7 +2873,9 @@ CSV_COLUMNS = [
     "range_10", "range_20", "range_60",
     "volume", "vol_ma5", "vol_ma20", "vol_ma60", "vol_ratio", "volume_dry_up",
     "distance_ma20", "distance_ma60", "distance_high_60",
-    "chg_5", "chg_20", "reason", "run_date", "strategy_version",
+    "chg_5", "chg_20", "price_mode", "adjustment_status", "factor_version",
+    "applied_action_count", "latest_corporate_action_date",
+    "reason", "run_date", "strategy_version",
 ]
 
 
@@ -2817,6 +2958,10 @@ def write_csv(results, quant_path):
                 r["invalid_price"] if r["invalid_price"] is not None else "",
                 r["breakout_level"] if r["breakout_level"] is not None else "",
                 r["contraction_count"],
+                r.get("confirmed_contraction_count", 0),
+                r.get("provisional_contraction_count", 0),
+                r.get("effective_contraction_count", r["contraction_count"]),
+                r.get("contraction_confirmation_status", "NONE"),
                 r["contraction_pcts"],
                 r["contraction_days"],
                 ";".join(r.get("contraction_extension_tags", [])),
@@ -2862,6 +3007,11 @@ def write_csv(results, quant_path):
                 r["distance_high_60"] if r["distance_high_60"] is not None else "",
                 r["chg_5"] if r["chg_5"] is not None else "",
                 r["chg_20"] if r["chg_20"] is not None else "",
+                r.get("price_mode", ""),
+                r.get("adjustment_status", ""),
+                r.get("factor_version", ""),
+                r.get("applied_action_count", 0),
+                r.get("latest_corporate_action_date") or "",
                 r["reason"],
                 r["run_date"],
                 r["strategy_version"],
@@ -2885,13 +3035,22 @@ def print_single_summary(result):
     print(f"触发: {result['setup_signal']} | model2_include={result['model2_include']}")
     print(f"买点质量: {result['setup_score']} / {result['setup_quality']} | 动作分 {result['setup_pattern_score']} | 加分 {result['setup_reasons']} | 扣分 {result['setup_misses']}")
     print(f"动作: {result['action_hint']} | 建议仓位 {result['suggested_position']}")
-    print(f"VCP: {result['structure_stage']} | 轮次 {result['contraction_count']} | 收缩 {result['contraction_pcts']} | 量能 {result['volume_pattern']}")
+    print(
+        f"VCP: {result['structure_stage']} | 轮次 {result['effective_contraction_count']}"
+        f"（{result['confirmed_contraction_count']}确认+{result['provisional_contraction_count']}候选）"
+        f" | 收缩 {result['contraction_pcts']} | 量能 {result['volume_pattern']}"
+    )
     print(f"扩展收缩: {result.get('contraction_extension_tags', [])} | 加分 {result.get('contraction_extension_score', 0)}")
     print(f"Pivot: {result['pivot_price']} | 距pivot {result['pivot_distance']}% | 年龄 {result['structure_age_days']}天 | 有效 {result['structure_valid']}")
     if result["structure_invalid_reason"]:
         print(f"结构失效: {result['structure_invalid_reason']} | 结构后涨幅 {result['post_structure_gain']}% | 回撤 {result['post_structure_drawdown']}%")
     print(f"质量 {result['vcp_quality']}")
     print(f"收盘: {result['close']} | MA20 {result['MA20']} | MA60 {result['MA60']}")
+    print(
+        f"价格口径: {result.get('price_mode')} | 复权核验 {result.get('adjustment_status')}"
+        f" | 已应用事件 {result.get('applied_action_count', 0)}"
+        f" | 最近除权日 {result.get('latest_corporate_action_date') or '-'}"
+    )
     print(f"距MA20: {result['distance_ma20']}% | 距MA60: {result['distance_ma60']}% | 距60日高点: {result['distance_high_60']}%")
     print(f"支撑: {result['support_price']} | 失效: {result['invalid_price']} | 突破位: {result['breakout_level']}")
     print(f"结论: {result['reason']}")
@@ -3037,9 +3196,19 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True, p
         "cache_hits": 0,
         "api_calls": 0,
         "tdx_calls": 0,
+        "adjustment_no_action": 0,
+        "adjustment_verified": 0,
+        "adjustment_partial": 0,
+        "adjustment_pending": 0,
+        "adjustment_conflict": 0,
     }
     service = MarketDataService(MARKET_DATA_CONFIG)
-    frames, data_status = service.get_daily_bars(codes, run_date, max(200, BASE_CFG["min_runtime_data_days"]), force_refresh=not use_cache)
+    frames, data_status = service.get_daily_bars(
+        codes, run_date, max(200, BASE_CFG["min_runtime_data_days"]),
+        force_refresh=not use_cache,
+        price_mode=PRICE_ADJUSTMENT_CFG["mode"],
+        adjustment_config=PRICE_ADJUSTMENT_CFG,
+    )
     fatal_stop = False
     retry_queue = []
 
@@ -3053,6 +3222,10 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True, p
 
         print(f"[{i+1}/{len(codes)}] {code} {name} ...", end=" ", flush=True)
         df, source = frames.get(code), data_status.get(code, {"source": "missing", "error": "数据库未返回数据", "retryable": False})
+        adjustment_status = str(source.get("adjustment_status") or "PENDING").lower()
+        stats_key = f"adjustment_{adjustment_status}"
+        if stats_key in stats:
+            stats[stats_key] += 1
         if df is None:
             if allow_retry and source["retryable"]:
                 print(f"失败: {source['error']}，加入重试队列")
@@ -3080,6 +3253,13 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True, p
         stats["pull_ok"] += 1
         df = calc_indicators(df)
         result = result_from_df(code, name, df, run_date)
+        result.update({
+            "price_mode": source.get("price_mode", PRICE_ADJUSTMENT_CFG["mode"]),
+            "adjustment_status": source.get("adjustment_status", "PENDING"),
+            "factor_version": source.get("factor_version", PRICE_ADJUSTMENT_CFG["factor_version"]),
+            "applied_action_count": int(source.get("applied_action_count", 0)),
+            "latest_corporate_action_date": source.get("latest_corporate_action_date"),
+        })
         results.append(result)
         print(f"{result['structure_stage']} / {result['setup_signal']} | score={result['structure_score']} | {result['reason'][:48]}")
         _write_quant_progress(
@@ -3163,6 +3343,10 @@ def main():
             "schema": "quant_vcp_structure_v2",
             "strategy_version": STRATEGY_VERSION,
             "strategy_file": f"strategies/{QUANT_STRATEGY_FILE}",
+            "price_mode": PRICE_ADJUSTMENT_CFG["mode"],
+            "adjustment_factor_version": PRICE_ADJUSTMENT_CFG["factor_version"],
+            "corporate_action_source": PRICE_ADJUSTMENT_CFG["primary_source"],
+            "adjustment_verification_source": PRICE_ADJUSTMENT_CFG["verification_source"],
         },
         "stats": stats,
         "llm": llm_payload,

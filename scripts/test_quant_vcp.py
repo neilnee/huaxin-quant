@@ -272,6 +272,71 @@ class CloseBasedContractionTests(unittest.TestCase):
         closes = [90, 94, 98, 100, 99, 98, 97, 96.1, 97, 98, 99]
         self.assertEqual(quant.detect_contractions(make_frame(closes)), [])
 
+    def test_right_edge_standard_pullback_is_provisional_without_three_future_days(self):
+        closes = [18.0] * 74 + [18.4, 18.7, 19.16, 18.64, 18.27, 18.94]
+        df = make_frame(closes)
+        confirmed = [{"end_idx": 73}]
+
+        result = quant.detect_right_edge_provisional_contraction(df, confirmed)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["start_close"], 19.16)
+        self.assertEqual(result["end_close"], 18.27)
+        self.assertEqual(result["close_pullback_pct"], -4.65)
+        self.assertEqual(result["confirmation_status"], "PROVISIONAL")
+        self.assertEqual(result["right_confirm_days"], 1)
+        self.assertEqual(result["required_right_confirm_days"], 3)
+
+    def test_right_edge_provisional_low_extends_when_latest_close_is_lower(self):
+        base = [100.0] * 72 + [101.0, 102.0, 104.0, 102.0, 99.0, 98.0]
+        confirmed = [{"end_idx": 70}]
+        first = quant.detect_right_edge_provisional_contraction(make_frame(base), confirmed)
+        extended = quant.detect_right_edge_provisional_contraction(
+            make_frame([*base, 97.0]), confirmed
+        )
+
+        self.assertEqual(first["end_idx"], 77)
+        self.assertEqual(first["end_close"], 98.0)
+        self.assertEqual(extended["end_idx"], 78)
+        self.assertEqual(extended["end_close"], 97.0)
+        self.assertEqual(extended["right_confirm_days"], 0)
+        self.assertLess(extended["close_pullback_pct"], first["close_pullback_pct"])
+
+    def test_right_edge_provisional_becomes_confirmed_after_three_future_days(self):
+        closes = [100.0] * 72 + [101.0, 102.0, 104.0, 102.0, 99.0, 97.0, 99.0, 100.0, 101.0]
+        df = make_frame(closes)
+
+        contractions = quant.detect_contractions(df)
+        result = contractions[-1]
+
+        self.assertEqual(result["start_close"], 104.0)
+        self.assertEqual(result["end_close"], 97.0)
+        self.assertEqual(result["confirmation_status"], "CONFIRMED")
+        self.assertEqual(result["right_confirm_days"], 3)
+        self.assertIsNone(
+            quant.detect_right_edge_provisional_contraction(df, contractions)
+        )
+
+    def test_provisional_standard_contraction_advances_live_structure_stage(self):
+        trend = [10.0 + index * 8.0 / 69 for index in range(70)]
+        closes = trend + [
+            18.4, 18.8, 19.2, 20.0, 19.5, 19.0, 18.0,
+            18.4, 18.8, 19.2, 19.5, 19.0, 18.6, 18.9,
+        ]
+
+        result = quant.detect_vcp_structure(quant.calc_indicators(make_frame(closes)))
+
+        self.assertEqual(result["state"], "VCP_FORMING")
+        self.assertEqual(result["contraction_count"], 2)
+        self.assertEqual(result["confirmed_contraction_count"], 1)
+        self.assertEqual(result["provisional_contraction_count"], 1)
+        self.assertEqual(result["effective_contraction_count"], 2)
+        self.assertEqual(result["contraction_confirmation_status"], "PROVISIONAL")
+        self.assertEqual(
+            [item["confirmation_status"] for item in result["contraction_group"]],
+            ["CONFIRMED", "PROVISIONAL"],
+        )
+
     def test_contraction_ordering_and_reset_use_close_measure(self):
         contractions = [
             {"close_pullback_pct": -12.0, "pullback_pct": -30.0},
@@ -445,6 +510,65 @@ class CloseBasedContractionTests(unittest.TestCase):
         result = quant.detect_pullback_buy(make_frame([100] * 20), structure, {"risk_flags": [], "risk_score": 0})
         self.assertFalse(result["hit"])
         self.assertIn("禁止旧结构PULLBACK_BUY", result["reason"])
+
+    def test_provisional_low_day_cannot_self_confirm_pullback_from_intraday_low(self):
+        df = pd.DataFrame([{
+            "date": "2026-08-21", "close": 100.0, "low": 95.0, "volume": 70.0,
+            "distance_ma20": 0.0, "distance_ma60": 0.0, "volume_dry_up": 0.7,
+            "MA20_slope": 1.0, "MA20": 100.0, "MA60": 100.0,
+            "vol_ma20": 100.0, "low_20": 95.0,
+        }])
+        structure = {
+            "state": "VCP_FORMING", "post_breakout_state": "PRE_BREAKOUT",
+            "volume_pattern": "decreasing", "last_contraction_low": 95.0,
+            "contraction_group": [{
+                "low_price": 95.0, "end_close": 100.0, "avg_volume": 100.0,
+                "confirmation_status": "PROVISIONAL", "right_confirm_days": 0,
+            }],
+            "setup_score_context": {"PULLBACK_BUY": {"structure_score": 71.0}},
+        }
+
+        result = quant.detect_pullback_buy(
+            df, structure, {"risk_flags": [], "risk_score": 0}
+        )
+
+        self.assertGreater(df.iloc[-1]["close"], structure["last_contraction_low"] * 1.02)
+        self.assertFalse(result["hit"])
+        self.assertIn("最近收缩低点未守住", result["setup_misses"])
+        self.assertEqual(result["plan_inputs"]["last_low_confirmation_anchor"], "end_close")
+        self.assertEqual(result["plan_inputs"]["last_low_required_price"], 102.0)
+
+    def test_later_close_can_confirm_pullback_above_end_close(self):
+        df = pd.DataFrame([{
+            "date": "2026-08-24", "close": 102.1, "low": 99.0, "volume": 70.0,
+            "distance_ma20": 2.1, "distance_ma60": 2.1, "volume_dry_up": 0.7,
+            "MA20_slope": 1.0, "MA20": 100.0, "MA60": 100.0,
+            "vol_ma20": 100.0, "low_20": 95.0,
+        }])
+        structure = {
+            "state": "VCP_FORMING", "post_breakout_state": "PRE_BREAKOUT",
+            "volume_pattern": "decreasing", "last_contraction_low": 95.0,
+            "contraction_group": [{
+                "low_price": 95.0, "end_close": 100.0, "avg_volume": 100.0,
+                "confirmation_status": "PROVISIONAL", "right_confirm_days": 1,
+            }],
+            "setup_score_context": {"PULLBACK_BUY": {"structure_score": 71.0}},
+        }
+
+        result = quant.detect_pullback_buy(
+            df, structure, {"risk_flags": [], "risk_score": 0}
+        )
+
+        self.assertTrue(result["hit"])
+        self.assertEqual(result["reason"], "缩量回踩MA20")
+
+    def test_pullback_does_not_fall_back_to_intraday_low_without_end_close(self):
+        structure = {
+            "contraction_group": [{"low_price": 95.0}],
+            "last_contraction_low": 95.0,
+        }
+
+        self.assertIsNone(quant.pullback_confirmation_close(structure))
 
     def test_breakout_score_uses_pre_breakout_structure_anchor(self):
         structure = {

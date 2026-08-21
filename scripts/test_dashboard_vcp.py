@@ -175,6 +175,53 @@ class DashboardVcpIndustryContextTests(unittest.TestCase):
         self.assertEqual(result["candidates"][0]["post_breakout_state"], "POST_BREAKOUT_HOT")
         self.assertEqual(result["candidates"][0]["structure_breakout_score"], 81)
 
+    def test_pre_breakout_focus_reuses_bloom_watching_section(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bloom_dir = root / "bloom"; quant_dir = root / "quant"
+            bloom_dir.mkdir(); quant_dir.mkdir()
+            focus = {
+                "code": "600000", "name": "浦发银行", "bloom_status": "FORMING",
+                "model2_stage": "VCP_FORMING", "structure_score": "60",
+            }
+            all_only = {
+                "code": "600001", "name": "邯郸钢铁", "bloom_status": "EARLY",
+                "model2_stage": "VCP_EARLY", "structure_score": "59",
+            }
+            bloom = {
+                "summary": {"date": "2026-08-21"},
+                "sections": {"active": [focus, all_only], "watching": [focus]},
+            }
+            (bloom_dir / "bloom_input_260821.json").write_text(
+                json.dumps(bloom, ensure_ascii=False), encoding="utf-8"
+            )
+            with patch.object(dashboard_vcp, "BLOOM_INPUT_DIR", bloom_dir), patch.object(
+                dashboard_vcp, "QUANT_RUN_DIR", quant_dir
+            ), patch.object(dashboard_vcp, "realized_events_for_date", return_value=[]), patch.object(
+                dashboard_vcp, "load_industry_context", return_value={}
+            ), patch.object(dashboard_vcp, "load_pool_sources", return_value={}):
+                result = dashboard_vcp.build_context("260821")
+
+        by_code = {row["code"]: row for row in result["candidates"]}
+        self.assertTrue(by_code["600000"]["pre_breakout_focus"])
+        self.assertFalse(by_code["600001"]["pre_breakout_focus"])
+        self.assertEqual(result["summary"]["pre_breakout_focus_total"], 1)
+        self.assertEqual(result["summary"]["pre_breakout_total"], 2)
+
+    def test_vcp_page_has_focus_all_tabs_and_independent_scroll_containers(self):
+        dashboard = Path(__file__).resolve().parents[1] / "dashboard"
+        app = (dashboard / "app.js").read_text(encoding="utf-8")
+        page = (dashboard / "index.html").read_text(encoding="utf-8")
+        css = (dashboard / "vcp.css").read_text(encoding="utf-8")
+
+        self.assertIn('["PRE_BREAKOUT_FOCUS","突破前跟踪"]', app)
+        self.assertIn('["PRE_BREAKOUT_ALL","全部"]', app)
+        self.assertNotIn('$("vcp-detail").scrollTop=0', app)
+        self.assertIn('id="vcp-list-scroll"', page)
+        self.assertNotIn("vcp-detail-scroll", page)
+        self.assertIn("max-height:1236px", css)
+        self.assertIn("#vcp-table tbody tr{height:60px}", css)
+
     def test_same_day_market_csv_enriches_historical_candidate(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

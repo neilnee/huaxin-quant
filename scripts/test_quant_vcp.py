@@ -350,6 +350,68 @@ class CloseBasedContractionTests(unittest.TestCase):
         ]
         self.assertTrue(quant.contraction_group_has_reset_expansion(expanded))
 
+    def test_destructive_reset_uses_major_peak_and_isolates_overlapping_segments(self):
+        closes = [100.0] * 80 + [120.0, 115.0, 110.0, 100.0, 90.0, 80.0, 82.0, 85.0, 88.0, 90.0]
+        df = quant.calc_indicators(make_frame(closes))
+
+        event = quant.detect_destructive_reset(df)
+
+        self.assertEqual(event["peak_idx"], 80)
+        self.assertEqual(event["peak_close"], 120.0)
+        self.assertEqual(event["low_idx"], 85)
+        self.assertEqual(event["close_drawdown_pct"], -33.33)
+        rebuild = quant.destructive_reset_rebuild_status(df, event)
+        self.assertFalse(rebuild["ready"])
+
+        contractions = [
+            {"start_idx": 60, "end_idx": 65},
+            {"start_idx": 80, "end_idx": 85},
+            {"start_idx": 87, "end_idx": 89},
+        ]
+        annotated, post_reset = quant.annotate_contractions_for_destructive_reset(
+            contractions, event, rebuild_ready=False
+        )
+        self.assertEqual(
+            [item["vcp_segment_status"] for item in annotated],
+            ["PRE_RESET", "OVERLAPS_DESTRUCTIVE_RESET", "POST_RESET_REBUILD"],
+        )
+        self.assertEqual(post_reset, [annotated[-1]])
+        self.assertEqual(annotated[1]["excluded_reason"], "DESTRUCTIVE_RESET")
+        self.assertFalse(any(item["eligible_for_vcp"] for item in annotated))
+
+        current = {
+            "group": [
+                {"start_idx": 87, "end_idx": 89, "close_pullback_pct": -12.0},
+                {"start_idx": 90, "end_idx": 92, "close_pullback_pct": -10.0},
+            ],
+            "post_breakout_state": "PRE_BREAKOUT",
+        }
+        self.assertTrue(
+            quant.destructive_reset_relevant_to_current(event, contractions, current)
+        )
+        self.assertFalse(
+            quant.destructive_reset_relevant_to_current(
+                event, contractions, dict(current, post_breakout_state="POST_BREAKOUT_HOT")
+            )
+        )
+
+    def test_destructive_reset_rebuild_gate_can_reopen_post_reset_segments(self):
+        closes = [100.0] * 80 + [120.0, 115.0, 110.0, 100.0, 90.0, 80.0]
+        closes += [82.0 + step * 2.0 for step in range(21)]
+        df = quant.calc_indicators(make_frame(closes))
+        event = quant.detect_destructive_reset(df)
+
+        rebuild = quant.destructive_reset_rebuild_status(df, event)
+
+        self.assertTrue(rebuild["ready"])
+        contraction = {"start_idx": 90, "end_idx": 94}
+        annotated, post_reset = quant.annotate_contractions_for_destructive_reset(
+            [contraction], event, rebuild_ready=True
+        )
+        self.assertEqual(annotated[0]["vcp_segment_status"], "POST_RESET_ELIGIBLE")
+        self.assertTrue(annotated[0]["eligible_for_vcp"])
+        self.assertEqual(post_reset, annotated)
+
     def test_time_gap_splits_independent_vcp_clusters(self):
         contractions = [
             {"start_idx": 10, "end_idx": 15},
@@ -362,9 +424,52 @@ class CloseBasedContractionTests(unittest.TestCase):
 
     def test_failed_breakout_reset_requires_a_cleaner_confirming_contraction(self):
         df = make_frame([99, 100, 98, 102, 95, 90, 80, 85, 90, 95, 100, 92, 85, 88, 90, 92])
+        old_group = [
+            {
+                "start_idx": 0, "end_idx": 0, "start_date": "2026-01-01", "end_date": "2026-01-01",
+                "high_price": 100.0, "low_price": 88.0, "close_pullback_pct": -12.0,
+                "avg_volume": 110.0,
+            },
+            {
+                "start_idx": 1, "end_idx": 2, "start_date": "2026-01-02", "end_date": "2026-01-05",
+                "high_price": 100.0, "low_price": 90.0, "close_pullback_pct": -10.0,
+                "avg_volume": 100.0,
+            },
+        ]
+        reset = {
+            "start_idx": 3, "end_idx": 6, "start_date": "2026-01-06", "end_date": "2026-01-09",
+            "high_price": 105.0, "low_price": 80.0, "close_pullback_pct": -20.0,
+            "avg_volume": 200.0,
+        }
+        confirming = {
+            "start_idx": 10, "end_idx": 12, "start_date": "2026-01-15", "end_date": "2026-01-19",
+            "high_price": 101.0, "low_price": 85.0, "close_pullback_pct": -15.0,
+            "avg_volume": 90.0,
+        }
+
+        result = quant.detect_confirmed_reset_contraction(
+            df, old_group + [reset, confirming], [confirming]
+        )
+
+        self.assertEqual(result["type"], "CONFIRMED_RESET_CONTRACTION")
+        self.assertEqual(result["score"], 6)
+        self.assertEqual(result["failure_date"], str(df.iloc[4]["date"]))
+        self.assertEqual(result["prior_contraction_count"], 2)
+        self.assertEqual(result["prior_structure_pivot"], 100.0)
+        self.assertAlmostEqual(result["confirm_volume_ratio"], 0.45)
+
+        noisy_follow = dict(confirming, avg_volume=180.0)
+        self.assertIsNone(
+            quant.detect_confirmed_reset_contraction(
+                df, old_group + [reset, noisy_follow], [noisy_follow]
+            )
+        )
+
+    def test_confirmed_reset_rejects_single_swing_and_deep_trend_break(self):
+        df = make_frame([99, 100, 98, 102, 95, 90, 80, 85, 90, 95, 100, 92, 85, 88, 90, 92])
         old = {
             "start_idx": 0, "end_idx": 2, "start_date": "2026-01-01", "end_date": "2026-01-05",
-            "high_price": 100.0, "low_price": 95.0, "close_pullback_pct": -10.0,
+            "high_price": 100.0, "low_price": 90.0, "close_pullback_pct": -10.0,
             "avg_volume": 100.0,
         }
         reset = {
@@ -378,16 +483,29 @@ class CloseBasedContractionTests(unittest.TestCase):
             "avg_volume": 90.0,
         }
 
-        result = quant.detect_confirmed_reset_contraction(df, [old, reset, confirming], [confirming])
-
-        self.assertEqual(result["type"], "CONFIRMED_RESET_CONTRACTION")
-        self.assertEqual(result["score"], 6)
-        self.assertEqual(result["failure_date"], str(df.iloc[4]["date"]))
-        self.assertAlmostEqual(result["confirm_volume_ratio"], 0.45)
-
-        noisy_follow = dict(confirming, avg_volume=180.0)
         self.assertIsNone(
-            quant.detect_confirmed_reset_contraction(df, [old, reset, noisy_follow], [noisy_follow])
+            quant.detect_confirmed_reset_contraction(df, [old, reset, confirming], [confirming])
+        )
+
+        old_group = [
+            dict(old, start_idx=0, end_idx=0, close_pullback_pct=-12.0),
+            dict(old, start_idx=1, end_idx=2),
+        ]
+        deep_reset = dict(reset, close_pullback_pct=-25.1)
+        self.assertIsNone(
+            quant.detect_confirmed_reset_contraction(
+                df, old_group + [deep_reset, confirming], [confirming]
+            )
+        )
+
+        expanding_old_group = [
+            dict(old, start_idx=0, end_idx=0, close_pullback_pct=-8.0),
+            dict(old, start_idx=1, end_idx=2, close_pullback_pct=-10.0),
+        ]
+        self.assertIsNone(
+            quant.detect_confirmed_reset_contraction(
+                df, expanding_old_group + [reset, confirming], [confirming]
+            )
         )
 
     def test_terminal_micro_contraction_strengthens_but_does_not_join_standard_group(self):

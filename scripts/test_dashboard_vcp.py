@@ -59,6 +59,29 @@ class DashboardVcpIndustryContextTests(unittest.TestCase):
         self.assertEqual(result["contraction_extension_score"], 0)
         self.assertEqual(result["contraction_extensions"], [])
 
+    def test_compact_candidate_keeps_destructive_reset_rebuild_audit_separate(self):
+        quant = {
+            "structure_stage": "TREND_REBUILD",
+            "contraction_count": 0,
+            "contraction_group": [],
+            "destructive_reset": {"peak_date": "2026-07-01", "low_date": "2026-07-20"},
+            "destructive_reset_rebuild_ready": False,
+            "rebuild_contraction_count": 1,
+            "rebuild_contraction_group": [{"start_date": "2026-08-13"}],
+        }
+
+        result = dashboard_vcp.compact_candidate({}, quant, {})
+
+        self.assertEqual(result["contractions"], [])
+        self.assertEqual(result["rebuild_contraction_count"], 1)
+        self.assertEqual(len(result["rebuild_contractions"]), 1)
+        self.assertFalse(result["destructive_reset_rebuild_ready"])
+        self.assertEqual(result["bloom_status"], "TREND_REBUILD")
+        self.assertEqual(result["bloom_signal"], "NONE")
+        self.assertIn("尚不计入正式 VCP", result["watch_reason"])
+        self.assertIn("MA20 站上 MA60", result["next_watch_point"])
+        self.assertEqual(result["llm_insight"], "")
+
     def test_same_day_pool_source_is_exposed_for_vcp_detail(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -216,6 +239,9 @@ class DashboardVcpIndustryContextTests(unittest.TestCase):
 
         self.assertIn('["PRE_BREAKOUT_FOCUS","突破前跟踪"]', app)
         self.assertIn('["PRE_BREAKOUT_ALL","全部"]', app)
+        self.assertIn('["TREND_REBUILD","趋势重建"]', app)
+        self.assertIn("vcpDestructiveResetPanel", app)
+        self.assertIn("rebuild_contractions", app)
         self.assertNotIn('$("vcp-detail").scrollTop=0', app)
         self.assertIn('id="vcp-list-scroll"', page)
         self.assertNotIn("vcp-detail-scroll", page)

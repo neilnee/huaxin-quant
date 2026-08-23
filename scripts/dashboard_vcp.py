@@ -206,6 +206,11 @@ def compact_candidate(row: dict, quant: dict, industry: dict) -> dict:
         "prior_breakout_bonus_score": "prior_breakout_bonus_score",
         "prior_breakout_bonus_reasons": "prior_breakout_bonus_reasons",
         "prior_breakout_context_tag": "prior_breakout_context_tag",
+        "destructive_reset": "destructive_reset",
+        "destructive_reset_rebuild_ready": "destructive_reset_rebuild_ready",
+        "destructive_reset_rebuild_checks": "destructive_reset_rebuild_checks",
+        "rebuild_contraction_count": "rebuild_contraction_count",
+        "rebuild_contraction_group": "rebuild_contraction_group",
     }
     for target, source in quant_overrides.items():
         if source in quant:
@@ -215,12 +220,22 @@ def compact_candidate(row: dict, quant: dict, industry: dict) -> dict:
     # The full contraction scan is retained in Model 2 for audit.  The dashboard
     # must show only the group selected as the current valid VCP structure.
     result["contractions"] = quant.get("contraction_group", [])
+    result["rebuild_contractions"] = quant.get("rebuild_contraction_group", []) or []
     result["contraction_extension_tags"] = quant.get("contraction_extension_tags", []) or []
     result["contraction_extension_score"] = quant.get("contraction_extension_score", 0) or 0
     result["contraction_extensions"] = quant.get("contraction_extensions", []) or []
     result["volume_pattern"] = display_vcp_text(result.get("volume_pattern"))
     result["structure_conditions"] = display_vcp_text(result["structure_conditions"])
     result["structure_misses"] = display_vcp_text(result["structure_misses"])
+    if result.get("model2_stage") == "TREND_REBUILD":
+        candidate_count = int(result.get("rebuild_contraction_count") or 0)
+        result["source_bloom_status"] = result.get("bloom_status", "")
+        result["source_bloom_signal"] = result.get("bloom_signal", "")
+        result["bloom_status"] = "TREND_REBUILD"
+        result["bloom_signal"] = "NONE"
+        result["watch_reason"] = f"短期深跌后趋势重建中；当前有 {candidate_count} 轮候选收缩，尚不计入正式 VCP"
+        result["next_watch_point"] = "等待 MA20 站上 MA60、MA60 不再下行，并连续 3 日收盘站上 MA60"
+        result["llm_insight"] = ""
     result["sw_l2_name"] = industry.get("sw_l2_name", "")
     result["sector"] = industry.get("sector", {})
     return result
@@ -287,6 +302,7 @@ def build_context(date_yy: str) -> dict:
     summary["pre_breakout_total"] = sum(row.get("tracking_scope") == "PRE_BREAKOUT" for row in candidates)
     summary["pre_breakout_focus_total"] = sum(row.get("pre_breakout_focus", False) for row in candidates)
     summary["post_breakout_total"] = sum(row.get("tracking_scope") == "POST_BREAKOUT" for row in candidates)
+    summary["trend_rebuild_total"] = sum(row.get("model2_stage") == "TREND_REBUILD" for row in candidates)
     return {
         "meta": {"run_date": bloom.get("summary", {}).get("date"), "source": bloom_path.name,
                  "quant_source": quant_path.name if quant_path.exists() else None},

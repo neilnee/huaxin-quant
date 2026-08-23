@@ -27,6 +27,37 @@ class DashboardSignalsMarketNoticeTests(unittest.TestCase):
         self.assertEqual(result["prior_breakout_bonus_reasons"], ["前序VCP突破", "强势整理形成新VCP"])
         self.assertEqual(result["prior_breakout_context_tag"], "之前已有突破并强势整理")
 
+    def test_stale_plan_is_not_published_after_quant_enters_trend_rebuild(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"; plans = root / "plans"
+            runs.mkdir(); plans.mkdir()
+            quant = {
+                "meta": {"run_date": "2026-08-21"},
+                "results": [{
+                    "code": "003004", "name": "声迅股份", "model2_include": True,
+                    "structure_type": "VCP", "structure_stage": "TREND_REBUILD",
+                    "structure_valid": False, "setup_signal": "NONE",
+                }],
+            }
+            plan = {"plans": [{
+                "code": "003004", "name": "声迅股份", "setup_signal": "BREAKOUT_BUY",
+                "target_quality": "A", "plan_reason": "旧结构突破计划",
+            }]}
+            (runs / "quant_260821.json").write_text(json.dumps(quant), encoding="utf-8")
+            (plans / "signal_plan_260821.json").write_text(json.dumps(plan), encoding="utf-8")
+            with patch.object(dashboard_signals, "RUNS", runs), patch.object(
+                dashboard_signals, "PLAN_RUNS", plans
+            ), patch.object(dashboard_signals, "realized_events_for_date", return_value=[]), patch.object(
+                dashboard_signals, "pool_notices", return_value={}
+            ), patch.object(dashboard_signals, "market_notice", return_value={"state": "UNKNOWN"}), patch.object(
+                dashboard_signals, "sector_notices", return_value={}
+            ), patch.object(dashboard_signals, "capital_notices", return_value=({}, 0, [])):
+                result = dashboard_signals.build("260821")
+
+        self.assertEqual(result["signals"], [])
+        self.assertEqual(result["summary"]["planned"], 0)
+
     def test_previous_plan_hit_does_not_create_an_independent_trigger(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

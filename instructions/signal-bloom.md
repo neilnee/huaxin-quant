@@ -329,6 +329,8 @@ Bloom 日快照和事件账本必须先写入 `cache/strategy/strategy_data.sqli
 
 `dashboard_signals.py` 在每日工作流中必须以 `--fetch-capital` 启动，并按当日触发股与 Signal Plan 股票代码去重补查个股主力和融资资金。该补查使用独立于完整资金观测的请求预算；发布数据包必须记录 `capital_fetch_enabled`、实际请求数和错误列表，每条信号必须保留 `capital_support`，数据缺失时明确降级而不得省略。每日完整性核验必须确认同日信号数据包确实启用了资金补查。
 
+Signals 页面重发时，历史 Signal Plan 必须使用同日最新 Quant 结果再次校验。若股票已经进入 `TREND_WATCH / TREND_REBUILD / STRUCTURE_INVALID / NONE / DATA_ISSUE`、`structure_valid=false`、`model2_include=false` 或明确不再是 VCP，则旧计划只作为历史文件保留，不得继续发布为当前次日买点。
+
 VCP 页面补充申万二级行业与板块状态时，优先读取同日 `market/stock_strength_<YYMMDD>.csv` 和 `market/sector_heat_<YYMMDD>.csv`；同日文件缺失时才读取数据库中的同日快照。不得回退到其他日期。历史降级口径沿用 Market Regime 产物的 `history_basis`，不得把当前成分回填伪装成严格点时数据。所属板块卡片中的主阶段、阶段趋势和短线脉冲附加标记必须使用同一尺寸的胶囊标签，并在同一水平行内纵向居中展示，不得因卡片通用 `span` 样式变成纵向排列；各标签继续保留自身语义颜色。
 
 VCP 标的详情必须把 `contraction_count` 明确标为“标准收缩轮次”，并独立展示

@@ -217,6 +217,12 @@ def plan_row(plan, quant):
  row={key:quant.get(key) for key in FIELDS}
  row.update({"signal_kind":"PLAN","setup_signal":plan.get("setup_signal"),"action_hint":"次日计划","suggested_position":"触发后按模型二质量判定","setup_pattern_score":None,"setup_score":None,"setup_quality":plan.get("target_quality","—"),"setup_reasons":[plan.get("plan_reason","")],"setup_misses":[plan.get("risk_note","")],"setup_risk_flags":plan.get("structure_risk_flags",[]),"plan_action":plan.get("plan_action"),"plan_type":plan.get("plan_type"),"plan_priority":plan.get("plan_priority"),"plan_reason":plan.get("plan_reason"),"llm_note":plan.get("llm_note"),"trigger_price_low":plan.get("trigger_price_low"),"trigger_price_high":plan.get("trigger_price_high"),"ideal_price_low":plan.get("ideal_price_low"),"ideal_price_high":plan.get("ideal_price_high"),"plan_volume_text":format_plan_volume(plan.get("volume_max"),"max") if plan.get("volume_max") is not None else format_plan_volume(plan.get("volume_min"),"min"),"ideal_volume_text":format_plan_volume(plan.get("ideal_volume_max"),"max") if plan.get("ideal_volume_max") is not None else format_plan_volume(plan.get("ideal_volume_min"),"min"),"invalid_price":plan.get("invalid_price"),"plan_inputs":plan})
  return row
+def quant_allows_published_plan(quant):
+ if not quant: return False
+ if quant.get("model2_include") is False: return False
+ if quant.get("structure_valid") is False: return False
+ if quant.get("structure_type") not in (None,"","VCP"): return False
+ return quant.get("structure_stage") not in {"TREND_WATCH","TREND_REBUILD","STRUCTURE_INVALID","NONE","DATA_ISSUE"}
 def build(date,fetch_capital=False,max_mx_requests=None):
  path=RUNS/f"quant_{date}.json"
  if not path.exists(): raise FileNotFoundError(path.name)
@@ -239,7 +245,8 @@ def build(date,fetch_capital=False,max_mx_requests=None):
  plan_payload=json.loads(plan_path.read_text(encoding="utf-8")) if plan_path.exists() else {}
  for plan in plan_payload.get("plans",[]):
   code=str(plan.get("code","")).zfill(6)
-  if code in quant_by_code: rows.append(plan_row(plan,quant_by_code[code]))
+  quant=quant_by_code.get(code)
+  if quant_allows_published_plan(quant): rows.append(plan_row(plan,quant))
  notices=pool_notices(date); market=market_notice(date); sectors=sector_notices(date)
  capital,capital_requests,capital_errors=capital_notices(date,[str(row.get("code","")).zfill(6) for row in rows],fetch_capital,max_mx_requests)
  for row in rows:

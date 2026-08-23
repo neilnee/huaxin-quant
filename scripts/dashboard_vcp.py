@@ -227,6 +227,15 @@ def compact_candidate(row: dict, quant: dict, industry: dict) -> dict:
     result["volume_pattern"] = display_vcp_text(result.get("volume_pattern"))
     result["structure_conditions"] = display_vcp_text(result["structure_conditions"])
     result["structure_misses"] = display_vcp_text(result["structure_misses"])
+    if result.get("model2_stage") == "TREND_REBUILD":
+        candidate_count = int(result.get("rebuild_contraction_count") or 0)
+        result["source_bloom_status"] = result.get("bloom_status", "")
+        result["source_bloom_signal"] = result.get("bloom_signal", "")
+        result["bloom_status"] = "TREND_REBUILD"
+        result["bloom_signal"] = "NONE"
+        result["watch_reason"] = f"短期深跌后趋势重建中；当前有 {candidate_count} 轮候选收缩，尚不计入正式 VCP"
+        result["next_watch_point"] = "等待 MA20 站上 MA60、MA60 不再下行，并连续 3 日收盘站上 MA60"
+        result["llm_insight"] = ""
     result["sw_l2_name"] = industry.get("sw_l2_name", "")
     result["sector"] = industry.get("sector", {})
     return result
@@ -293,6 +302,7 @@ def build_context(date_yy: str) -> dict:
     summary["pre_breakout_total"] = sum(row.get("tracking_scope") == "PRE_BREAKOUT" for row in candidates)
     summary["pre_breakout_focus_total"] = sum(row.get("pre_breakout_focus", False) for row in candidates)
     summary["post_breakout_total"] = sum(row.get("tracking_scope") == "POST_BREAKOUT" for row in candidates)
+    summary["trend_rebuild_total"] = sum(row.get("model2_stage") == "TREND_REBUILD" for row in candidates)
     return {
         "meta": {"run_date": bloom.get("summary", {}).get("date"), "source": bloom_path.name,
                  "quant_source": quant_path.name if quant_path.exists() else None},

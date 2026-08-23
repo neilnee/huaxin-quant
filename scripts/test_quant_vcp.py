@@ -362,9 +362,52 @@ class CloseBasedContractionTests(unittest.TestCase):
 
     def test_failed_breakout_reset_requires_a_cleaner_confirming_contraction(self):
         df = make_frame([99, 100, 98, 102, 95, 90, 80, 85, 90, 95, 100, 92, 85, 88, 90, 92])
+        old_group = [
+            {
+                "start_idx": 0, "end_idx": 0, "start_date": "2026-01-01", "end_date": "2026-01-01",
+                "high_price": 100.0, "low_price": 88.0, "close_pullback_pct": -12.0,
+                "avg_volume": 110.0,
+            },
+            {
+                "start_idx": 1, "end_idx": 2, "start_date": "2026-01-02", "end_date": "2026-01-05",
+                "high_price": 100.0, "low_price": 90.0, "close_pullback_pct": -10.0,
+                "avg_volume": 100.0,
+            },
+        ]
+        reset = {
+            "start_idx": 3, "end_idx": 6, "start_date": "2026-01-06", "end_date": "2026-01-09",
+            "high_price": 105.0, "low_price": 80.0, "close_pullback_pct": -20.0,
+            "avg_volume": 200.0,
+        }
+        confirming = {
+            "start_idx": 10, "end_idx": 12, "start_date": "2026-01-15", "end_date": "2026-01-19",
+            "high_price": 101.0, "low_price": 85.0, "close_pullback_pct": -15.0,
+            "avg_volume": 90.0,
+        }
+
+        result = quant.detect_confirmed_reset_contraction(
+            df, old_group + [reset, confirming], [confirming]
+        )
+
+        self.assertEqual(result["type"], "CONFIRMED_RESET_CONTRACTION")
+        self.assertEqual(result["score"], 6)
+        self.assertEqual(result["failure_date"], str(df.iloc[4]["date"]))
+        self.assertEqual(result["prior_contraction_count"], 2)
+        self.assertEqual(result["prior_structure_pivot"], 100.0)
+        self.assertAlmostEqual(result["confirm_volume_ratio"], 0.45)
+
+        noisy_follow = dict(confirming, avg_volume=180.0)
+        self.assertIsNone(
+            quant.detect_confirmed_reset_contraction(
+                df, old_group + [reset, noisy_follow], [noisy_follow]
+            )
+        )
+
+    def test_confirmed_reset_rejects_single_swing_and_deep_trend_break(self):
+        df = make_frame([99, 100, 98, 102, 95, 90, 80, 85, 90, 95, 100, 92, 85, 88, 90, 92])
         old = {
             "start_idx": 0, "end_idx": 2, "start_date": "2026-01-01", "end_date": "2026-01-05",
-            "high_price": 100.0, "low_price": 95.0, "close_pullback_pct": -10.0,
+            "high_price": 100.0, "low_price": 90.0, "close_pullback_pct": -10.0,
             "avg_volume": 100.0,
         }
         reset = {
@@ -378,16 +421,29 @@ class CloseBasedContractionTests(unittest.TestCase):
             "avg_volume": 90.0,
         }
 
-        result = quant.detect_confirmed_reset_contraction(df, [old, reset, confirming], [confirming])
-
-        self.assertEqual(result["type"], "CONFIRMED_RESET_CONTRACTION")
-        self.assertEqual(result["score"], 6)
-        self.assertEqual(result["failure_date"], str(df.iloc[4]["date"]))
-        self.assertAlmostEqual(result["confirm_volume_ratio"], 0.45)
-
-        noisy_follow = dict(confirming, avg_volume=180.0)
         self.assertIsNone(
-            quant.detect_confirmed_reset_contraction(df, [old, reset, noisy_follow], [noisy_follow])
+            quant.detect_confirmed_reset_contraction(df, [old, reset, confirming], [confirming])
+        )
+
+        old_group = [
+            dict(old, start_idx=0, end_idx=0, close_pullback_pct=-12.0),
+            dict(old, start_idx=1, end_idx=2),
+        ]
+        deep_reset = dict(reset, close_pullback_pct=-25.1)
+        self.assertIsNone(
+            quant.detect_confirmed_reset_contraction(
+                df, old_group + [deep_reset, confirming], [confirming]
+            )
+        )
+
+        expanding_old_group = [
+            dict(old, start_idx=0, end_idx=0, close_pullback_pct=-8.0),
+            dict(old, start_idx=1, end_idx=2, close_pullback_pct=-10.0),
+        ]
+        self.assertIsNone(
+            quant.detect_confirmed_reset_contraction(
+                df, expanding_old_group + [reset, confirming], [confirming]
+            )
         )
 
     def test_terminal_micro_contraction_strengthens_but_does_not_join_standard_group(self):

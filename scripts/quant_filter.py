@@ -940,6 +940,8 @@ def detect_confirmed_reset_contraction(df, contractions, group):
     confirming_abs = abs(contraction_pullback_pct(confirming))
     if reset_abs <= 0 or not reset.get("avg_volume") or not reset.get("low_price"):
         return None
+    if reset_abs > cfg["max_reset_pullback_pct"]:
+        return None
     if gap_days > cfg["max_gap_days"]:
         return None
     if confirming_abs > reset_abs * cfg["max_follow_pullback_ratio"]:
@@ -951,17 +953,40 @@ def detect_confirmed_reset_contraction(df, contractions, group):
     if low_ratio < cfg["min_follow_low_ratio"]:
         return None
 
-    failure = None
-    for previous in contractions:
-        if previous["end_idx"] >= reset["start_idx"]:
-            break
-        previous_info = evaluate_vcp_group(df, [previous])
-        candidate = previous_info.get("post_breakout_failure")
-        if candidate and reset["start_idx"] <= candidate["idx"] <= reset["end_idx"]:
-            if failure is None or candidate["idx"] > failure["idx"]:
-                failure = candidate
-    if failure is None:
+    prior = [item for item in contractions if item["end_idx"] < reset["start_idx"]]
+    reset_cluster = split_contraction_clusters(prior + [reset])[-1]
+    prior_cluster = reset_cluster[:-1]
+    min_prior = int(cfg["min_prior_contractions"])
+    max_prior = min(CONTRACTION_CFG["max_recent_contractions"], len(prior_cluster))
+    source = None
+    for size in range(min_prior, max_prior + 1):
+        candidate_group = prior_cluster[-size:]
+        max_span = CONTRACTION_CFG.get("max_group_span_days")
+        if max_span and contraction_group_span_days(candidate_group) > max_span:
+            continue
+        if contraction_group_has_reset_expansion(candidate_group):
+            continue
+        if not contraction_decrease_status(candidate_group)["is_near"]:
+            continue
+        previous_info = evaluate_vcp_group(df, candidate_group)
+        failure = previous_info.get("post_breakout_failure")
+        if not failure or not reset["start_idx"] <= failure["idx"] <= reset["end_idx"]:
+            continue
+        candidate = {
+            "group": candidate_group,
+            "info": previous_info,
+            "failure": failure,
+        }
+        if source is None or (
+            failure["idx"], len(candidate_group)
+        ) > (
+            source["failure"]["idx"], len(source["group"])
+        ):
+            source = candidate
+    if source is None:
         return None
+
+    failure = source["failure"]
 
     return {
         "type": "CONFIRMED_RESET_CONTRACTION",
@@ -973,6 +998,8 @@ def detect_confirmed_reset_contraction(df, contractions, group):
         "avg_volume": reset["avg_volume"],
         "recovery_pct": reset.get("recovery_pct"),
         "failure_date": failure["date"],
+        "prior_contraction_count": len(source["group"]),
+        "prior_structure_pivot": round(source["info"]["structure_pivot"], 4),
         "confirm_start_date": confirming["start_date"],
         "confirm_end_date": confirming["end_date"],
         "confirm_pullback_pct": confirming["close_pullback_pct"],

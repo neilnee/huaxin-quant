@@ -1,5 +1,5 @@
 {
-  "strategy_version": "model2_quant_v26",
+  "strategy_version": "model2_quant_v27",
   "description": "Model 2 VCP structure and setup signal parameters. This file contains thresholds and weights only; algorithms stay in scripts/quant_filter.py.",
   "price_adjustment": {
     "mode": "point_in_time_qfq",
@@ -82,6 +82,8 @@
       "max_total_bonus": 12,
       "confirmed_reset": {
         "score": 6,
+        "min_prior_contractions": 2,
+        "max_reset_pullback_pct": 25.0,
         "max_gap_days": 25,
         "max_follow_pullback_ratio": 0.9,
         "max_follow_volume_ratio": 0.8,

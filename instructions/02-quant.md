@@ -1,7 +1,7 @@
 # 模型二：量价精筛模型（自执行指令）
 
 - **版本管理**: 由 Git 分支与提交历史管理，文件名不再携带版本号
-- **最近更新**: 2026-08-22（model2_quant_v26）
+- **最近更新**: 2026-08-23（model2_quant_v27）
 - **核心目标**: 在模型一基本面候选池中，寻找 VCP 蓄力结构和可交易触发，输出可复现、可回测、可供模型三/四复用的结构化量价结果。
 - **核心哲学**: 基本面先过滤烂公司，模型二只判断资金行为和价格位置。脚本负责确定性计算，LLM 只做可选解释，不参与结构阶段或交易触发判定。
 - **输入**: `pool/pool_<YYMMDD>.csv`，或命令行指定 `--code/--codes`
@@ -611,7 +611,7 @@ right_confirm_days / required_right_confirm_days
 
 | 类型 | 成立条件 | 用途 |
 |------|----------|------|
-| `CONFIRMED_RESET_CONTRACTION` | 一段标准收缩横跨旧结构突破失败日；其后出现新标准收缩，且后段振幅不超过重置段的 90%、段均量不超过 80%、低点不低于重置段低点、间隔不超过 25 日 | 确认剧烈洗盘后供给继续收敛，结构分 +6 |
+| `CONFIRMED_RESET_CONTRACTION` | 旧结构至少包含 2 轮近似递减的标准收缩；其突破失败日落在随后一段不超过 25% 的标准收缩内；再后出现新标准收缩，且后段振幅不超过重置段的 90%、段均量不超过 80%、低点不低于重置段低点、间隔不超过 25 日 | 确认旧 VCP 内受控洗盘后供给继续收敛，结构分 +6 |
 | `TERMINAL_MICRO_CONTRACTION` | 当前标准结构之后出现 2-5 日、至少 1.5% 且小于 4% 的短回撤；段均量不超过最近标准收缩的 85%，整体 `volume_dry_up <= 0.85`，回撤后修复至少 3%，且当前位于 Pivot 的 -15% 至 +1% | 确认末端抛压衰竭，结构分 +6 |
 
 扩展收缩必须遵守以下边界：
@@ -625,14 +625,16 @@ right_confirm_days / required_right_confirm_days
 两项可叠加，structure_score 扩展加分合计最多 12 分
 ```
 
-`CONFIRMED_RESET_CONTRACTION` 只有在后续标准收缩完成确认后才成立；单独的突破失败、跌停或放量下跌
-不是正向结构。`TERMINAL_MICRO_CONTRACTION` 必须依附于当前有效标准 contraction group，不能凭普通小幅
+`CONFIRMED_RESET_CONTRACTION` 只有在旧结构已经达到 `VCP_FORMING` 的最低轮次和递减要求、重置段
+收盘回撤不超过 25%，并由后续标准收缩完成确认后才成立；单轮回撤后的反弹失败、超过上限的深跌、
+跌停或放量下跌都不是正向结构。该上限只约束扩展标签，不改变标准 contraction 的全局 35% 上限。
+`TERMINAL_MICRO_CONTRACTION` 必须依附于当前有效标准 contraction group，不能凭普通小幅
 震荡独立建立 VCP。两类扩展段仅在当前标的已经通过趋势基础并形成有效 VCP 阶段时输出和加分；
 `NONE / TREND_WATCH / POST_BREAKOUT / TREND_REBUILD / STRUCTURE_INVALID` 均不得获得扩展分；进入任一
 `POST_BREAKOUT_*` 生命周期后不再重复计算当前扩展分，突破买点仍使用突破前一日冻结的结构分。
 
 输出保留 `contraction_extension_tags`、`contraction_extension_score` 和 `contraction_extensions`，用于逐段
-审计识别类型、时间、振幅、量能比例和确认关系。
+审计识别类型、时间、振幅、量能比例、旧结构轮次和确认关系。
 
 ### 1.2 收缩递减
 

@@ -206,6 +206,11 @@ def compact_candidate(row: dict, quant: dict, industry: dict) -> dict:
         "prior_breakout_bonus_score": "prior_breakout_bonus_score",
         "prior_breakout_bonus_reasons": "prior_breakout_bonus_reasons",
         "prior_breakout_context_tag": "prior_breakout_context_tag",
+        "destructive_reset": "destructive_reset",
+        "destructive_reset_rebuild_ready": "destructive_reset_rebuild_ready",
+        "destructive_reset_rebuild_checks": "destructive_reset_rebuild_checks",
+        "rebuild_contraction_count": "rebuild_contraction_count",
+        "rebuild_contraction_group": "rebuild_contraction_group",
     }
     for target, source in quant_overrides.items():
         if source in quant:
@@ -215,6 +220,7 @@ def compact_candidate(row: dict, quant: dict, industry: dict) -> dict:
     # The full contraction scan is retained in Model 2 for audit.  The dashboard
     # must show only the group selected as the current valid VCP structure.
     result["contractions"] = quant.get("contraction_group", [])
+    result["rebuild_contractions"] = quant.get("rebuild_contraction_group", []) or []
     result["contraction_extension_tags"] = quant.get("contraction_extension_tags", []) or []
     result["contraction_extension_score"] = quant.get("contraction_extension_score", 0) or 0
     result["contraction_extensions"] = quant.get("contraction_extensions", []) or []

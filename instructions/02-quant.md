@@ -1,7 +1,7 @@
 # 模型二：量价精筛模型（自执行指令）
 
 - **版本管理**: 由 Git 分支与提交历史管理，文件名不再携带版本号
-- **最近更新**: 2026-08-23（model2_quant_v27）
+- **最近更新**: 2026-08-23（model2_quant_v28）
 - **核心目标**: 在模型一基本面候选池中，寻找 VCP 蓄力结构和可交易触发，输出可复现、可回测、可供模型三/四复用的结构化量价结果。
 - **核心哲学**: 基本面先过滤烂公司，模型二只判断资金行为和价格位置。脚本负责确定性计算，LLM 只做可选解释，不参与结构阶段或交易触发判定。
 - **输入**: `pool/pool_<YYMMDD>.csv`，或命令行指定 `--code/--codes`
@@ -758,6 +758,40 @@ post_structure_drawdown >= -18%
 | post_structure_extended | 结构后涨幅过大，旧 VCP 已完成 |
 | post_structure_drawdown | 突破后曾出现硬失效或结构后再度深回撤，需要重新形成 |
 | post_group_support_break | 旧组随后出现连续且深度收盘跌破最后收缩低点 |
+
+### 1.3.2 短期深跌隔离与趋势重建
+
+标准 contraction 保留原始扫描和审计口径；在当前 VCP 选组前，脚本独立扫描完整价格路径中的
+`DESTRUCTIVE_RESET`。只有以下条件同时满足才建立深跌边界：
+
+```text
+主要收盘高点至低点不超过 15 个交易日
+主要高点至低点的收盘跌幅至少 30%
+低点收盘 < 高点前 20 日最低收盘 × 0.97
+低点收盘低于当日 MA60
+```
+
+主要高点必须取深跌窗口内的最高收盘，不得使用 contraction 自身较晚的局部反弹高点。命中后以低点日
+建立 `reset_boundary_idx`。只有深跌区间确实覆盖至少一段原始 contraction、原策略选出的当前组至少有
+2 轮近似递减收缩且仍处于 `PRE_BREAKOUT`、当前组起点不晚于低点后 25 个交易日，并且当前价未跌破
+MA120时，隔离层才介入当前结构；与当前组无关的历史深跌、只有一轮的 `VCP_EARLY` 或已进入突破后
+生命周期的结构保持原路径。激活后按位置标记原始收缩：
+
+| 标记 | 处理 |
+|------|------|
+| `PRE_RESET` | 仅保留历史审计，不参与当前 VCP 选组 |
+| `OVERLAPS_DESTRUCTIVE_RESET` | 横跨深跌边界，禁止计入 VCP 轮次、阶段、Pivot 和评分 |
+| `POST_RESET_REBUILD` | 位于低点之后，仅作为重建候选；重建门槛完成前不得计入正式轮次 |
+| `POST_RESET_ELIGIBLE` | 重建门槛完成后，可按原规则参与新的 VCP 选组 |
+
+趋势重建门槛必须同时满足：低点后至少 5 个交易日、MA20 不低于 MA60、MA60 十日斜率不低于 0，且
+最近至少 3 个交易日连续收盘高于各自 MA60。门槛未完成时固定输出 `TREND_REBUILD`，正式
+`contraction_count / effective_contraction_count` 为 0，不得输出扩展收缩或任何买点；低点后的候选段通过
+`rebuild_contraction_count / rebuild_contraction_group` 保留审计。门槛完成后，只从低点之后重新计数，
+深跌前及横跨深跌的段永久不得复用。
+
+该隔离层不修改 Swing、标准 contraction 的 4%-35% 全局口径、正常 VCP 的阶段和评分规则；未命中
+`DESTRUCTIVE_RESET` 的标的必须保持原结果不变。参数由 `vcp.destructive_reset` 统一配置。
 
 ### 1.4 量能确认
 

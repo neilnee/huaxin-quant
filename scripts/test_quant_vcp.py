@@ -350,6 +350,68 @@ class CloseBasedContractionTests(unittest.TestCase):
         ]
         self.assertTrue(quant.contraction_group_has_reset_expansion(expanded))
 
+    def test_destructive_reset_uses_major_peak_and_isolates_overlapping_segments(self):
+        closes = [100.0] * 80 + [120.0, 115.0, 110.0, 100.0, 90.0, 80.0, 82.0, 85.0, 88.0, 90.0]
+        df = quant.calc_indicators(make_frame(closes))
+
+        event = quant.detect_destructive_reset(df)
+
+        self.assertEqual(event["peak_idx"], 80)
+        self.assertEqual(event["peak_close"], 120.0)
+        self.assertEqual(event["low_idx"], 85)
+        self.assertEqual(event["close_drawdown_pct"], -33.33)
+        rebuild = quant.destructive_reset_rebuild_status(df, event)
+        self.assertFalse(rebuild["ready"])
+
+        contractions = [
+            {"start_idx": 60, "end_idx": 65},
+            {"start_idx": 80, "end_idx": 85},
+            {"start_idx": 87, "end_idx": 89},
+        ]
+        annotated, post_reset = quant.annotate_contractions_for_destructive_reset(
+            contractions, event, rebuild_ready=False
+        )
+        self.assertEqual(
+            [item["vcp_segment_status"] for item in annotated],
+            ["PRE_RESET", "OVERLAPS_DESTRUCTIVE_RESET", "POST_RESET_REBUILD"],
+        )
+        self.assertEqual(post_reset, [annotated[-1]])
+        self.assertEqual(annotated[1]["excluded_reason"], "DESTRUCTIVE_RESET")
+        self.assertFalse(any(item["eligible_for_vcp"] for item in annotated))
+
+        current = {
+            "group": [
+                {"start_idx": 87, "end_idx": 89, "close_pullback_pct": -12.0},
+                {"start_idx": 90, "end_idx": 92, "close_pullback_pct": -10.0},
+            ],
+            "post_breakout_state": "PRE_BREAKOUT",
+        }
+        self.assertTrue(
+            quant.destructive_reset_relevant_to_current(event, contractions, current)
+        )
+        self.assertFalse(
+            quant.destructive_reset_relevant_to_current(
+                event, contractions, dict(current, post_breakout_state="POST_BREAKOUT_HOT")
+            )
+        )
+
+    def test_destructive_reset_rebuild_gate_can_reopen_post_reset_segments(self):
+        closes = [100.0] * 80 + [120.0, 115.0, 110.0, 100.0, 90.0, 80.0]
+        closes += [82.0 + step * 2.0 for step in range(21)]
+        df = quant.calc_indicators(make_frame(closes))
+        event = quant.detect_destructive_reset(df)
+
+        rebuild = quant.destructive_reset_rebuild_status(df, event)
+
+        self.assertTrue(rebuild["ready"])
+        contraction = {"start_idx": 90, "end_idx": 94}
+        annotated, post_reset = quant.annotate_contractions_for_destructive_reset(
+            [contraction], event, rebuild_ready=True
+        )
+        self.assertEqual(annotated[0]["vcp_segment_status"], "POST_RESET_ELIGIBLE")
+        self.assertTrue(annotated[0]["eligible_for_vcp"])
+        self.assertEqual(post_reset, annotated)
+
     def test_time_gap_splits_independent_vcp_clusters(self):
         contractions = [
             {"start_idx": 10, "end_idx": 15},

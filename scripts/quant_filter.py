@@ -64,6 +64,7 @@ STRATEGY_VERSION = QUANT_STRATEGY["strategy_version"]
 VCP_CFG = QUANT_STRATEGY["vcp"]
 POST_BREAKOUT_CFG = VCP_CFG["post_breakout"]
 POST_GROUP_RESET_CFG = VCP_CFG["post_group_reset"]
+DESTRUCTIVE_RESET_CFG = VCP_CFG.get("destructive_reset", {})
 STRONG_IMPULSE_CONTEXT_CFG = VCP_CFG.get("strong_impulse_context", {})
 BASE_CFG = QUANT_STRATEGY["base_rules"]
 CONTRACTION_CFG = QUANT_STRATEGY["contraction_rules"]
@@ -513,6 +514,195 @@ def detect_contractions(df):
             "required_right_confirm_days": required_right_days,
         })
     return contractions
+
+
+def detect_destructive_reset(df):
+    """Return the latest fast, support-breaking drawdown in the VCP lookback."""
+    cfg = DESTRUCTIVE_RESET_CFG
+    if not cfg.get("enabled", False) or df is None or df.empty:
+        return None
+
+    max_days = int(cfg["max_decline_days"])
+    support_days = int(cfg["support_lookback_days"])
+    scan_start = max(0, len(df) - VCP_LOOKBACK)
+    events = []
+    for low_idx in range(scan_start + 1, len(df)):
+        peak_start = max(scan_start, low_idx - max_days + 1)
+        peak_slice = df.iloc[peak_start:low_idx]
+        if peak_slice.empty:
+            continue
+        peak_idx = peak_start + int(np.argmax(peak_slice["close"].to_numpy()))
+        peak_close = safe_float(df.iloc[peak_idx].get("close"), 0)
+        low_close = safe_float(df.iloc[low_idx].get("close"), 0)
+        if peak_close <= 0 or low_close <= 0:
+            continue
+        drawdown_pct = (low_close - peak_close) / peak_close * 100
+        if drawdown_pct > -float(cfg["min_close_drawdown_pct"]):
+            continue
+
+        support_slice = df.iloc[max(scan_start, peak_idx - support_days):peak_idx]
+        if support_slice.empty:
+            continue
+        prior_support = safe_float(support_slice["close"].min(), 0)
+        if prior_support <= 0 or low_close >= prior_support * float(cfg["support_break_ratio"]):
+            continue
+        low_ma60 = safe_float(df.iloc[low_idx].get("MA60"))
+        if cfg.get("require_low_below_ma60", False) and (
+            low_ma60 is None or low_close >= low_ma60
+        ):
+            continue
+
+        path = df.iloc[peak_idx:low_idx + 1]
+        events.append({
+            "type": "DESTRUCTIVE_RESET",
+            "peak_idx": int(peak_idx),
+            "peak_date": str(df.iloc[peak_idx]["date"]),
+            "peak_close": round(float(peak_close), 2),
+            "peak_high": round(float(path["high"].max()), 2),
+            "low_idx": int(low_idx),
+            "low_date": str(df.iloc[low_idx]["date"]),
+            "low_close": round(float(low_close), 2),
+            "low_price": round(float(path["low"].min()), 2),
+            "close_drawdown_pct": round(float(drawdown_pct), 2),
+            "decline_days": int(low_idx - peak_idx + 1),
+            "prior_support_close": round(float(prior_support), 2),
+            "low_ma60": round(float(low_ma60), 2),
+            "reset_boundary_idx": int(low_idx),
+        })
+    if not events:
+        return None
+
+    # A fast decline normally triggers on several consecutive sessions. Merge
+    # overlapping triggers so a later reaction high cannot replace the event's
+    # original major peak. The boundary is the first session on which the
+    # strongest peak has satisfied every destructive-reset condition.
+    events.sort(key=lambda item: (item["peak_idx"], item["low_idx"]))
+    clusters = []
+    for event in events:
+        if not clusters or event["peak_idx"] > clusters[-1]["max_low_idx"]:
+            clusters.append({"events": [event], "max_low_idx": event["low_idx"]})
+            continue
+        clusters[-1]["events"].append(event)
+        clusters[-1]["max_low_idx"] = max(clusters[-1]["max_low_idx"], event["low_idx"])
+
+    latest_cluster = max(clusters, key=lambda item: item["max_low_idx"])["events"]
+    major_peak_idx = max(
+        latest_cluster,
+        key=lambda item: (item["peak_close"], -item["peak_idx"]),
+    )["peak_idx"]
+    major_peak_events = [
+        item for item in latest_cluster if item["peak_idx"] == major_peak_idx
+    ]
+    return min(major_peak_events, key=lambda item: item["low_idx"])
+
+
+def destructive_reset_rebuild_status(df, event):
+    """Check whether a destructive reset has rebuilt a minimum rising trend."""
+    if not event:
+        return {"ready": True, "checks": {}, "misses": []}
+
+    cfg = DESTRUCTIVE_RESET_CFG
+    latest = df.iloc[-1]
+    days_after_low = len(df) - int(event["low_idx"]) - 1
+    min_above_days = int(cfg["rebuild_min_consecutive_closes_above_ma60"])
+    above_slice = df.iloc[-min_above_days:] if len(df) >= min_above_days else df.iloc[0:0]
+    consecutive_above_ma60 = (
+        len(above_slice) == min_above_days
+        and above_slice["MA60"].notna().all()
+        and bool((above_slice["close"] > above_slice["MA60"]).all())
+    )
+    ma20 = safe_float(latest.get("MA20"))
+    ma60 = safe_float(latest.get("MA60"))
+    ma20_above_ma60 = (
+        ma20 is not None and ma60 is not None and ma20 >= ma60
+    )
+    ma60_slope = safe_float(latest.get("MA60_slope"))
+    ma60_slope_ok = (
+        ma60_slope is not None
+        and ma60_slope >= float(cfg["rebuild_min_ma60_slope"])
+    )
+    checks = {
+        "days_after_low": int(days_after_low),
+        "min_days_after_low": int(cfg["rebuild_min_days_after_low"]),
+        "ma20_above_ma60": bool(ma20_above_ma60),
+        "ma60_slope": round(float(ma60_slope), 4) if ma60_slope is not None else None,
+        "ma60_slope_ok": bool(ma60_slope_ok),
+        "consecutive_closes_above_ma60": bool(consecutive_above_ma60),
+        "required_consecutive_closes_above_ma60": int(min_above_days),
+    }
+    ready = all([
+        days_after_low >= int(cfg["rebuild_min_days_after_low"]),
+        ma20_above_ma60 if cfg.get("rebuild_require_ma20_above_ma60", True) else True,
+        ma60_slope_ok,
+        consecutive_above_ma60,
+    ])
+    misses = []
+    if days_after_low < int(cfg["rebuild_min_days_after_low"]):
+        misses.append("深跌低点后观察时间不足")
+    if cfg.get("rebuild_require_ma20_above_ma60", True) and not ma20_above_ma60:
+        misses.append("深跌后MA20尚未站上MA60")
+    if not ma60_slope_ok:
+        misses.append("深跌后MA60尚未恢复向上")
+    if not consecutive_above_ma60:
+        misses.append(f"深跌后未连续{min_above_days}日站稳MA60")
+    return {"ready": bool(ready), "checks": checks, "misses": misses}
+
+
+def annotate_contractions_for_destructive_reset(contractions, event, rebuild_ready):
+    """Keep raw contractions auditable while returning only post-reset candidates."""
+    if not event:
+        return contractions, contractions
+
+    annotated = []
+    post_reset = []
+    peak_idx = int(event["peak_idx"])
+    boundary_idx = int(event["reset_boundary_idx"])
+    for contraction in contractions:
+        item = dict(contraction)
+        if item["end_idx"] < peak_idx:
+            status = "PRE_RESET"
+            eligible = False
+        elif item["start_idx"] <= boundary_idx:
+            status = "OVERLAPS_DESTRUCTIVE_RESET"
+            eligible = False
+        else:
+            status = "POST_RESET_ELIGIBLE" if rebuild_ready else "POST_RESET_REBUILD"
+            eligible = bool(rebuild_ready)
+            post_reset.append(item)
+        item["vcp_segment_status"] = status
+        item["eligible_for_vcp"] = eligible
+        if status == "OVERLAPS_DESTRUCTIVE_RESET":
+            item["excluded_reason"] = "DESTRUCTIVE_RESET"
+        annotated.append(item)
+        if status.startswith("POST_RESET_"):
+            post_reset[-1] = item
+    return annotated, post_reset
+
+
+def destructive_reset_relevant_to_current(event, contractions, current):
+    """Limit reset isolation to a deep decline directly feeding the current VCP."""
+    if not event or not current or not current.get("group"):
+        return False
+    if current.get("post_breakout_state", "PRE_BREAKOUT") != "PRE_BREAKOUT":
+        return False
+    group = current["group"]
+    if len(group) < STAGE_CFG["forming_min_contractions"]:
+        return False
+    if not contraction_decrease_status(group)["is_near"]:
+        return False
+
+    peak_idx = int(event["peak_idx"])
+    boundary_idx = int(event["reset_boundary_idx"])
+    overlaps_raw_contraction = any(
+        item["start_idx"] <= boundary_idx and item["end_idx"] >= peak_idx
+        for item in contractions
+    )
+    if not overlaps_raw_contraction:
+        return False
+    max_start_gap = int(
+        DESTRUCTIVE_RESET_CFG["max_current_group_start_after_low_days"]
+    )
+    return group[0]["start_idx"] <= boundary_idx + max_start_gap
 
 
 def detect_right_edge_provisional_contraction(df, confirmed_contractions):
@@ -1244,6 +1434,11 @@ def detect_vcp_structure(df, detect_consumed_breakout=True):
         "watch_priority": "none",
         "structure_risk_flags": [],
         "prior_breakout_context": None,
+        "destructive_reset": None,
+        "destructive_reset_rebuild_ready": True,
+        "destructive_reset_rebuild_checks": {},
+        "rebuild_contraction_count": 0,
+        "rebuild_contraction_group": [],
     }
     if n < BASE_CFG["min_data_days"]:
         return empty
@@ -1267,12 +1462,41 @@ def detect_vcp_structure(df, detect_consumed_breakout=True):
     provisional_contraction = detect_right_edge_provisional_contraction(
         df, confirmed_contractions
     )
-    contractions = [*confirmed_contractions]
+    raw_contractions = [*confirmed_contractions]
     if provisional_contraction:
-        contractions.append(provisional_contraction)
-    current, invalid_group = select_current_vcp_group(
-        df, contractions, detect_consumed_breakout=detect_consumed_breakout
+        raw_contractions.append(provisional_contraction)
+
+    baseline_current, baseline_invalid_group = select_current_vcp_group(
+        df, raw_contractions, detect_consumed_breakout=detect_consumed_breakout
     )
+    destructive_reset = detect_destructive_reset(df)
+    destructive_rebuild = destructive_reset_rebuild_status(df, destructive_reset)
+    above_ma120 = pd.isna(latest.get("MA120")) or close >= latest["MA120"]
+    if (
+        not base_ok
+        or not above_ma120
+        or not destructive_reset_relevant_to_current(
+            destructive_reset, raw_contractions, baseline_current
+        )
+    ):
+        destructive_reset = None
+        destructive_rebuild = destructive_reset_rebuild_status(df, None)
+    if destructive_reset:
+        contractions, groupable_contractions = annotate_contractions_for_destructive_reset(
+            raw_contractions, destructive_reset, destructive_rebuild["ready"]
+        )
+        selected_current, invalid_group = select_current_vcp_group(
+            df, groupable_contractions, detect_consumed_breakout=detect_consumed_breakout
+        )
+    else:
+        contractions = raw_contractions
+        selected_current = baseline_current
+        invalid_group = baseline_invalid_group
+    rebuild_pending = bool(destructive_reset and not destructive_rebuild["ready"])
+    rebuild_contraction_group = (
+        selected_current.get("group", []) if rebuild_pending and selected_current else []
+    )
+    current = None if rebuild_pending else selected_current
     contraction_extensions = []
     contraction_extension_score = 0
     contraction_extension_tags = []
@@ -1329,37 +1553,48 @@ def detect_vcp_structure(df, detect_consumed_breakout=True):
         right_days = provisional_contraction["right_confirm_days"]
         required_days = provisional_contraction["required_right_confirm_days"]
         conditions.append(f"最右端候选收缩，右侧确认{right_days}/{required_days}日")
-    if count:
-        conditions.append(
-            f"{min(count, CONTRACTION_CFG['max_recent_contractions'])}轮有效收缩"
-            f"（{confirmed_count}确认+{provisional_count}候选）"
-        )
+    if rebuild_pending:
+        volume_pattern = "unknown"
     else:
-        misses.append("未识别当前有效收缩轮次")
-        if structure_invalid_reason:
-            misses.append(structure_invalid_reason)
-    if decrease["is_strict"]:
-        conditions.append("收缩幅度明显递减")
-    elif decrease["is_near"]:
-        conditions.append("收缩幅度接近递减")
-    elif count >= 2:
-        misses.append("收缩幅度未递减")
-    if volume_pattern in {"decreasing", "drying"}:
-        conditions.append(f"量能{volume_pattern}")
-    else:
-        misses.append(f"量能{volume_pattern}")
-    if pivot_distance is not None and pivot_distance >= BASE_CFG["near_pivot_distance_pct"]:
-        conditions.append("接近pivot")
-    else:
-        misses.append("距离pivot偏远")
-    if last_low is not None and close > last_low * (1 + BASE_CFG["last_low_buffer_pct"] / 100):
-        conditions.append("最近收缩低点守住")
-    if any(has_intraday_close_divergence(c) for c in recent):
-        structure_risk_flags.append("INTRADAY_CLOSE_DIVERGENCE")
-        misses.append("日内影线波动显著大于收盘收缩")
+        if count:
+            conditions.append(
+                f"{min(count, CONTRACTION_CFG['max_recent_contractions'])}轮有效收缩"
+                f"（{confirmed_count}确认+{provisional_count}候选）"
+            )
+        else:
+            misses.append("未识别当前有效收缩轮次")
+            if structure_invalid_reason:
+                misses.append(structure_invalid_reason)
+        if decrease["is_strict"]:
+            conditions.append("收缩幅度明显递减")
+        elif decrease["is_near"]:
+            conditions.append("收缩幅度接近递减")
+        elif count >= 2:
+            misses.append("收缩幅度未递减")
+        if volume_pattern in {"decreasing", "drying"}:
+            conditions.append(f"量能{volume_pattern}")
+        else:
+            misses.append(f"量能{volume_pattern}")
+        if pivot_distance is not None and pivot_distance >= BASE_CFG["near_pivot_distance_pct"]:
+            conditions.append("接近pivot")
+        else:
+            misses.append("距离pivot偏远")
+        if last_low is not None and close > last_low * (1 + BASE_CFG["last_low_buffer_pct"] / 100):
+            conditions.append("最近收缩低点守住")
+        if any(has_intraday_close_divergence(c) for c in recent):
+            structure_risk_flags.append("INTRADAY_CLOSE_DIVERGENCE")
+            misses.append("日内影线波动显著大于收盘收缩")
     state = "REJECT"
     has_structure = False
-    if base_ok and current and count >= STAGE_CFG["early_min_contractions"]:
+    if rebuild_pending:
+        state = "TREND_REBUILD"
+        structure_valid = False
+        structure_invalid_reason = "destructive_reset_rebuild_pending"
+        conditions.append(
+            f"短期深跌后趋势重建中（候选收缩{len(rebuild_contraction_group)}轮）"
+        )
+        misses.extend(destructive_rebuild["misses"])
+    elif base_ok and current and count >= STAGE_CFG["early_min_contractions"]:
         has_structure = True
         if count >= STAGE_CFG["mature_min_contractions"] and decrease["is_strict"]:
             state = "VCP_MATURE"
@@ -1478,6 +1713,11 @@ def detect_vcp_structure(df, detect_consumed_breakout=True):
         "watch_priority": priority_map.get(state, "none"),
         "structure_risk_flags": structure_risk_flags,
         "prior_breakout_context": prior_breakout_context,
+        "destructive_reset": destructive_reset,
+        "destructive_reset_rebuild_ready": destructive_rebuild["ready"],
+        "destructive_reset_rebuild_checks": destructive_rebuild["checks"],
+        "rebuild_contraction_count": len(rebuild_contraction_group),
+        "rebuild_contraction_group": rebuild_contraction_group,
     }
 
 
@@ -2678,6 +2918,8 @@ def build_reason(structure, pullback, breakout, retest, overheat):
         return f"{post_breakout_state}：原VCP突破后生命周期管理"
     if structure.get("state") == "TREND_WATCH":
         return "趋势偏强但未形成有效收缩轮次"
+    if structure.get("state") == "TREND_REBUILD" and structure.get("destructive_reset"):
+        return "TREND_REBUILD：短期深跌后趋势重建中"
     if structure.get("state") in {"POST_BREAKOUT", "TREND_REBUILD"}:
         return f"{structure.get('state')}：历史结构失效({structure.get('structure_invalid_reason')})"
     if structure.get("has_structure"):
@@ -2771,6 +3013,11 @@ def screen(df, code=None):
             "vcp_quality": "D",
             "contractions": [],
             "contraction_group": [],
+            "destructive_reset": None,
+            "destructive_reset_rebuild_ready": True,
+            "destructive_reset_rebuild_checks": {},
+            "rebuild_contraction_count": 0,
+            "rebuild_contraction_group": [],
             "setup_plan_inputs": {
                 "pullback": {},
                 "breakout": {},
@@ -2872,6 +3119,15 @@ def screen(df, code=None):
         "vcp_quality": final_quality,
         "contractions": structure.get("contractions", []),
         "contraction_group": structure.get("contraction_group", []),
+        "destructive_reset": structure.get("destructive_reset"),
+        "destructive_reset_rebuild_ready": structure.get(
+            "destructive_reset_rebuild_ready", True
+        ),
+        "destructive_reset_rebuild_checks": structure.get(
+            "destructive_reset_rebuild_checks", {}
+        ),
+        "rebuild_contraction_count": structure.get("rebuild_contraction_count", 0),
+        "rebuild_contraction_group": structure.get("rebuild_contraction_group", []),
         "setup_plan_inputs": {
             "pullback": pullback.get("plan_inputs", {}),
             "breakout": breakout.get("plan_inputs", {}),

@@ -345,6 +345,10 @@ def indicators(frame: pd.DataFrame) -> pd.DataFrame:
     frame["atr14_pct"] = tr.groupby(frame["code"]).transform(lambda s: s.rolling(14).mean()) / frame["close"]
     frame["vol_ma20"] = volume.transform(lambda s: s.rolling(20).mean())
     frame["volume_ratio"] = frame["volume"] / frame["vol_ma20"]
+    if "amount" in frame:
+        amount = group["amount"]
+        frame["amount_ma20"] = amount.transform(lambda s: s.rolling(20).mean())
+        frame["amount_ratio"] = frame["amount"] / frame["amount_ma20"]
     frame["high60"] = group["high"].transform(lambda s: s.rolling(60).max())
     frame["low60"] = group["low"].transform(lambda s: s.rolling(60).min())
     frame["new_high60"] = frame["close"] >= frame["high60"]
@@ -489,6 +493,143 @@ def classify_market_state(
     return "CONSOLIDATING"
 
 
+def classify_market_liquidity(turnover_ratio_5_20: float, breadth_score: float, up_amount_share: float) -> dict:
+    """Classify the independent volume/breadth overlay without changing market state."""
+    settings = CONFIG["market_liquidity"]
+    if turnover_ratio_5_20 >= float(settings["expanding_ratio_min"]):
+        level, level_label = "EXPANDING", "放量"
+    elif turnover_ratio_5_20 < float(settings["contracting_ratio_max"]):
+        level, level_label = "CONTRACTING", "缩量"
+    else:
+        level, level_label = "NORMAL", "常量"
+
+    if breadth_score >= float(settings["broad_breadth_min"]):
+        breadth_level, breadth_label = "BROAD", "广度扩散"
+        overlay = {"EXPANDING": "放量扩散", "NORMAL": "常量扩散", "CONTRACTING": "缩量修复"}[level]
+    elif breadth_score <= float(settings["weak_breadth_max"]):
+        breadth_level, breadth_label = "WEAK", "广度偏弱"
+        overlay = {"EXPANDING": "放量承压", "NORMAL": "常量承压", "CONTRACTING": "缩量弱势"}[level]
+    else:
+        breadth_level, breadth_label = "NEUTRAL", "广度中性"
+        if up_amount_share >= float(settings["up_amount_share_strong_min"]):
+            suffix = "偏强"
+        elif up_amount_share <= float(settings["up_amount_share_weak_max"]):
+            suffix = "偏弱"
+        else:
+            suffix = "分化"
+        overlay = f"{level_label}{suffix}"
+    return {
+        "level": level,
+        "level_label": level_label,
+        "breadth_level": breadth_level,
+        "breadth_label": breadth_label,
+        "overlay_label": overlay,
+    }
+
+
+def compute_market_liquidity(universe: pd.DataFrame, current: pd.DataFrame, breadth_score: float) -> dict:
+    """Compute auditable all-A turnover facts as an observation-only sidecar."""
+    def unavailable(reason: str) -> dict:
+        return {
+            "available": False,
+            "reason": reason,
+            "level": "UNKNOWN",
+            "level_label": "数据不足",
+            "breadth_level": "UNKNOWN",
+            "breadth_label": "广度待叠加",
+            "overlay_label": "量能待确认",
+            "turnover_ratio_5_20": None,
+            "active_stock_ratio": None,
+            "up_amount_share": None,
+            "down_amount_share": None,
+            "top10_amount_share": None,
+            "high_concentration": False,
+            "valid_count": 0,
+            "summary": f"市场量能数据不足：{reason}。",
+            "affects_market_state": False,
+        }
+
+    amount_history = universe[pd.to_numeric(universe["amount"], errors="coerce").fillna(0) > 0].copy()
+    daily_amount = amount_history.groupby("trade_date")["amount"].sum().sort_index().tail(20)
+    if len(daily_amount) < 20 or float(daily_amount.mean()) <= 0:
+        return unavailable("全 A 成交额历史不足 20 个交易日")
+    turnover_ratio = float(daily_amount.tail(5).mean() / daily_amount.mean())
+
+    valid = current[
+        current["amount"].notna() & (current["amount"] > 0)
+        & current["amount_ma20"].notna() & (current["amount_ma20"] > 0)
+    ].copy()
+    if valid.empty:
+        return unavailable("全 A 个股成交额数据不可用")
+    total_amount = float(valid["amount"].sum())
+    if total_amount <= 0:
+        return unavailable("当日全 A 有效成交额为零")
+    up_amount = float(valid.loc[valid.ret1 > 0, "amount"].sum())
+    down_amount = float(valid.loc[valid.ret1 < 0, "amount"].sum())
+    active_ratio = float((valid["amount_ratio"] >= 1).mean() * 100)
+    top_count = max(1, int(math.ceil(len(valid) * 0.10)))
+    concentration = float(valid.nlargest(top_count, "amount")["amount"].sum() / total_amount * 100)
+    up_share = up_amount / total_amount * 100
+    down_share = down_amount / total_amount * 100
+    classification = classify_market_liquidity(turnover_ratio, breadth_score, up_share)
+    high_concentration = concentration >= float(CONFIG["market_liquidity"]["high_concentration_min"])
+    summary = (
+        f"近5日/20日全A成交额比为 {turnover_ratio:.3f}x，量能处于{classification['level_label']}；"
+        f"广度为{classification['breadth_label']}，形成“{classification['overlay_label']}”。"
+        f"上涨股成交额占比 {up_share:.1f}%，个股放量覆盖率 {active_ratio:.1f}%。"
+        + (f"成交额前10%个股占比 {concentration:.1f}%，活跃度较集中。" if high_concentration
+           else f"成交额前10%个股占比 {concentration:.1f}%，未达到高集中阈值。")
+    )
+    return {
+        **classification,
+        "available": True,
+        "turnover_ratio_5_20": round(turnover_ratio, 3),
+        "active_stock_ratio": round(active_ratio, 2),
+        "up_amount_share": round(up_share, 2),
+        "down_amount_share": round(down_share, 2),
+        "top10_amount_share": round(concentration, 2),
+        "high_concentration": high_concentration,
+        "valid_count": int(len(valid)),
+        "summary": summary,
+        "affects_market_state": False,
+    }
+
+
+def market_liquidity_state_meaning(report: dict) -> str:
+    """Explain what the volume overlay means inside the already-confirmed state."""
+    state = report["state"]["confirmed_state"]
+    liquidity = report["market_liquidity"]
+    if not liquidity.get("available", True):
+        return "量能旁路当前数据不足，不能评价成交确认质量；正式状态和确认进度保持不变。"
+    overlay = liquidity["overlay_label"]
+    if overlay in {"放量扩散", "放量偏强"}:
+        quality = "成交活跃度与改善方向同步，量能确认较强"
+    elif overlay in {"缩量修复", "缩量偏强"}:
+        quality = "成交方向偏正，但总量收缩，尚不足以强化状态切换"
+    elif overlay in {"放量承压", "放量偏弱"}:
+        quality = "成交活跃度上升但弱势方向占优，量能更偏风险确认"
+    elif overlay in {"缩量弱势", "缩量偏弱"}:
+        quality = "广度或成交方向仍弱，但总体交易活跃度同步下降"
+    elif overlay in {"常量扩散", "常量偏强"}:
+        quality = "改善方向占优，成交活跃度维持常态"
+    elif overlay in {"常量承压", "常量偏弱"}:
+        quality = "弱势方向占优，成交活跃度未出现明显收缩"
+    else:
+        quality = "量能与广度尚未形成一致方向"
+
+    state_context = {
+        "OFFENSIVE": "用于观察趋势扩散的参与质量",
+        "RECOVERY_WATCH": "用于观察修复能否获得成交确认",
+        "SELECTIVE": "用于区分局部活跃与全市场扩散",
+        "CONSOLIDATING": "用于识别弱势震荡内部是否出现修复线索",
+        "DEFENSIVE": "用于识别风险释放或弱势衰减的量能特征",
+    }[state]
+    return (
+        f"在“{state_label(state, report)}”状态下，{quality}；{state_context}。"
+        "正式状态和确认进度保持不变。"
+    )
+
+
 def selective_opportunity_evidence(sector_rows: list[dict], persistent_mainlines: list[str]) -> dict:
     """Require observable local sector strength before opening the selective regime."""
     settings = CONFIG["state_thresholds"]["selective"]
@@ -555,6 +696,7 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
         "new_high_minus_low_ratio": round(float((current.new_high60.mean() - current.new_low60.mean()) * 100), 2),
     }
     breadth_score = np.mean([breadth["advance_ratio"], breadth["above_ma20_ratio"], breadth["above_ma60_ratio"], max(0, min(100, 50 + breadth["new_high_minus_low_ratio"]))])
+    market_liquidity = compute_market_liquidity(universe, current, float(breadth_score))
 
     bench = pd.read_sql_query("SELECT * FROM daily_bars WHERE code LIKE 'IDX:%' AND trade_date<=?", conn, params=(as_of,))
     bench = indicators(bench)
@@ -680,7 +822,7 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
         within = float((same_concept.ret20 <= row.ret20).mean() * 100)
         heat = concept_heat.get(name, {})
         concept_rows.append({"date": as_of, "code": code, "name": row.get("name", ""), "concept_name": name, "concept_relative_strength_20": heat.get("relative_strength_20"), "concept_rank": heat.get("rank_20"), "stock_return_20": round(float(row.ret20 * 100), 3), "rps20_within_concept": round(within, 2), "stock_vs_concept_return_20": round(float((row.ret20 - same_concept.ret20.mean()) * 100), 3)})
-    report = {"meta": {"run_date": as_of, "strategy_version": CONFIG["strategy_version"], "data_status": "VALID", "config": str(CONFIG_PATH), "reference_snapshot_date": snapshot_date, "history_basis": history_basis}, "state": {"current": state, "raw_state": state, "trend_score": round(trend_score, 2), "volatility_score": round(volatility_score, 2), "breadth_score": round(float(breadth_score), 2), "rotation_score": rotation, "persistent_mainline_count": len(selective_evidence["persistent_mainlines"]), "persistent_mainlines": selective_evidence["persistent_mainlines"], "local_opportunity": selective_evidence["qualified"], "local_opportunity_basis": selective_evidence["basis"], "strong_industry_count": selective_evidence["strong_industry_count"], "strong_concept_count": selective_evidence["strong_concept_count"]}, "benchmarks": benchmark_metrics, "breadth": breadth, "rotation": {"top10_sets": {k: sorted(v) for k, v in top_sets.items()}}, "sector_leaders": sector_leaders, "daily_sector_leaders": daily_sector_leaders}
+    report = {"meta": {"run_date": as_of, "strategy_version": CONFIG["strategy_version"], "data_status": "VALID", "config": str(CONFIG_PATH), "reference_snapshot_date": snapshot_date, "history_basis": history_basis}, "state": {"current": state, "raw_state": state, "trend_score": round(trend_score, 2), "volatility_score": round(volatility_score, 2), "breadth_score": round(float(breadth_score), 2), "rotation_score": rotation, "persistent_mainline_count": len(selective_evidence["persistent_mainlines"]), "persistent_mainlines": selective_evidence["persistent_mainlines"], "local_opportunity": selective_evidence["qualified"], "local_opportunity_basis": selective_evidence["basis"], "strong_industry_count": selective_evidence["strong_industry_count"], "strong_concept_count": selective_evidence["strong_concept_count"]}, "benchmarks": benchmark_metrics, "breadth": breadth, "market_liquidity": market_liquidity, "rotation": {"top10_sets": {k: sorted(v) for k, v in top_sets.items()}}, "sector_leaders": sector_leaders, "daily_sector_leaders": daily_sector_leaders}
     return report, sector_rows, stock_rows, concept_rows
 
 
@@ -696,6 +838,7 @@ def write_markdown(report: dict, sectors: list[dict], stocks: list[dict], as_of:
     stamp = today_stamp(as_of)
     state = report["state"]
     breadth = report["breadth"]
+    liquidity = report["market_liquidity"]
     lines = [
         f"# 市场状态与板块热度日报｜{as_of}",
         "",
@@ -708,6 +851,12 @@ def write_markdown(report: dict, sectors: list[dict], stocks: list[dict], as_of:
         "| 趋势 | 波动风险 | 广度 | 轮动 |",
         "|---:|---:|---:|---:|",
         f"| {state['trend_score']:.2f} | {state['volatility_score']:.2f} | {state['breadth_score']:.2f} | {state['rotation_score']:.2f} |",
+        "",
+        "## 市场量能（旁路观察）",
+        "",
+        f"**{liquidity['overlay_label']}**｜{liquidity['summary']}",
+        "",
+        "该结果不参与市场状态判定或确认天数。",
     ]
     mainline = report.get("daily_mainline", {})
     if mainline:
@@ -833,6 +982,14 @@ def market_state_view(report: dict) -> dict:
         analysis = (f"市场尚未形成一致趋势，{above20}/6 个宽基站上 MA20、{above60}/6 个站上 MA60；"
                     f"全 A 上涨占比 {breadth['advance_ratio']:.2f}%。"
                     + ("板块轮动较快，机会更偏局部。" if report["state"]["rotation_score"] >= 60 else "强弱分化明显，机会集中在少数结构较强的方向。"))
+    liquidity = report["market_liquidity"]
+    if liquidity.get("available", True):
+        analysis += (
+            f"市场量能为{liquidity['level_label']}（5日/20日成交额比 {liquidity['turnover_ratio_5_20']:.3f}x），"
+            f"与广度叠加为“{liquidity['overlay_label']}”。{market_liquidity_state_meaning(report)}"
+        )
+    else:
+        analysis += market_liquidity_state_meaning(report)
     risks = []
     if report["state"]["volatility_score"] >= 75:
         risks.append("高波动")
@@ -871,6 +1028,9 @@ def market_state_explainer(report: dict) -> dict:
         and state["rotation_score"] <= thresholds["offensive"]["rotation_max"])
     recovery = above20 >= 3 and above60 <= 2 and breadth["advance_ratio"] >= 50
     has_local_opportunity = bool(state.get("local_opportunity"))
+    liquidity = report["market_liquidity"]
+    liquidity_state_summary = f"{liquidity['summary']}{market_liquidity_state_meaning(report)}"
+    metric_value = lambda value, digits=2: "—" if value is None else f"{value:.{digits}f}%"
     return {
         "current": {
             "label": state_label(state["confirmed_state"], report),
@@ -894,6 +1054,21 @@ def market_state_explainer(report: dict) -> dict:
             {"name": "修复期", "rule": "至少 3/6 宽基站上 MA20、至多 2/6 站上 MA60、全 A 上涨占比 ≥ 50", "confirm": "3/3 日", "meaning": "短期修复出现，但中期趋势尚待确认。", "active": state["confirmed_state"] == "RECOVERY_WATCH", "matched": recovery},
             {"name": "结构行情", "rule": "至少3/6宽基站上MA60；强板块须20/5日相对强度≥0且MA20覆盖≥60%，并存在连续行业主线或行业—概念跨层级强势", "confirm": "2/3 日", "meaning": "中期市场基础仍在，局部强板块已经得到验证。", "active": state["confirmed_state"] == "SELECTIVE", "matched": state["raw_state"] == "SELECTIVE" and has_local_opportunity and above60 >= thresholds["selective"]["above_ma60_benchmarks_min"]},
         ],
+        "liquidity": {
+            "level_label": liquidity["level_label"],
+            "breadth_label": liquidity["breadth_label"],
+            "overlay_label": liquidity["overlay_label"],
+            "summary": liquidity_state_summary,
+            "metrics": [
+                {"label": "5日/20日成交额", "value": "—" if liquidity["turnover_ratio_5_20"] is None else f"{liquidity['turnover_ratio_5_20']:.3f}x"},
+                {"label": "个股放量覆盖", "value": metric_value(liquidity["active_stock_ratio"])},
+                {"label": "上涨股成交额", "value": metric_value(liquidity["up_amount_share"])},
+                {"label": "下跌股成交额", "value": metric_value(liquidity["down_amount_share"])},
+                {"label": "Top10%成交集中", "value": metric_value(liquidity["top10_amount_share"])},
+                {"label": "状态计算", "value": "暂不参与"},
+            ],
+            "high_concentration": liquidity["high_concentration"],
+        },
         "score_rules": [
             {"name": "趋势分", "rule": "六个宽基分别计算：是否站上 MA20、MA20 五日斜率的历史分位、MA20 是否高于 MA60、20 日收益的历史分位；每个宽基取四项均值，全体取中位数。", "direction": "越高代表趋势越强。"},
             {"name": "波动风险分", "rule": "六个宽基分别计算 ATR14、10 日实现波动率、10 日振幅的历史分位；每个宽基取三项均值，全体取中位数。", "direction": "越高代表风险越高。"},
@@ -926,6 +1101,7 @@ def market_llm_context(report: dict) -> dict:
         "宽基覆盖摘要": {"站上MA20的宽基数量": f"{above20}/6", "站上MA60的宽基数量": f"{above60}/6"},
         "连续主线": {"数量": state.get("persistent_mainline_count", 0), "板块": state.get("persistent_mainlines", [])},
         "全A广度": report["breadth"],
+        "市场量能旁路": report["market_liquidity"],
         "宽基指标": index_details,
     }
 
@@ -1434,23 +1610,26 @@ def extract_market_analysis(content: str) -> tuple[str, bool]:
 
 def market_watch_sentence(report: dict) -> str:
     state = report["state"]["confirmed_state"]
+    volume_watch = "量能能否与广度形成持续确认"
     if state == "DEFENSIVE":
-        return "接下来重点观察市场广度能否连续改善、更多宽基能否重回 MA20 上方，以及波动是否回落。"
+        return f"接下来重点观察市场广度能否连续改善、更多宽基能否重回 MA20 上方，以及{volume_watch}。"
     if state == "CONSOLIDATING":
-        return "接下来重点观察广度改善能否延续、更多宽基能否重回 MA20 上方，以及高波动是否继续收敛。"
+        return f"接下来重点观察广度改善能否延续、更多宽基能否重回 MA20 上方，以及{volume_watch}。"
     if state == "OFFENSIVE":
-        return "接下来重点观察广度能否维持、宽基趋势是否继续扩散，以及波动是否保持可控。"
+        return f"接下来重点观察广度能否维持、宽基趋势是否继续扩散，以及{volume_watch}。"
     if state == "RECOVERY_WATCH":
-        return "接下来重点观察上涨广度能否延续、更多宽基能否站稳 MA20，以及波动是否同步收敛。"
-    return "接下来重点观察广度与均线结构能否同步改善，以及波动是否回落到更稳定的区间。"
+        return f"接下来重点观察上涨广度能否延续、更多宽基能否站稳 MA20，以及{volume_watch}。"
+    return f"接下来重点观察广度与均线结构能否同步改善，以及{volume_watch}。"
 
 
 def validate_market_analysis(analysis: str, report: dict) -> None:
     indexes = report["benchmarks"]
     above20 = sum(item["above_ma20"] for item in indexes.values())
     above60 = sum(item["above_ma60"] for item in indexes.values())
-    if any(term in analysis for term in ("买入", "卖出", "仓位", "止损", "个股建议", "资金", "情绪", "赚钱效应", "承接", "持股风险", "空头主导")):
+    if any(term in analysis for term in ("买入", "卖出", "仓位", "止损", "个股建议", "资金", "情绪", "赚钱效应", "承接", "持股风险", "空头主导", "权重拖累", "受权重")):
         raise ValueError("analysis contains prohibited trading or unsupported narrative language")
+    if not any(term in analysis for term in ("量能", "成交额", "放量", "缩量", "常量")):
+        raise ValueError("analysis omits market liquidity evidence")
     if above20 and re.search(r"(全部|全线|均).{0,8}(失守|跌破|低于).{0,8}MA20", analysis, flags=re.IGNORECASE):
         raise ValueError("analysis overstates MA20 coverage")
     if above60 and re.search(r"(全部|全线|均).{0,8}(失守|跌破|低于).{0,8}MA60", analysis, flags=re.IGNORECASE):
@@ -1465,15 +1644,16 @@ def call_market_llm_analysis(report: dict) -> dict:
     model = CONFIG.get("reporting", {}).get("model", "deepseek-v4-flash")
     base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
     system_prompt = (
-        "你是A股市场环境解读助手。只根据用户提供的结构化数据，用90-150字解释当前市场表现，"
-        "帮助读者理解趋势、广度、波动和强弱分化。"
-        "严格采用“主结论 → 两至三个关键证据 → 市场结构含义 → 后续观察”的顺序。"
-        "证据优先用宽基均线覆盖摘要、全A广度、波动和近期强弱分化；均线覆盖必须使用输入给出的“X/6”精确表述，"
+        "你是A股市场环境解读助手。只根据用户提供的结构化数据，用90-150个中文字符解释当前市场表现；这是硬上限，超过150字视为失败。"
+        "帮助读者理解趋势、广度、量能、波动和强弱分化。"
+        "严格采用“主结论 → 两至三个关键证据 → 市场结构含义”的顺序，只选最重要的2-3项证据，不枚举板块、个股或全部分数。"
+        "必须引用市场量能旁路中的量能档位或5日/20日成交额比，并准确解释量能与广度叠加标签；"
+        "量能只作当前状态的质量解释，不参与或改变状态判定、确认进度。证据同时使用宽基均线覆盖摘要、全A广度、波动和近期强弱分化；均线覆盖必须使用输入给出的“X/6”精确表述，"
         "不得把非全量事实写成“全部”“全线”或“均”。除非解释明显分化，不得列举单个指数，"
-        "更不得逐一播报指数。页面已展示状态标签和持续天数，不要复述它们，也不要写“后续观察”“关注”“留意”之类的结尾句。"
+        "更不得逐一播报指数；可以描述指数与个股分化，但不得推断为权重拖累或编造背离原因。页面已展示状态标签和持续天数，不要复述它们，也不要写“后续观察”“关注”“留意”之类的结尾句。"
         "轮动分高才表示轮动快；轮动分低仅表示头部板块重合度较高或持续性较强，不能写成“缺乏轮动”。"
         "已确认状态、持续天数和潜在变化进度是脚本确定的事实，必须原样尊重，不能改写或重新判定。"
-        "只能引用输入中的数字和事实；不得联网、不得引入新闻/政策/资金流等外部信息，也不得使用“资金”“情绪”“赚钱效应”“承接”“持股风险”等未经输入支持的叙事，不得预测涨跌。"
+        "只能引用输入中的数字和事实；不得联网、不得引入新闻/政策/资金流等外部信息，不得把成交额写成主力资金、增量资金或净流入，也不得使用“资金”“情绪”“赚钱效应”“承接”“持股风险”等未经输入支持的叙事，不得预测涨跌。"
         "不得给出具体买卖、仓位、止损或个股建议。语言应连贯易懂，不要使用项目符号。"
         "只返回这一段正文，不要 JSON、标题、项目符号或解释。"
     )
@@ -1556,6 +1736,7 @@ def build_market_context(report: dict, sectors: list[dict], stocks: list[dict], 
         "baseline_history_days": baseline_count},
         "market_state": market_state_view(report), "market_state_explainer": market_state_explainer(report), "indexes": report["benchmarks"],
         "breadth": {"all_a": report["breadth"], "top_scopes": top_scopes},
+        "market_liquidity": report["market_liquidity"],
         "daily_mainline": report.get("daily_mainline", {}),
         "sector_rankings": rankings, "sector_history": sector_history, "sector_rank_matrix": rank_matrix, "sector_leaders": sector_leaders}
 

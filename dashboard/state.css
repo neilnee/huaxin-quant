@@ -17,3 +17,4 @@
   .header-meta { text-align: left; }
   .state-summary { max-width: none; }
 }
+.liquidity-tag { color: var(--accent); background: #183446; border-color: #315f76; }

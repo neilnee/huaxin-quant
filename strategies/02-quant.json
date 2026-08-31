@@ -1,5 +1,5 @@
 {
-  "strategy_version": "model2_quant_v29",
+  "strategy_version": "model2_quant_v30",
   "description": "Model 2 VCP structure and setup signal parameters. This file contains thresholds and weights only; algorithms stay in scripts/quant_filter.py.",
   "price_adjustment": {
     "mode": "point_in_time_qfq",
@@ -50,6 +50,30 @@
     },
     "post_breakout": {
       "price_breakout_ratio": 1.01,
+      "quality_by_contraction_count": {
+        "single": {
+          "require_confirmed": true,
+          "close_buffer_ratio": 1.02,
+          "volume_ma20_ratio": 1.3,
+          "volume_ma5_ratio": 1.2,
+          "allowed_structure_volume_patterns": ["drying", "decreasing"],
+          "close_position_min": 0.75,
+          "upper_shadow_max": 0.25,
+          "body_ratio_min": 0.35,
+          "min_setup_score": 65
+        },
+        "multi": {
+          "require_confirmed": false,
+          "close_buffer_ratio": 1.01,
+          "volume_ma20_ratio": 1.0,
+          "volume_ma5_ratio": 1.0,
+          "allowed_structure_volume_patterns": [],
+          "close_position_min": 0.65,
+          "upper_shadow_max": 0.3,
+          "body_ratio_min": null,
+          "min_setup_score": 55
+        }
+      },
       "retest_max_days": 15,
       "expiry_days": 20,
       "pivot_fail_close_ratio": 0.97,
@@ -233,6 +257,7 @@
     },
     "breakout_buy": {
       "allowed_stages": [
+        "VCP_EARLY",
         "VCP_FORMING",
         "VCP_MATURE",
         "VCP_TIGHT"

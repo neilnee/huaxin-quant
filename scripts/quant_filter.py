@@ -892,9 +892,12 @@ def prior_breakout_vcp_eligible(df, group, structure_pivot, breakout_idx):
         and frozen_pivot is not None
         and abs(detected_pivot - frozen_pivot) < 1e-6
     )
+    eligible_stage = pre_breakout.get("state") in {"VCP_FORMING", "VCP_MATURE", "VCP_TIGHT"}
+    if len(group) == 1:
+        eligible_stage = pre_breakout.get("state") == "VCP_EARLY"
     return all([
         pre_breakout.get("has_structure") is True,
-        pre_breakout.get("state") in {"VCP_FORMING", "VCP_MATURE", "VCP_TIGHT"},
+        eligible_stage,
         contraction_group_signature(pre_breakout.get("contraction_group") or [])
         == contraction_group_signature(group),
         same_pivot,
@@ -904,23 +907,22 @@ def prior_breakout_vcp_eligible(df, group, structure_pivot, breakout_idx):
 def find_latest_consumed_breakout(df, contractions):
     """Find the latest established VCP that broke out before a newer contraction.
 
-    A single pullback is deliberately insufficient for this boundary: otherwise a
-    normal recovery above one swing high would split many legitimate developing
-    VCPs.  Once a group of at least two contractions breaks out before the next
-    contraction starts, however, those contractions belong to the consumed VCP.
+    A single contraction may form a boundary only when it passes the stricter
+    single-round breakout gate.  Weak price crosses remain part of the developing
+    VCP and must not split later contractions from the original group.
     """
-    if len(contractions) < 3:
+    if len(contractions) < 2:
         return None
 
     events = []
     for cluster in split_contraction_clusters(contractions):
-        for next_pos in range(2, len(cluster)):
+        for next_pos in range(1, len(cluster)):
             next_contraction = cluster[next_pos]
             prior_df = df.iloc[:next_contraction["start_idx"]]
             prior_info, _ = select_current_vcp_group(
                 prior_df, cluster[:next_pos], detect_consumed_breakout=False
             )
-            if not prior_info or len(prior_info.get("group") or []) < 2:
+            if not prior_info or not prior_info.get("group"):
                 continue
             breakout = prior_info.get("breakout")
             if not breakout or breakout["idx"] >= next_contraction["start_idx"]:
@@ -1016,6 +1018,64 @@ def detect_post_group_support_break(df, last_end_idx, last_low):
     }
 
 
+def breakout_quality_for_group(row, group, structure_pivot):
+    """Apply the shared, contraction-count-aware gate for a formal breakout."""
+    if not group or not structure_pivot:
+        return False, {
+            "tier": "none",
+            "contraction_count": 0,
+            "checks": {"contraction_group": False},
+            "min_setup_score": 55,
+        }
+    tier = "single" if len(group) == 1 else "multi"
+    cfg = (POST_BREAKOUT_CFG.get("quality_by_contraction_count") or {}).get(tier, {})
+    close_ratio = safe_float(row.get("close"), 0) / structure_pivot if structure_pivot else 0
+    volume = safe_float(row.get("volume"), 0)
+    vol_ma20 = safe_float(row.get("vol_ma20"))
+    vol_ma5 = safe_float(row.get("vol_ma5"))
+    volume_ma20_ratio = volume / vol_ma20 if vol_ma20 and vol_ma20 > 0 else None
+    volume_ma5_ratio = volume / vol_ma5 if vol_ma5 and vol_ma5 > 0 else None
+    structure_volume_pattern = volume_pattern_for_contractions(group, row)
+
+    checks = {
+        "price": close_ratio >= safe_float(
+            cfg.get("close_buffer_ratio"), POST_BREAKOUT_CFG.get("price_breakout_ratio", 1.01)
+        ),
+        "volume_ma20": volume_ma20_ratio is not None
+        and volume_ma20_ratio >= safe_float(cfg.get("volume_ma20_ratio"), 1.0),
+        "volume_ma5": volume_ma5_ratio is not None
+        and volume_ma5_ratio >= safe_float(cfg.get("volume_ma5_ratio"), 1.0),
+        "strong_close": is_strong_close(
+            row,
+            close_position_min=safe_float(cfg.get("close_position_min"), 0.65),
+            upper_shadow_max=safe_float(cfg.get("upper_shadow_max"), 0.30),
+            body_ratio_min=safe_float(cfg.get("body_ratio_min")),
+        ),
+    }
+    if cfg.get("require_confirmed"):
+        checks["confirmed"] = all(
+            item.get("confirmation_status", "CONFIRMED") == "CONFIRMED"
+            for item in group
+        )
+    allowed_patterns = set(cfg.get("allowed_structure_volume_patterns") or [])
+    if allowed_patterns:
+        checks["structure_volume"] = structure_volume_pattern in allowed_patterns
+
+    return all(checks.values()), {
+        "tier": tier,
+        "contraction_count": len(group),
+        "close_ratio": round(close_ratio, 4),
+        "required_close_ratio": safe_float(cfg.get("close_buffer_ratio"), 1.01),
+        "volume_ma20_ratio": round_or_none(volume_ma20_ratio, 4),
+        "required_volume_ma20_ratio": safe_float(cfg.get("volume_ma20_ratio"), 1.0),
+        "volume_ma5_ratio": round_or_none(volume_ma5_ratio, 4),
+        "required_volume_ma5_ratio": safe_float(cfg.get("volume_ma5_ratio"), 1.0),
+        "structure_volume_pattern": structure_volume_pattern,
+        "min_setup_score": safe_float(cfg.get("min_setup_score"), 55),
+        "checks": checks,
+    }
+
+
 def evaluate_vcp_group(df, group):
     latest = df.iloc[-1]
     close = latest["close"]
@@ -1034,7 +1094,8 @@ def evaluate_vcp_group(df, group):
     breakout = None
     for idx in range(last_end_idx + 1, len(df)):
         row = df.iloc[idx]
-        if row["close"] > structure_pivot * POST_BREAKOUT_CFG["price_breakout_ratio"]:
+        breakout_ok, breakout_quality = breakout_quality_for_group(row, group, structure_pivot)
+        if breakout_ok:
             breakout = {
                 "idx": idx,
                 "date": str(row["date"]),
@@ -1042,6 +1103,7 @@ def evaluate_vcp_group(df, group):
                 "close": float(row["close"]),
                 "volume": float(row["volume"]),
                 "vol_ma20": safe_float(row.get("vol_ma20")),
+                "quality": breakout_quality,
             }
             break
 
@@ -2553,6 +2615,7 @@ def detect_pullback_buy(df, structure, overheat):
 def detect_breakout_buy(df, structure, overheat):
     latest = df.iloc[-1]
     cfg = SETUP_CFG["breakout_buy"]
+    group = structure.get("contraction_group") or []
     first_breakout_day = (
         structure.get("post_breakout_state") == "POST_BREAKOUT_HOT"
         and structure.get("breakout_days") == 0
@@ -2563,67 +2626,78 @@ def detect_breakout_buy(df, structure, overheat):
         return base_setup_result(False, "风险硬排除")
     if not structure.get("structure_valid"):
         return base_setup_result(False, "无当前有效VCP结构")
-    if structure.get("state") not in set(cfg["allowed_stages"]):
+    if len(group) == 1:
+        eligible_stage = structure.get("state") == "VCP_EARLY"
+    else:
+        eligible_stage = structure.get("state") in {
+            "VCP_FORMING", "VCP_MATURE", "VCP_TIGHT",
+        }
+    if not eligible_stage:
         return base_setup_result(False, "结构阶段未达到突破前提")
 
     pivot = safe_float(structure.get("structure_pivot"))
     if not pivot:
         return base_setup_result(False, "缺少结构pivot")
 
+    breakout_quality_ok, breakout_quality = breakout_quality_for_group(latest, group, pivot)
     vol_ma20 = safe_float(latest.get("vol_ma20"))
     vol_ma5 = safe_float(latest.get("vol_ma5"))
     volume = safe_float(latest.get("volume"), 0)
     volume_thresholds = []
     if vol_ma20 and vol_ma20 > 0:
-        volume_thresholds.append(vol_ma20 * cfg["volume_ma20_ratio"])
+        volume_thresholds.append(
+            vol_ma20 * safe_float(breakout_quality.get("required_volume_ma20_ratio"), 1.0)
+        )
     if vol_ma5 and vol_ma5 > 0:
-        volume_thresholds.append(vol_ma5 * cfg["volume_ma5_ratio"])
-    volume_min = min(volume_thresholds) if volume_thresholds else None
+        volume_thresholds.append(
+            vol_ma5 * safe_float(breakout_quality.get("required_volume_ma5_ratio"), 1.0)
+        )
+    volume_min = max(volume_thresholds) if volume_thresholds else None
     ideal_volume_min = vol_ma20 * 1.5 if vol_ma20 and vol_ma20 > 0 else None
     plan_inputs = {
         "allowed": True,
         "pivot": pivot,
-        "trigger_price": pivot * cfg["close_buffer_ratio"],
+        "trigger_price": pivot * safe_float(breakout_quality.get("required_close_ratio"), 1.01),
         "max_price": pivot * cfg.get("max_close_extension_ratio", 999),
         "ideal_price_low": pivot * 1.02,
         "ideal_price_high": pivot * 1.05,
         "volume_min": volume_min,
-        "volume_ma20_threshold": vol_ma20 * cfg["volume_ma20_ratio"] if vol_ma20 and vol_ma20 > 0 else None,
-        "volume_ma5_threshold": vol_ma5 * cfg["volume_ma5_ratio"] if vol_ma5 and vol_ma5 > 0 else None,
+        "volume_ma20_threshold": volume_thresholds[0] if vol_ma20 and vol_ma20 > 0 else None,
+        "volume_ma5_threshold": (
+            vol_ma5 * safe_float(breakout_quality.get("required_volume_ma5_ratio"), 1.0)
+            if vol_ma5 and vol_ma5 > 0 else None
+        ),
         "ideal_volume_min": ideal_volume_min,
         "invalid_price": pivot * cfg["invalid_support_ratio"],
         "blocked_risk_flags": cfg["blocked_risk_flags"],
         "requires_no_long_upper_shadow": True,
+        "breakout_quality": breakout_quality,
     }
-    volume_ok = False
-    if vol_ma20 and vol_ma20 > 0 and volume > vol_ma20 * cfg["volume_ma20_ratio"]:
-        volume_ok = True
-    if vol_ma5 and vol_ma5 > 0 and volume > vol_ma5 * cfg["volume_ma5_ratio"]:
-        volume_ok = True
 
     hard_conditions = [
-        latest["close"] > pivot * cfg["close_buffer_ratio"],
+        breakout_quality_ok,
         latest["close"] <= pivot * cfg.get("max_close_extension_ratio", 999),
-        volume_ok,
-        not is_long_upper_shadow(latest),
         not any(flag in overheat["risk_flags"] for flag in cfg["blocked_risk_flags"]),
     ]
     action_quality_score, reasons, misses = score_breakout_setup(df, structure, pivot)
     score, pattern_score, reasons, misses, score_context = finalize_setup_score(
         "BREAKOUT_BUY", action_quality_score, reasons, misses, structure, overheat
     )
-    hit = all(hard_conditions) and score >= cfg["min_setup_score"]
-    if latest["close"] <= pivot * cfg["close_buffer_ratio"]:
-        misses.append("未有效站上pivot")
+    minimum_score = max(
+        safe_float(cfg.get("min_setup_score"), 55),
+        safe_float(breakout_quality.get("min_setup_score"), 55),
+    )
+    hit = all(hard_conditions) and score >= minimum_score
+    failed_quality_checks = [
+        key for key, passed in (breakout_quality.get("checks") or {}).items() if not passed
+    ]
+    if failed_quality_checks:
+        misses.append("突破质量门槛不足:" + ",".join(failed_quality_checks))
     if latest["close"] > pivot * cfg.get("max_close_extension_ratio", 999):
         misses.append("突破后涨幅已延伸")
-    if not volume_ok:
-        misses.append("突破量能不足")
-    if is_long_upper_shadow(latest):
-        misses.append("突破日长上影")
     if any(flag in overheat["risk_flags"] for flag in cfg["blocked_risk_flags"]):
         misses.append("阻断风险标记")
-    if not hit and score < cfg["min_setup_score"]:
+    if not hit and score < minimum_score:
         misses.append("买点质量分不足")
     return base_setup_result(
         hit,
@@ -3442,6 +3516,7 @@ def screen(df, code=None):
         "post_breakout_state": structure.get("post_breakout_state", "PRE_BREAKOUT"),
         "post_breakout_failure": structure.get("post_breakout_failure"),
         "structure_breakout_date": (structure.get("breakout") or {}).get("date", ""),
+        "structure_breakout_quality": (structure.get("breakout") or {}).get("quality", {}),
         "structure_breakout_score": structure_breakout_score,
         "structure_breakout_level": round_or_none((structure.get("breakout") or {}).get("level")),
         "breakout_days": structure.get("breakout_days"),

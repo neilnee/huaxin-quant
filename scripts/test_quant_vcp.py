@@ -557,6 +557,9 @@ class CloseBasedContractionTests(unittest.TestCase):
 
     def test_failed_breakout_reset_requires_a_cleaner_confirming_contraction(self):
         df = make_frame([99, 100, 98, 102, 95, 90, 80, 85, 90, 95, 100, 92, 85, 88, 90, 92])
+        df.loc[3, ["open", "high", "low", "close", "volume"]] = [99, 103, 98, 102, 300]
+        df = quant.calc_indicators(df)
+        df[["vol_ma20", "vol_ma5"]] = 100.0
         old_group = [
             {
                 "start_idx": 0, "end_idx": 0, "start_date": "2026-01-01", "end_date": "2026-01-01",
@@ -736,9 +739,138 @@ class CloseBasedContractionTests(unittest.TestCase):
         self.assertTrue(result["hard_block"])
         self.assertEqual(result["structure_volume_alignment"], "BLOCKED")
 
+    def test_breakout_quality_is_stricter_for_single_contraction(self):
+        group = [{
+            "confirmation_status": "CONFIRMED", "avg_volume": 40.0,
+            "high_price": 100.0, "low_price": 90.0,
+        }]
+        strong = pd.Series({
+            "open": 100.0, "high": 103.5, "low": 99.5, "close": 103.0,
+            "volume": 160.0, "vol_ma20": 100.0, "vol_ma5": 120.0,
+            "volume_dry_up": 0.7, "vol_ma60": 140.0,
+        })
+        passed, audit = quant.breakout_quality_for_group(strong, group, 100.0)
+        self.assertTrue(passed)
+        self.assertEqual(audit["tier"], "single")
+
+        weak_volume = strong.copy()
+        weak_volume["volume"] = 110.0
+        passed, audit = quant.breakout_quality_for_group(weak_volume, group, 100.0)
+        self.assertFalse(passed)
+        self.assertFalse(audit["checks"]["volume_ma20"])
+        self.assertFalse(audit["checks"]["volume_ma5"])
+
+        provisional = [dict(group[0], confirmation_status="PROVISIONAL")]
+        passed, audit = quant.breakout_quality_for_group(strong, provisional, 100.0)
+        self.assertFalse(passed)
+        self.assertFalse(audit["checks"]["confirmed"])
+
+    def test_multi_contraction_breakout_volume_requires_both_averages(self):
+        group = [
+            {"confirmation_status": "CONFIRMED", "avg_volume": 120.0},
+            {"confirmation_status": "PROVISIONAL", "avg_volume": 80.0},
+        ]
+        row = pd.Series({
+            "open": 100.0, "high": 102.5, "low": 99.5, "close": 102.0,
+            "volume": 110.0, "vol_ma20": 100.0, "vol_ma5": 120.0,
+            "volume_dry_up": 0.9, "vol_ma60": 100.0,
+        })
+        passed, audit = quant.breakout_quality_for_group(row, group, 100.0)
+        self.assertFalse(passed)
+        self.assertTrue(audit["checks"]["volume_ma20"])
+        self.assertFalse(audit["checks"]["volume_ma5"])
+
+        row["volume"] = 120.0
+        passed, audit = quant.breakout_quality_for_group(row, group, 100.0)
+        self.assertTrue(passed)
+        self.assertEqual(audit["tier"], "multi")
+
+    def test_high_quality_single_contraction_starts_breakout_lifecycle(self):
+        df = make_frame([99.0] * 30 + [103.0])
+        df.loc[30, ["open", "high", "low", "close", "volume"]] = [
+            100.0, 103.5, 99.5, 103.0, 160.0,
+        ]
+        df = quant.calc_indicators(df)
+        df.loc[30, ["vol_ma20", "vol_ma5", "vol_ma60", "volume_dry_up"]] = [
+            100.0, 120.0, 140.0, 0.7,
+        ]
+        group = [{
+            "start_idx": 20, "end_idx": 29,
+            "high_price": 100.0, "low_price": 90.0, "avg_volume": 40.0,
+            "confirmation_status": "CONFIRMED",
+        }]
+
+        info = quant.evaluate_vcp_group(df, group)
+
+        self.assertEqual(info["post_breakout_state"], "POST_BREAKOUT_HOT")
+        self.assertEqual(info["breakout"]["date"], str(df.iloc[-1]["date"]))
+        self.assertEqual(info["breakout"]["quality"]["tier"], "single")
+
+    def test_ankai_weak_cross_does_not_consume_two_round_structure(self):
+        background = pd.DataFrame({
+            "date": pd.bdate_range(end="2026-07-21", periods=20).strftime("%Y-%m-%d"),
+            "open": [14.8] * 20, "high": [15.0] * 20, "low": [14.5] * 20,
+            "close": [14.8] * 20, "volume": [200000.0] * 20,
+        })
+        actual = pd.DataFrame([
+            {"date": "2026-07-22", "open": 13.60, "high": 16.23, "low": 13.58, "close": 15.40, "volume": 361313.0},
+            {"date": "2026-07-30", "open": 13.53, "high": 13.65, "low": 12.00, "close": 12.20, "volume": 249689.0},
+            {"date": "2026-08-14", "open": 16.05, "high": 16.31, "low": 15.57, "close": 16.12, "volume": 114724.0},
+            {"date": "2026-08-17", "open": 16.15, "high": 16.52, "low": 16.04, "close": 16.51, "volume": 115750.0},
+            {"date": "2026-08-18", "open": 16.54, "high": 16.93, "low": 16.14, "close": 16.52, "volume": 104132.0},
+            {"date": "2026-08-19", "open": 16.28, "high": 16.75, "low": 14.93, "close": 15.02, "volume": 159218.0},
+            {"date": "2026-08-24", "open": 15.30, "high": 15.67, "low": 15.02, "close": 15.60, "volume": 150515.0},
+            {"date": "2026-08-25", "open": 15.34, "high": 15.43, "low": 14.61, "close": 15.09, "volume": 154267.0},
+            {"date": "2026-08-26", "open": 15.10, "high": 15.18, "low": 14.71, "close": 14.97, "volume": 101675.0},
+            {"date": "2026-08-27", "open": 15.10, "high": 16.22, "low": 15.05, "close": 15.97, "volume": 153183.0},
+            {"date": "2026-08-28", "open": 16.13, "high": 16.50, "low": 15.58, "close": 15.66, "volume": 184232.0},
+            {"date": "2026-08-31", "open": 15.45, "high": 16.84, "low": 15.38, "close": 16.83, "volume": 198198.0},
+        ])
+        df = quant.calc_indicators(pd.concat([background, actual], ignore_index=True))
+        index = {date: int(df.index[df["date"] == date][0]) for date in actual["date"]}
+        first = {
+            "start_idx": index["2026-07-22"], "end_idx": index["2026-07-30"],
+            "high_price": 16.23, "low_price": 12.0, "avg_volume": 223849.57,
+            "close_pullback_pct": -20.78, "confirmation_status": "CONFIRMED",
+        }
+
+        august_17 = quant.evaluate_vcp_group(df[df["date"] <= "2026-08-17"], [first])
+        self.assertIsNone(august_17["breakout"])
+        self.assertEqual(august_17["post_breakout_state"], "PRE_BREAKOUT")
+
+        provisional = {
+            "start_idx": index["2026-08-24"], "end_idx": index["2026-08-26"],
+            "high_price": 15.67, "low_price": 14.61, "avg_volume": 135485.67,
+            "close_pullback_pct": -4.04, "confirmation_status": "PROVISIONAL",
+        }
+        august_27 = quant.evaluate_vcp_group(
+            df[df["date"] <= "2026-08-27"], [first, provisional]
+        )
+        self.assertEqual(august_27["structure_pivot"], 16.23)
+        self.assertIsNone(august_27["breakout"])
+        self.assertEqual(august_27["post_breakout_state"], "PRE_BREAKOUT")
+
+        confirmed = dict(
+            provisional,
+            start_idx=index["2026-08-18"], high_price=16.93,
+            avg_volume=129244.29, close_pullback_pct=-9.38,
+            confirmation_status="CONFIRMED",
+        )
+        august_31 = quant.evaluate_vcp_group(df, [first, confirmed])
+        self.assertEqual(august_31["structure_pivot"], 16.93)
+        self.assertTrue(august_31["structure_valid"])
+        self.assertIsNone(august_31["breakout"])
+        self.assertEqual(august_31["post_breakout_state"], "PRE_BREAKOUT")
+
     def test_post_breakout_pivot_failure_closes_old_vcp_lifecycle(self):
-        df = make_frame([99, 100, 98, 99, 102, 104, 100, 96])
-        group = [{"start_idx": 0, "end_idx": 2, "high_price": 100.0, "low_price": 95.0}]
+        df = make_frame([99, 100, 98, 99, 103, 104, 100, 96])
+        df.loc[4, ["open", "high", "low", "close", "volume"]] = [99, 104, 98, 103, 300]
+        df = quant.calc_indicators(df)
+        df[["vol_ma20", "vol_ma5"]] = 100.0
+        group = [
+            {"start_idx": 0, "end_idx": 1, "high_price": 100.0, "low_price": 96.0},
+            {"start_idx": 1, "end_idx": 2, "high_price": 99.0, "low_price": 95.0},
+        ]
 
         info = quant.evaluate_vcp_group(df, group)
 
@@ -747,9 +879,15 @@ class CloseBasedContractionTests(unittest.TestCase):
         self.assertIn("post_structure_drawdown", info["structure_invalid_reason"])
 
     def test_post_breakout_expiry_closes_old_vcp_lifecycle(self):
-        closes = [99, 100, 98, 99, 102] + [103] * 21
+        closes = [99, 100, 98, 99, 103] + [103] * 21
         df = make_frame(closes)
-        group = [{"start_idx": 0, "end_idx": 2, "high_price": 100.0, "low_price": 95.0}]
+        df.loc[4, ["open", "high", "low", "close", "volume"]] = [99, 104, 98, 103, 300]
+        df = quant.calc_indicators(df)
+        df[["vol_ma20", "vol_ma5"]] = 100.0
+        group = [
+            {"start_idx": 0, "end_idx": 1, "high_price": 100.0, "low_price": 96.0},
+            {"start_idx": 1, "end_idx": 2, "high_price": 99.0, "low_price": 95.0},
+        ]
 
         info = quant.evaluate_vcp_group(df, group)
 
@@ -888,6 +1026,10 @@ class CloseBasedContractionTests(unittest.TestCase):
             "state": "VCP_MATURE",
             "structure_valid": True,
             "structure_pivot": 100.0,
+            "contraction_group": [
+                {"confirmation_status": "CONFIRMED", "avg_volume": 100.0},
+                {"confirmation_status": "CONFIRMED", "avg_volume": 80.0},
+            ],
             "post_breakout_state": "POST_BREAKOUT_HOT",
             "breakout_days": 0,
             "setup_score_context": {
@@ -908,6 +1050,29 @@ class CloseBasedContractionTests(unittest.TestCase):
         repeated = quant.detect_breakout_buy(df, structure, overheat)
         self.assertFalse(repeated["hit"])
         self.assertIn("禁止重复BREAKOUT_BUY", repeated["reason"])
+
+    def test_multi_contraction_breakout_still_requires_forming_stage(self):
+        df = make_frame([98.0] * 79 + [103.0])
+        df.loc[79, ["open", "high", "low", "volume"]] = [100.0, 104.0, 99.0, 220.0]
+        df = quant.calc_indicators(df)
+        structure = {
+            "state": "VCP_EARLY",
+            "structure_valid": True,
+            "structure_pivot": 100.0,
+            "contraction_group": [
+                {"confirmation_status": "CONFIRMED", "avg_volume": 100.0},
+                {"confirmation_status": "PROVISIONAL", "avg_volume": 80.0},
+            ],
+            "post_breakout_state": "POST_BREAKOUT_HOT",
+            "breakout_days": 0,
+        }
+
+        result = quant.detect_breakout_buy(
+            df, structure, {"risk_flags": [], "risk_score": 0}
+        )
+
+        self.assertFalse(result["hit"])
+        self.assertIn("结构阶段未达到突破前提", result["reason"])
 
 
 if __name__ == "__main__":

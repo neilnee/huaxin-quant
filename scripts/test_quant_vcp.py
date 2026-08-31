@@ -98,6 +98,139 @@ class CloseBasedContractionTests(unittest.TestCase):
         self.assertEqual(current["group"], [contractions[2]])
         self.assertIsNone(current.get("prior_breakout_context"))
 
+    def test_unqualified_group_failure_does_not_poison_fresh_candidate(self):
+        df = quant.calc_indicators(make_frame([100.0] * 80))
+        contractions = [
+            {"start_idx": 50, "end_idx": 54, "high_price": 110.0, "low_price": 98.0, "close_pullback_pct": -10.0, "avg_volume": 100.0},
+            {"start_idx": 56, "end_idx": 59, "high_price": 108.0, "low_price": 100.0, "close_pullback_pct": -7.0, "avg_volume": 90.0},
+            {"start_idx": 65, "end_idx": 69, "high_price": 120.0, "low_price": 115.0, "close_pullback_pct": -4.0, "avg_volume": 80.0},
+        ]
+        rejected_boundary = {
+            "group": contractions[:2],
+            "breakout": {"idx": 62, "date": "2026-03-30", "level": 110.0},
+            "post_breakout_state": "POST_BREAKOUT_FAILED",
+            "post_breakout_failure": {"idx": 70, "date": "2026-04-10"},
+            "vcp_eligible": False,
+        }
+
+        def evaluate(_df, group):
+            valid = group == [contractions[2]]
+            return {
+                "group": group, "structure_pivot": max(item["high_price"] for item in group),
+                "market_pivot": 120.0, "pivot_price": max(item["high_price"] for item in group),
+                "pivot_distance": -1.0, "last_contraction_low": group[-1]["low_price"],
+                "structure_age_days": len(_df) - group[-1]["end_idx"] - 1,
+                "structure_valid": valid,
+                "structure_invalid_reason": "" if valid else "post_structure_drawdown",
+                "post_structure_gain": 1.0, "post_structure_drawdown": -1.0,
+                "post_breakout_state": "PRE_BREAKOUT" if valid else "POST_BREAKOUT_FAILED",
+                "post_breakout_failure": None if valid else {"idx": 70, "date": "2026-04-10"},
+                "post_group_support_break": None, "breakout": None, "breakout_days": None,
+            }
+
+        with patch.object(quant, "find_latest_consumed_breakout", return_value=rejected_boundary), patch.object(
+            quant, "evaluate_vcp_group", side_effect=evaluate
+        ):
+            current, _ = quant.select_current_vcp_group(
+                df, contractions, qualified_failure_only=True
+            )
+
+        self.assertEqual(current["group"], [contractions[2]])
+        self.assertNotIn("qualified_failure_context", current)
+
+    def test_qualified_failure_blocks_old_groups_but_keeps_post_failure_group(self):
+        df = quant.calc_indicators(make_frame([100.0] * 80))
+        contractions = [
+            {"start_idx": 50, "end_idx": 54, "high_price": 110.0, "low_price": 98.0, "close_pullback_pct": -10.0, "avg_volume": 100.0},
+            {"start_idx": 56, "end_idx": 59, "high_price": 108.0, "low_price": 100.0, "close_pullback_pct": -7.0, "avg_volume": 90.0},
+            {"start_idx": 65, "end_idx": 69, "high_price": 120.0, "low_price": 115.0, "close_pullback_pct": -4.0, "avg_volume": 80.0},
+        ]
+        qualified_boundary = {
+            "group": contractions[:2],
+            "breakout": {"idx": 60, "date": "2026-03-27", "level": 110.0},
+            "post_breakout_state": "POST_BREAKOUT_FAILED",
+            "post_breakout_failure": {"idx": 62, "date": "2026-03-31"},
+            "vcp_eligible": True,
+        }
+
+        def evaluate(_df, group):
+            return {
+                "group": group, "structure_pivot": max(item["high_price"] for item in group),
+                "market_pivot": 120.0, "pivot_price": max(item["high_price"] for item in group),
+                "pivot_distance": -1.0, "last_contraction_low": group[-1]["low_price"],
+                "structure_age_days": len(_df) - group[-1]["end_idx"] - 1,
+                "structure_valid": True, "structure_invalid_reason": "",
+                "post_structure_gain": 1.0, "post_structure_drawdown": -1.0,
+                "post_breakout_state": "PRE_BREAKOUT", "post_breakout_failure": None,
+                "post_group_support_break": None, "breakout": None, "breakout_days": None,
+            }
+
+        with patch.object(quant, "find_latest_consumed_breakout", return_value=qualified_boundary), patch.object(
+            quant, "evaluate_vcp_group", side_effect=evaluate
+        ):
+            current, _ = quant.select_current_vcp_group(
+                df, contractions, qualified_failure_only=True
+            )
+
+        self.assertEqual(current["group"], [contractions[2]])
+        self.assertIs(current["qualified_failure_context"], qualified_boundary)
+        self.assertTrue(current["rebuild_after_failed_breakout"])
+
+    def test_qualified_failure_can_surface_low_volume_rebuild_watch(self):
+        closes = [100.0] * 65 + [105.0, 102.0, 96.0, 91.0, 90.0, 91.0, 92.0, 92.0, 93.0, 93.0, 93.0]
+        df = make_frame(closes)
+        df["volume"] = [100.0] * len(df)
+        df.loc[65, "volume"] = 300.0
+        df.loc[70:, "volume"] = 80.0
+        context = {
+            "vcp_eligible": True,
+            "breakout": {"idx": 65, "date": str(df.iloc[65]["date"]), "volume": 300.0},
+            "post_breakout_failure": {"idx": 69, "date": str(df.iloc[69]["date"])},
+        }
+
+        result = quant.detect_post_failure_rebuild_watch(df, context)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["base_days"], 5)
+        self.assertLess(result["avg_volume_vs_impulse_ratio"], 0.55)
+
+        structure = {"post_failure_rebuild_watch": result}
+        quant.attach_prior_breakout_bonus(structure)
+        self.assertEqual(structure["prior_breakout_context_tag"], "放量启动后低量重建")
+        self.assertIn("不开放任何买点权限", structure["prior_breakout_bonus_reasons"][-1])
+
+    def test_rebuild_discovery_cannot_emit_setup_even_if_detector_hits(self):
+        structure = {
+            "state": "TREND_REBUILD",
+            "post_breakout_state": "POST_BREAKOUT_FAILED",
+            "right_edge_rebuild_watch": {"contraction_count": 1},
+        }
+        hit = {"hit": True, "setup_quality": "A"}
+
+        result = quant.classify_result(structure, hit, hit, hit, {}, {})
+
+        self.assertEqual(result, ("VCP", "NONE", "WAIT_REBUILD", "0"))
+
+    def test_setup_anchor_snapshot_disables_rebuild_discovery(self):
+        df = quant.calc_indicators(make_frame([100.0] * 90))
+        structure = {"state": "NONE"}
+        with patch.object(
+            quant, "detect_vcp_structure", return_value=structure
+        ) as detector, patch.object(
+            quant, "detect_overheat", return_value={}
+        ), patch.object(
+            quant,
+            "score_setup",
+            return_value={"structure_score": 27.0},
+        ):
+            result = quant.setup_anchor_snapshot(df, 85)
+
+        detector.assert_called_once()
+        called_df = detector.call_args.args[0]
+        self.assertEqual(len(called_df), 85)
+        self.assertFalse(detector.call_args.kwargs["enable_rebuild_discovery"])
+        self.assertEqual(result["structure_score"], 27.0)
+
     def test_consumed_breakout_requires_same_valid_vcp_on_previous_session(self):
         df = quant.calc_indicators(make_frame([100.0] * 80))
         group = [

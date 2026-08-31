@@ -66,6 +66,7 @@ POST_BREAKOUT_CFG = VCP_CFG["post_breakout"]
 POST_GROUP_RESET_CFG = VCP_CFG["post_group_reset"]
 DESTRUCTIVE_RESET_CFG = VCP_CFG.get("destructive_reset", {})
 STRONG_IMPULSE_CONTEXT_CFG = VCP_CFG.get("strong_impulse_context", {})
+POST_FAILURE_REBUILD_WATCH_CFG = POST_BREAKOUT_CFG.get("post_failure_rebuild_watch", {})
 BASE_CFG = QUANT_STRATEGY["base_rules"]
 CONTRACTION_CFG = QUANT_STRATEGY["contraction_rules"]
 STAGE_CFG = QUANT_STRATEGY["stage_rules"]
@@ -880,7 +881,9 @@ def prior_breakout_vcp_eligible(df, group, structure_pivot, breakout_idx):
     if breakout_idx is None or breakout_idx <= 0:
         return False
     pre_breakout = detect_vcp_structure(
-        df.iloc[:breakout_idx], detect_consumed_breakout=False
+        df.iloc[:breakout_idx],
+        detect_consumed_breakout=False,
+        enable_rebuild_discovery=False,
     )
     detected_pivot = safe_float(pre_breakout.get("structure_pivot"))
     frozen_pivot = safe_float(structure_pivot)
@@ -1286,7 +1289,9 @@ def detect_contraction_extensions(df, contractions, current):
     return extensions
 
 
-def select_current_vcp_group(df, contractions, detect_consumed_breakout=True):
+def select_current_vcp_group(
+    df, contractions, detect_consumed_breakout=True, qualified_failure_only=False
+):
     """Select the most recent contraction group that is still relevant now."""
     if not contractions:
         return None, None
@@ -1295,7 +1300,7 @@ def select_current_vcp_group(df, contractions, detect_consumed_breakout=True):
     candidates = []
     best_invalid = None
     reset_events = []
-    failure_boundary_idx = None
+    legacy_failure_contexts = []
     active_cluster = split_contraction_clusters(contractions)[-1]
     consumed_breakout = (
         find_latest_consumed_breakout(df, active_cluster)
@@ -1304,6 +1309,17 @@ def select_current_vcp_group(df, contractions, detect_consumed_breakout=True):
     consumed_breakout_idx = (
         consumed_breakout["breakout"]["idx"] if consumed_breakout else None
     )
+    qualified_failure_contexts = []
+    if consumed_breakout and (
+        not POST_BREAKOUT_CFG.get(
+            "discovery_failure_boundary_requires_valid_vcp", True
+        )
+        or consumed_breakout.get("vcp_eligible")
+    ):
+        failure = consumed_breakout.get("post_breakout_failure")
+        if failure:
+            qualified_failure_contexts.append(consumed_breakout)
+    failure_eligibility_cache = {}
     max_size = min(CONTRACTION_CFG["max_recent_contractions"], len(active_cluster))
     max_span = CONTRACTION_CFG.get("max_group_span_days")
     for size in range(max_size, 0, -1):
@@ -1322,13 +1338,38 @@ def select_current_vcp_group(df, contractions, detect_consumed_breakout=True):
                 continue
             info = evaluate_vcp_group(df, group)
             failure = info.get("post_breakout_failure")
+            breakout = info.get("breakout") or {}
             if failure:
-                failure_idx = failure["idx"]
-                failure_boundary_idx = (
-                    failure_idx
-                    if failure_boundary_idx is None
-                    else max(failure_boundary_idx, failure_idx)
+                legacy_failure_contexts.append({
+                    "group": group,
+                    "breakout": breakout,
+                    "vcp_eligible": False,
+                    "post_breakout_state": info.get("post_breakout_state"),
+                    "post_breakout_failure": failure,
+                    "structure_pivot": info.get("structure_pivot"),
+                })
+            if failure and breakout and detect_consumed_breakout:
+                cache_key = (
+                    contraction_group_signature(group), breakout.get("idx")
                 )
+                if cache_key not in failure_eligibility_cache:
+                    failure_eligibility_cache[cache_key] = (
+                        not POST_BREAKOUT_CFG.get(
+                            "discovery_failure_boundary_requires_valid_vcp", True
+                        )
+                        or prior_breakout_vcp_eligible(
+                            df, group, info.get("structure_pivot"), breakout.get("idx")
+                        )
+                    )
+                if failure_eligibility_cache[cache_key]:
+                    qualified_failure_contexts.append({
+                        "group": group,
+                        "breakout": breakout,
+                        "vcp_eligible": True,
+                        "post_breakout_state": info.get("post_breakout_state"),
+                        "post_breakout_failure": failure,
+                        "structure_pivot": info.get("structure_pivot"),
+                    })
             if info.get("post_group_support_break"):
                 reset_events.append(info["post_group_support_break"])
             if info["structure_valid"]:
@@ -1361,7 +1402,25 @@ def select_current_vcp_group(df, contractions, detect_consumed_breakout=True):
             if best_invalid is None or info["structure_age_days"] < best_invalid["structure_age_days"]:
                 best_invalid = info
 
-    # A failed breakout consumes every group that began before its failure date.
+    boundary_contexts = (
+        qualified_failure_contexts
+        if qualified_failure_only
+        else legacy_failure_contexts
+    )
+    qualified_failure_context = None
+    failure_boundary_idx = None
+    if boundary_contexts:
+        qualified_failure_context = max(
+            boundary_contexts,
+            key=lambda item: (
+                item["post_breakout_failure"]["idx"], len(item.get("group") or [])
+            ),
+        )
+        failure_boundary_idx = qualified_failure_context["post_breakout_failure"]["idx"]
+
+    # The trading path retains the conservative legacy boundary. The discovery-only
+    # path accepts boundaries from qualified VCPs so unrelated rejected groups do
+    # not hide a right-edge rebuild candidate.
     # A fresh VCP may only use contractions formed after that date, preventing an
     # old group or one of its subsets from reviving on a subsequent rebound.
     if failure_boundary_idx is not None:
@@ -1388,11 +1447,148 @@ def select_current_vcp_group(df, contractions, detect_consumed_breakout=True):
 
     if candidates:
         candidates.sort(key=lambda item: item[0], reverse=True)
-        return candidates[0][1], None
+        selected = candidates[0][1]
+        if qualified_failure_only and qualified_failure_context:
+            selected["qualified_failure_context"] = qualified_failure_context
+            selected["rebuild_after_failed_breakout"] = (
+                selected["group"][0]["start_idx"] > failure_boundary_idx
+            )
+        return selected, None
+    if best_invalid is not None and qualified_failure_only and qualified_failure_context:
+        best_invalid["qualified_failure_context"] = qualified_failure_context
     return None, best_invalid
 
 
-def detect_vcp_structure(df, detect_consumed_breakout=True):
+def latest_strong_impulse_before(df, end_idx, cfg):
+    """Return the latest qualifying price-volume impulse before a base window."""
+    lookback = int(cfg.get("impulse_lookback_days", 30))
+    gain_days = int(cfg.get("impulse_gain_window_days", 10))
+    baseline_days = int(cfg.get("baseline_volume_days", 20))
+    search_start = max(0, end_idx - lookback)
+    search = df.iloc[search_start:end_idx]
+    if search.empty:
+        return None
+    peak_idx = int(search["close"].idxmax())
+    gain_start = max(0, peak_idx - gain_days + 1)
+    baseline_start = max(0, gain_start - baseline_days)
+    gain_window = df.loc[gain_start:peak_idx]
+    baseline = df.loc[baseline_start:gain_start - 1]
+    if gain_window.empty or baseline.empty:
+        return None
+    base_close = safe_float(gain_window["close"].min(), 0)
+    peak_close = safe_float(df.loc[peak_idx, "close"], 0)
+    peak_volume = safe_float(gain_window["volume"].max(), 0)
+    baseline_volume = safe_float(baseline["volume"].mean(), 0)
+    if not all([base_close, peak_close, peak_volume, baseline_volume]):
+        return None
+    gain_pct = (peak_close / base_close - 1) * 100
+    peak_volume_ratio = peak_volume / baseline_volume
+    if (
+        gain_pct < safe_float(cfg.get("min_impulse_gain_pct"), 12.0)
+        or peak_volume_ratio < safe_float(
+            cfg.get("min_impulse_peak_volume_ratio"), 1.5
+        )
+    ):
+        return None
+    return {
+        "source": "STRONG_IMPULSE",
+        "idx": peak_idx,
+        "date": str(df.loc[peak_idx, "date"]),
+        "close": peak_close,
+        "volume": peak_volume,
+        "gain_pct": round(gain_pct, 2),
+        "peak_volume_ratio": round(peak_volume_ratio, 4),
+    }
+
+
+def detect_post_failure_rebuild_watch(df, failure_context):
+    """Recognize a stable low-volume base after a VCP failure or strong impulse.
+
+    This is discovery-only. It never creates a contraction group or setup access.
+    """
+    cfg = POST_FAILURE_REBUILD_WATCH_CFG
+    if not cfg.get("enabled"):
+        return None
+    window_days = int(cfg.get("window_days", 5))
+    recent = df.iloc[-window_days:]
+    if len(recent) < window_days:
+        return None
+    base_start_idx = int(recent.index[0])
+
+    failure = (failure_context or {}).get("post_breakout_failure") or {}
+    breakout = (failure_context or {}).get("breakout") or {}
+    sources = []
+    if (failure_context or {}).get("vcp_eligible") and failure and breakout:
+        sources.append({
+            "source": "QUALIFIED_VCP_FAILURE",
+            "idx": int(breakout.get("idx")),
+            "date": breakout.get("date"),
+            "close": safe_float(breakout.get("close"), 0),
+            "volume": safe_float(breakout.get("volume"), 0),
+            "failure_idx": int(failure.get("idx")),
+            "failure_date": failure.get("date"),
+        })
+    impulse = latest_strong_impulse_before(df, base_start_idx, cfg)
+    if impulse:
+        sources.append(impulse)
+    sources = [item for item in sources if item.get("idx") is not None and item.get("volume")]
+    if not sources:
+        return None
+    source = max(sources, key=lambda item: item["idx"])
+    anchor_idx = int(source["idx"])
+    stabilization_start_idx = int(source.get("failure_idx", anchor_idx))
+    days_after_anchor = len(df) - stabilization_start_idx - 1
+    if (
+        days_after_anchor < int(cfg.get("min_days_after_failure", window_days))
+        or base_start_idx <= stabilization_start_idx
+    ):
+        return None
+
+    close_low = safe_float(recent["close"].min())
+    close_high = safe_float(recent["close"].max())
+    close_range_pct = (close_high / close_low - 1) * 100 if close_low else 999
+    if close_range_pct > safe_float(cfg.get("max_close_range_pct"), 8.0):
+        return None
+
+    post_failure = df.loc[stabilization_start_idx:]
+    post_failure_low_idx = int(post_failure["close"].idxmin())
+    post_failure_low = safe_float(df.loc[post_failure_low_idx, "close"])
+    low_confirm_days = len(df) - post_failure_low_idx - 1
+    if low_confirm_days < int(cfg.get("min_non_declining_low_days", 3)):
+        return None
+    latest_close = safe_float(df.iloc[-1].get("close"), 0)
+    lift_pct = (latest_close / post_failure_low - 1) * 100 if post_failure_low else 0
+    if lift_pct < safe_float(cfg.get("min_close_lift_from_post_failure_low_pct"), 2.0):
+        return None
+
+    recent_avg_volume = safe_float(recent["volume"].mean(), 0)
+    volume_ratio = recent_avg_volume / safe_float(source.get("volume"), 0)
+    if volume_ratio > safe_float(cfg.get("max_avg_volume_vs_impulse_ratio"), 0.55):
+        return None
+
+    post_breakout_high = safe_float(df.loc[anchor_idx:]["close"].max(), 0)
+    drawdown_pct = (latest_close / post_breakout_high - 1) * 100 if post_breakout_high else -999
+    if drawdown_pct < -safe_float(cfg.get("max_drawdown_from_impulse_high_pct"), 25.0):
+        return None
+
+    return {
+        "source": source.get("source"),
+        "failure_date": source.get("failure_date"),
+        "breakout_date": source.get("date"),
+        "base_start_date": str(recent.iloc[0]["date"]),
+        "base_days": window_days,
+        "close_range_pct": round(close_range_pct, 2),
+        "post_failure_low": round(post_failure_low, 2),
+        "low_confirm_days": int(low_confirm_days),
+        "close_lift_pct": round(lift_pct, 2),
+        "avg_volume_vs_impulse_ratio": round(volume_ratio, 4),
+        "drawdown_from_post_breakout_high_pct": round(drawdown_pct, 2),
+    }
+
+
+def detect_vcp_structure(
+    df, detect_consumed_breakout=True, enable_rebuild_discovery=True
+):
     latest = df.iloc[-1]
     n = len(df)
     conditions = []
@@ -1490,6 +1686,7 @@ def detect_vcp_structure(df, detect_consumed_breakout=True):
         )
     else:
         contractions = raw_contractions
+        groupable_contractions = raw_contractions
         selected_current = baseline_current
         invalid_group = baseline_invalid_group
     rebuild_pending = bool(destructive_reset and not destructive_rebuild["ready"])
@@ -1497,6 +1694,21 @@ def detect_vcp_structure(df, detect_consumed_breakout=True):
         selected_current.get("group", []) if rebuild_pending and selected_current else []
     )
     current = None if rebuild_pending else selected_current
+    discovery_current = None
+    discovery_invalid = None
+    if (
+        enable_rebuild_discovery
+        and current is None
+        and not rebuild_pending
+        and invalid_group
+        and invalid_group.get("post_breakout_state") == "POST_BREAKOUT_FAILED"
+    ):
+        discovery_current, discovery_invalid = select_current_vcp_group(
+            df,
+            groupable_contractions,
+            detect_consumed_breakout=detect_consumed_breakout,
+            qualified_failure_only=True,
+        )
     contraction_extensions = []
     contraction_extension_score = 0
     contraction_extension_tags = []
@@ -1547,6 +1759,50 @@ def detect_vcp_structure(df, detect_consumed_breakout=True):
         breakout = invalid_group["breakout"]
         breakout_days = invalid_group["breakout_days"]
 
+    failure_context = (
+        (discovery_current or {}).get("qualified_failure_context")
+        or (discovery_invalid or {}).get("qualified_failure_context")
+    )
+    right_edge_rebuild_watch = None
+    if discovery_current:
+        discovery_group = discovery_current.get("group") or []
+        discovery_volume_pattern = volume_pattern_for_contractions(
+            discovery_group, latest
+        )
+        allowed_patterns = set(
+            POST_FAILURE_REBUILD_WATCH_CFG.get(
+                "right_edge_allowed_volume_patterns", ["drying", "decreasing"]
+            )
+        )
+        if discovery_volume_pattern in allowed_patterns:
+            right_edge_rebuild_watch = {
+                "contraction_group": discovery_group,
+                "contraction_count": len(discovery_group),
+                "contraction_pcts": " -> ".join(
+                    f"{contraction_pullback_pct(item):.2f}%"
+                    for item in discovery_group
+                ),
+                "volume_pattern": discovery_volume_pattern,
+                "structure_pivot": discovery_current.get("structure_pivot"),
+                "failure_date": (
+                    (failure_context or {}).get("post_breakout_failure") or {}
+                ).get("date"),
+            }
+            rebuild_contraction_group = discovery_group
+    post_failure_rebuild_watch = None
+    if (
+        enable_rebuild_discovery
+        and not current
+        and not rebuild_pending
+        and not right_edge_rebuild_watch
+        and base_ok
+    ):
+        post_failure_rebuild_watch = detect_post_failure_rebuild_watch(
+            df, failure_context
+        )
+        if post_failure_rebuild_watch:
+            volume_pattern = "drying"
+
     if confirmed_contractions:
         conditions.append(f"历史扫描共{len(confirmed_contractions)}轮确认收缩")
     if provisional_contraction:
@@ -1594,6 +1850,35 @@ def detect_vcp_structure(df, detect_consumed_breakout=True):
             f"短期深跌后趋势重建中（候选收缩{len(rebuild_contraction_group)}轮）"
         )
         misses.extend(destructive_rebuild["misses"])
+    elif post_failure_rebuild_watch:
+        state = "TREND_REBUILD"
+        source_text = (
+            "有效旧VCP失败后"
+            if post_failure_rebuild_watch.get("source") == "QUALIFIED_VCP_FAILURE"
+            else "独立放量启动后"
+        )
+        conditions.extend([
+            f"{source_text}形成低量重建平台",
+            (
+                f"最近{post_failure_rebuild_watch['base_days']}日收盘振幅"
+                f"{post_failure_rebuild_watch['close_range_pct']:.2f}%"
+            ),
+            (
+                "平台均量为启动峰值量的"
+                f"{post_failure_rebuild_watch['avg_volume_vs_impulse_ratio']:.2f}倍"
+            ),
+        ])
+    elif right_edge_rebuild_watch:
+        state = "TREND_REBUILD"
+        volume_pattern = right_edge_rebuild_watch["volume_pattern"]
+        conditions.extend([
+            "旧失败生命周期之外出现新的右侧收缩候选",
+            (
+                f"重建候选{right_edge_rebuild_watch['contraction_count']}轮："
+                f"{right_edge_rebuild_watch['contraction_pcts']}"
+            ),
+            f"重建候选量能{right_edge_rebuild_watch['volume_pattern']}",
+        ])
     elif base_ok and current and count >= STAGE_CFG["early_min_contractions"]:
         has_structure = True
         if count >= STAGE_CFG["mature_min_contractions"] and decrease["is_strict"]:
@@ -1713,6 +1998,8 @@ def detect_vcp_structure(df, detect_consumed_breakout=True):
         "watch_priority": priority_map.get(state, "none"),
         "structure_risk_flags": structure_risk_flags,
         "prior_breakout_context": prior_breakout_context,
+        "post_failure_rebuild_watch": post_failure_rebuild_watch,
+        "right_edge_rebuild_watch": right_edge_rebuild_watch,
         "destructive_reset": destructive_reset,
         "destructive_reset_rebuild_ready": destructive_rebuild["ready"],
         "destructive_reset_rebuild_checks": destructive_rebuild["checks"],
@@ -2653,7 +2940,9 @@ def setup_anchor_snapshot(df, event_idx):
     anchor_df = df.iloc[:event_idx].copy()
     if anchor_df.empty or pd.isna(anchor_df.iloc[-1].get("MA20")):
         return None
-    anchor_structure = detect_vcp_structure(anchor_df)
+    anchor_structure = detect_vcp_structure(
+        anchor_df, enable_rebuild_discovery=False
+    )
     anchor_overheat = detect_overheat(anchor_df)
     anchor_score = score_setup(anchor_df, anchor_structure, {}, {}, anchor_overheat)
     return {
@@ -2698,6 +2987,40 @@ def build_setup_score_context(df, structure, current_score):
 
 def attach_prior_breakout_bonus(structure):
     """Expose a non-additive reference score for a new post-breakout VCP."""
+    right_edge_watch = structure.get("right_edge_rebuild_watch") or {}
+    if right_edge_watch:
+        structure["prior_breakout_bonus_score"] = None
+        structure["prior_breakout_bonus_reasons"] = [
+            (
+                f"旧结构失败后识别到{right_edge_watch.get('contraction_count', 0)}轮"
+                f"右侧收缩：{right_edge_watch.get('contraction_pcts') or '—'}"
+            ),
+            f"重建候选量能{right_edge_watch.get('volume_pattern') or 'unknown'}",
+            "仅作为研究级右侧重建观察，不替代正式VCP且不开放买点权限",
+        ]
+        structure["prior_breakout_context_tag"] = "旧结构失败后右侧重建"
+        return
+    rebuild_watch = structure.get("post_failure_rebuild_watch") or {}
+    if rebuild_watch:
+        source_text = (
+            f"有效旧VCP于{rebuild_watch.get('failure_date') or '—'}失败后"
+            if rebuild_watch.get("source") == "QUALIFIED_VCP_FAILURE"
+            else f"{rebuild_watch.get('breakout_date') or '—'}放量启动后"
+        )
+        structure["prior_breakout_bonus_score"] = None
+        structure["prior_breakout_bonus_reasons"] = [
+            (
+                f"{source_text}形成{rebuild_watch.get('base_days', 0)}日低量平台"
+            ),
+            (
+                f"平台收盘振幅{safe_float(rebuild_watch.get('close_range_pct'), 0):.1f}%，"
+                "均量为启动峰值量的"
+                f"{safe_float(rebuild_watch.get('avg_volume_vs_impulse_ratio'), 0):.2f}倍"
+            ),
+            "仅作为研究级重建观察，不计分且不开放任何买点权限",
+        ]
+        structure["prior_breakout_context_tag"] = "放量启动后低量重建"
+        return
     prior = structure.get("prior_breakout_context") or {}
     strong_states = {
         "POST_BREAKOUT_HOT",
@@ -2873,6 +3196,11 @@ def classify_result(structure, pullback, breakout, retest, score, overheat):
     internal_stage = structure.get("state")
     post_breakout_state = structure.get("post_breakout_state", "PRE_BREAKOUT")
     if (
+        structure.get("right_edge_rebuild_watch")
+        or structure.get("post_failure_rebuild_watch")
+    ):
+        return "VCP", "NONE", "WAIT_REBUILD", CLASSIFICATION_CFG["no_position"]
+    if (
         structure.get("rebuild_after_reset")
         and internal_stage == "REJECT"
         and post_breakout_state == "POST_BREAKOUT_RETEST"
@@ -2913,6 +3241,10 @@ def build_reason(structure, pullback, breakout, retest, overheat):
         return pullback["reason"]
     if retest.get("hard_block"):
         return retest["reason"]
+    if structure.get("right_edge_rebuild_watch"):
+        return "TREND_REBUILD：旧结构失败后出现新的右侧收缩候选"
+    if structure.get("post_failure_rebuild_watch"):
+        return "TREND_REBUILD：放量启动后形成低量重建平台"
     post_breakout_state = structure.get("post_breakout_state", "PRE_BREAKOUT")
     if post_breakout_state != "PRE_BREAKOUT":
         return f"{post_breakout_state}：原VCP突破后生命周期管理"

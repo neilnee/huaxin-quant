@@ -9,5 +9,16 @@
 .rules-all th:nth-child(3), .rules-all td:nth-child(3) { width: 92px; white-space: nowrap; }
 .state-rule-name { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .state-rule-name .tag { flex: 0 0 auto; line-height: 1.2; }
+.liquidity-overlay { margin-top: 18px; padding: 16px; border: 1px solid #31546a; border-radius: 8px; background: #142331; }
+.liquidity-overlay.concentrated { border-color: #665138; }
+.liquidity-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.liquidity-heading h3 { margin: 4px 0 8px; font-size: 19px; }
+.liquidity-overlay > p { margin: 0; color: #c8d2df; }
+.liquidity-tags { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.liquidity-tags span { padding: 3px 8px; border: 1px solid #3e6277; border-radius: 999px; color: var(--accent); font-size: 11px; white-space: nowrap; }
+.liquidity-metrics { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-top: 12px; }
+.liquidity-metrics div { padding: 8px; border-radius: 6px; background: #1d293a; }
+.liquidity-metrics span { display: block; color: var(--muted); font-size: 11px; }
+.liquidity-metrics b { display: block; margin-top: 2px; font-size: 14px; }
 .score-rules { margin-top: 18px; }.score-rules > div { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 8px; }.score-rules article { padding: 12px; border: 1px solid var(--line); border-radius: 7px; background: #141c29; }.score-rules h4 { margin: 0 0 6px; font-size: 14px; }.score-rules p { margin: 0; color: #c8d2df; font-size: 12px; }.score-rules span { display: block; margin-top: 7px; color: var(--accent); font-size: 12px; }
-@media (max-width: 900px) { .rules-current { grid-template-columns: 1fr; }.rule-metrics, .score-rules > div { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 900px) { .rules-current { grid-template-columns: 1fr; }.rule-metrics, .score-rules > div, .liquidity-metrics { grid-template-columns: repeat(2, 1fr); }.liquidity-heading { display: block; }.liquidity-tags { justify-content: flex-start; margin-bottom: 8px; } }

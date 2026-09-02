@@ -23,9 +23,11 @@ from scripts.market_regime import (
     expand_mainline_block_ids,
     finalize_sector_rankings,
     confirm_market_state,
+    classify_market_liquidity,
     classify_market_state,
     link_mainline_stocks,
     market_structure_tag,
+    market_liquidity_state_meaning,
     selective_opportunity_evidence,
     reported_prior_catalyst_date,
     resolve_market_snapshot,
@@ -50,6 +52,25 @@ def sector(name, rel1, rel5, rel20, breadth, volume, density, kind="gn"):
 
 
 class DailyMainlineTests(unittest.TestCase):
+    def test_market_liquidity_overlay_is_separate_from_market_state(self):
+        self.assertEqual(classify_market_liquidity(1.15, 65, 58)["overlay_label"], "放量扩散")
+        self.assertEqual(classify_market_liquidity(1.15, 40, 42)["overlay_label"], "放量承压")
+        self.assertEqual(classify_market_liquidity(0.85, 65, 58)["overlay_label"], "缩量修复")
+        self.assertEqual(classify_market_liquidity(0.85, 40, 42)["overlay_label"], "缩量弱势")
+
+    def test_liquidity_meaning_respects_confirmed_state_boundary(self):
+        report = {
+            "state": {"confirmed_state": "CONSOLIDATING"},
+            "market_liquidity": {"overlay_label": "缩量偏强"},
+        }
+        meaning = market_liquidity_state_meaning(report)
+        self.assertIn("弱势震荡", meaning)
+        self.assertIn("尚不足以强化状态切换", meaning)
+        self.assertIn("正式状态和确认进度保持不变", meaning)
+
+        report["market_liquidity"] = {"available": False, "overlay_label": "量能待确认"}
+        self.assertIn("数据不足", market_liquidity_state_meaning(report))
+
     def test_selective_market_requires_local_opportunity(self):
         args = dict(
             trend_score=55, volatility_score=50, breadth_score=55, rotation_score=50,

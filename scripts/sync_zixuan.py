@@ -31,10 +31,10 @@ MANAGED_PATH = CACHE_DIR / "target_watchlist.csv"
 LEGACY_MANAGED_PATH = CACHE_DIR / "managed_watchlist.csv"
 
 BUY_SIGNALS = {"PULLBACK_BUY", "BREAKOUT_BUY", "RETEST_BUY"}
-MATURE_STAGES = {"VCP_TIGHT", "VCP_MATURE"}
-SCORE_STAGES = {"VCP_FORMING", "VCP_EARLY"}
-FOCUS_MIN_SCORE = 60.0
-POST_BREAKOUT_MIN_SCORE = 55.0
+EXCLUDED_BLOOM_STATUSES = {"RISK_BLOCKED", "DATA_ISSUE", "INVALID", "EXIT"}
+FORMING_MIN_SCORE = 70.0
+EARLY_MIN_SCORE = 75.0
+POST_BREAKOUT_MIN_SCORE = 60.0
 POST_BREAKOUT_TRACKING_STATES = {
     "POST_BREAKOUT_HOT", "POST_BREAKOUT_RETEST", "POST_BREAKOUT_CONSOLIDATING",
 }
@@ -110,15 +110,19 @@ def target_row(row, date_iso):
     setup = str(row.get("model2_setup_signal") or "").upper()
     bloom_status = str(row.get("bloom_status") or "").upper()
     post_state = str(row.get("post_breakout_state") or "").upper()
-    if post_state in POST_BREAKOUT_TERMINAL_STATES:
+    if bloom_status in EXCLUDED_BLOOM_STATUSES or post_state in POST_BREAKOUT_TERMINAL_STATES:
         return None
     score = safe_float(row.get("structure_score"))
     triggered = setup in BUY_SIGNALS or bloom_status == "TRIGGERED"
     post_lifecycle = post_state in POST_BREAKOUT_TRACKING_STATES
     focus = not post_lifecycle and (
-        stage in MATURE_STAGES or (stage in SCORE_STAGES and score >= FOCUS_MIN_SCORE)
+        bloom_status == "MATURE"
+        or (bloom_status == "FORMING" and score >= FORMING_MIN_SCORE)
+        or (bloom_status == "EARLY" and score >= EARLY_MIN_SCORE)
     )
     post_tracking = (
+        bloom_status == "COOLDOWN"
+        and
         post_lifecycle
         and safe_float(row.get("structure_breakout_score")) >= POST_BREAKOUT_MIN_SCORE
     )

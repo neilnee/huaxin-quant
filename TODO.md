@@ -472,7 +472,7 @@ for each stock in quant_output where structure_stage in {VCP_MATURE, VCP_TIGHT}:
 
 - [x] **scripts/sync_zixuan.py 重构**：根据模型四产出维护自选股
   - 每日删除本地账本记录的上一日工作流自选，再写入 Bloom 日报重点观察和三类买点标的
-  - 重点观察口径：成熟结构，或 FORMING/EARLY 且结构分至少 60；买点不受分数限制
+  - 重点观察口径：买点与 MATURE，FORMING 至少 70 分，EARLY 至少 75 分，有效 COOLDOWN 突破后冻结分至少 60；排除风险阻断、数据异常、失效和退出状态，不设数量上限
   - 接入 `daily.py` 最后一步，刷新后做目标集合校验
   - 操作仅对东方财富自选股"全部"分组生效，保留同分组的手工自选
 - [x] **instructions/sync-zixuan.md**：自选股同步指令卡

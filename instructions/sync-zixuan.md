@@ -29,19 +29,23 @@ cache/zixuan/managed_watchlist.csv（旧版迁移来源，仅首次使用）
 
 ## 二、目标集合
 
-Bloom 日报“重点观察”口径是目标集合的唯一标准，满足以下任一条件即入选：
+Bloom 最终状态是目标集合的权威口径。先排除
+`RISK_BLOCKED` / `DATA_ISSUE` / `INVALID` / `EXIT`，其余标的满足以下任一条件即入选：
 
 ```text
-model2_stage=VCP_TIGHT 或 VCP_MATURE
-model2_stage=VCP_FORMING 或 VCP_EARLY，且 structure_score >= 60
 model2_setup_signal=PULLBACK_BUY / BREAKOUT_BUY / RETEST_BUY
 bloom_status=TRIGGERED
-post_breakout_state=POST_BREAKOUT_HOT / POST_BREAKOUT_RETEST / POST_BREAKOUT_CONSOLIDATING，且 structure_breakout_score >= 55
+bloom_status=MATURE
+bloom_status=FORMING，且 structure_score >= 70
+bloom_status=EARLY，且 structure_score >= 75
+bloom_status=COOLDOWN，post_breakout_state=POST_BREAKOUT_HOT / POST_BREAKOUT_RETEST / POST_BREAKOUT_CONSOLIDATING，且 structure_breakout_score >= 60
 ```
 
-三类买点和 `TRIGGERED` 不受结构分门槛限制，必须入选。`pool_decision=KEEP_FOCUS` 本身不是入选条件，避免低分 FORMING 标的进入自选列表。
+三类买点和 `TRIGGERED` 不受结构分门槛限制，但风险阻断、数据异常或失效状态仍优先排除。
+`pool_decision=KEEP_FOCUS` 和 `model2_stage` 本身不是入选条件，避免模型二阶段与 Bloom 最终状态不一致时纳入风险或失效标的。
 
 突破后目标直接沿用 Bloom 的“突破后跟踪”有效状态和冻结分门槛，不再借用当日重扫得到的 `model2_stage` 或 `structure_score` 入选，也不对 RETEST 单独豁免。`POST_BREAKOUT_FAILED` / `POST_BREAKOUT_EXPIRED` 当日退出，不进入自选目标。
+目标集合不设固定数量上限；数量由上述质量门槛自然决定。
 
 ---
 
@@ -102,7 +106,8 @@ ENABLE_ZIXUAN_SYNC=true
 ## 六、验收标准
 
 - 脚本只操作本地账本中有删除权限的股票，不读取或清空远端“全部”列表。
-- 低分 FORMING / EARLY 且无买点、冻结结构分低于55分、以及 FAILED / EXPIRED 的突破后标的不得进入自选列表。
+- `RISK_BLOCKED` / `DATA_ISSUE` / `INVALID` / `EXIT` 不得进入自选列表。
+- 低于各自门槛的 FORMING / EARLY、冻结结构分低于60分、非 `COOLDOWN` 的突破后标的，以及 FAILED / EXPIRED 的突破后标的不得进入自选列表。
 - Bloom 目标为空时不得进行删除或添加。
 - 每日工作流仅在 Tracker 成功后执行此步骤。
 - dry-run 不改变远端或本地状态。

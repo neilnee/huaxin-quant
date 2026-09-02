@@ -58,6 +58,7 @@ python3 scripts/position.py
 - `quant/`
 - `bloom/`
 - `reports/`
+- `daily_research/`
 - `position/`
 - `dev_logs/`
 - `.env`
@@ -105,6 +106,21 @@ Codex 执行时优先用 `rg`、`sed`、`python3 -m py_compile`、项目脚本�
 
 也可以先执行 `source .venv/bin/activate`，再使用文档中的 `python3 scripts/...` 命令。不要使用 macOS 自带的 `/usr/bin/python3`（Python 3.9 / LibreSSL）。
 
+### 7. 每日投研笔记统一放入 `daily_research/`
+
+用户要求记录、整理或归档当日个股研究时，统一写入：
+
+```text
+daily_research/YYYY-MM-DD.md
+```
+
+- 每个研究日期只保留一份笔记；同日已有文件时在原文件中合并更新，不另建重复文件。
+- 笔记用于归档人工研究对话、持仓判断、候选股逻辑、关键价量区间、触发条件、失效条件和后续观察点。
+- `reports/daily/` 保留给流水线或脚本生成的系统日报，不存放人工投研对话归档。
+- `dev_logs/` 只记录工程开发、规则调整和故障复盘，不代替每日投研笔记。
+- 笔记中的行情、财务数据和判断应注明或隐含对应研究日期，不用后续信息改写当时结论；需要修订时追加后续验证记录。
+- `daily_research/` 属于本地研究产物，默认不纳入 Git，除非用户明确要求提交。
+
 ## 目录职责
 
 ```text
@@ -116,6 +132,7 @@ quant_lab/  # Huaxin Quant 本地运行实例
 ├── AGENTS.md          -> Codex 工程规范
 ├── TODO.md            -> 云盘仓库，项目待办
 ├── dev_logs/          本地开发复盘日志（不纳入公开核心仓库）
+├── daily_research/     每日人工投研笔记（按 YYYY-MM-DD.md 归档，不纳入 Git）
 ├── cache/             本地缓存（daily/xuangu/financial/research 等）
 ├── pool/              模型一输出
 ├── quant/             模型二输出

@@ -33,3 +33,9 @@ python3 scripts/strategy_publish.py all --date <YYMMDD>
 ## 生命周期观察
 
 实际买点以兑现日收盘价为参考入场价，以 Plan 冻结的失效价定义初始风险 `1R`，从下一交易日起保存 OHLC、当前收益、MFE、MAE、1R/2R/3R 首次触达、失效触碰/确认和超时状态。该数据仅用于交易后研究，不反向改变 VCP、Plan 或买点判定。
+
+## 当前实现边界（2026-09-08 文档核对）
+
+策略库的 BUY_POINT 当前是 Plan 次日兑现，不是全部模型二 setup_signal；原始 JSON 版本和内容修订可追溯，但代码/配置/输入版本的完整冻结及按版本评估仍待完善。Position 交易流水不迁入本库。统一备份与恢复演练见路线图 R11。
+
+改进方案见 [工程与策略改进路线图](../docs/IMPROVEMENT_ROADMAP.md)，未实现事项不作为当前运行规则。

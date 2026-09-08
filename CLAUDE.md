@@ -12,11 +12,19 @@ Huaxin Quant 多模型流水线的股票花期发现与跟踪系统。每个筛�
 
 ### 规则二：临时脚本统一写到 `.tmp/` 目录
 
-`.tmp/` 已在 `settings.json` 预授权，直接读写不弹窗。用完 `rm -rf .tmp/scripts/`。
+临时脚本统一放 `.tmp/scripts/`。完成后只清理本任务创建且已确认不再需要的文件，保留 `.tmp/` 目录；实际权限以当前运行环境为准。
 
 ### 规则三：脚本始终走本地 symlink 路径调用
 
 `quant_lab/scripts/` 是 symlink，走这个路径调用 `PROJECT_ROOT` 自然指向本地工作区。走云盘真实路径会导致读不到数据目录。
+
+### 规则四：Python 使用项目虚拟环境
+
+使用 Python 3.11+，优先 `.venv/bin/python scripts/...`；以下 python3 示例须先 `source .venv/bin/activate`。不得使用 macOS 系统 Python 3.9。
+
+### 规则五：研究记录与真实交易
+
+每日人工投研记录遵循 AGENTS.md 第 7 节：先完成分析讨论，再合并到 daily_research/YYYY-MM-DD.md，记录证据、分歧、修正与失效条件。交易字段不完整时只记策略事实，不推断成交或写入正式账本；次日研究先回顾前序记录。
 
 ## 🧭 模块使用指南
 
@@ -33,7 +41,7 @@ python3 scripts/monitor.py        # 前台查看进度 → .tmp/daily_progress_<
 
 ### 模型一：海选初筛（Pool）
 
-全市场基本面过滤 + 行业排除 + 软标签评分。执行方式参考 `instructions/01-pool.md`。
+基本面核心质量池 + RS 强势扩展池 + 来源与软标签；不再整体排除行业。执行方式参考 `instructions/01-pool.md`。
 
 ```bash
 python3 scripts/run_pool.py                  # 端到端
@@ -65,7 +73,7 @@ python3 scripts/market_regime.py status               # 检查数据就绪状态
 
 ### Bloom 信号层
 
-消费模型二 JSON，维护跨日信号生命周期，LLM 解读重点观察标的。执行方式参考 `instructions/signal-bloom.md`。
+优先消费策略库中的模型二结果（JSON 为兼容入口），维护跨日信号生命周期，LLM 解读重点观察标的。执行方式参考 `instructions/signal-bloom.md`。
 
 ```bash
 python3 scripts/bloom.py [--date 260706]
@@ -90,7 +98,7 @@ python3 scripts/signal_plan.py [--date 260709]
 
 ### 策略回测
 
-滚动评价首次成熟形态和首次买点信号后 5/10/20 个交易日的价格表现，并按信号时市场、板块状态分组。执行方式参考 `instructions/backtest.md`。
+分别评价 VCP 首次入选和 Plan 次日兑现后的 5/10/20 日总回报；Plan A/REGULAR 不等于模型二 A/B/C/D，当前尚无独立的全部模型二信号评估集合。执行方式参考 `instructions/backtest.md`。
 
 ```bash
 python3 scripts/backtest.py --date 260806
@@ -108,7 +116,7 @@ python3 scripts/tracker.py --skip-plan     # 只跑 Bloom
 
 ### 模型三：深度估值（Valuation）
 
-LLM 拆解业务线 + 脚本 DCF/PE 计算，按需手动触发。执行方式参考 `instructions/03-valuation.md`。
+按需机构共识研究与三情景估值，默认使用 `run_valuation.py`；不由 Bloom 自动触发。执行方式参考 `instructions/03-valuation.md`。
 
 ```bash
 # 详见 instructions/03-valuation.md
@@ -136,7 +144,7 @@ LLM 拆解业务线 + 脚本 DCF/PE 计算，按需手动触发。执行方式�
 | `.tmp/` | 临时脚本（预授权，用完即删） | 本地 |
 | `.env` | 环境变量（不入 Git） | 本地 |
 
-> 云盘 `source repo/` 只放 Git 管理源码，数据产出全部在本地。
+> 物理云盘路径不代表已纳入 Git；本实例 dashboard、daily_research、dev_logs 也可为软链，生成数据与人工记录仍默认忽略。
 
 ## 开发约定
 
@@ -150,4 +158,14 @@ LLM 拆解业务线 + 脚本 DCF/PE 计算，按需手动触发。执行方式�
 
 ## 自选股监控池
 
-东方财富自选股的"全部"分组作为监控池权威列表。mx-zixuan 增删操作仅对"全部"分组生效。入池 = add，出池 = delete。
+按 instructions/sync-zixuan.md 管理系统受管自选；本地受管账本限定可删除集合，保留“全部”分组中的手工自选。daily 仅在 ENABLE_ZIXUAN_SYNC=true 时执行；文档整理和只读审查不触发外部同步。
+
+## 文档导航与当前实现边界
+
+最近核对：2026-09-08。完整模块导航见 [docs/README.md](docs/README.md)，架构见 [DESIGN.md](DESIGN.md)，执行流程见 [WORKFLOW.md](WORKFLOW.md)，待实现方案见 [docs/IMPROVEMENT_ROADMAP.md](docs/IMPROVEMENT_ROADMAP.md)。
+
+- daily.py 是每日总控；tracker.py 仅按需合并 Bloom 与 Signal Plan 报告。
+- cache/strategy/strategy_data.sqlite 是 Quant/Plan/Bloom/兑现与生命周期权威存储，文件是兼容发布；真实交易仍由 Position 流水管理。
+- market/、capital/、backtest/、signal_plan/、reports/ai_daily/ 均为运行产物；dashboard 页面源码入 Git，dashboard/data 生成包不入 Git。
+- Position 已有账本，账户级风控、独立持仓监控、自动估值队列尚未落地。不得把 TODO 或改进路线图中的建议当作现行规则。
+- 当前代码与文档描述不符时，先区分描述过期和规则变更；仅校正文档不更改策略版本，实际规则修改仍按指令卡→配置/脚本→验证执行。

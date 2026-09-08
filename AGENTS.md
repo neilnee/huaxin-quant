@@ -108,17 +108,22 @@ Codex 执行时优先用 `rg`、`sed`、`python3 -m py_compile`、项目脚本�
 
 ### 7. 每日投研笔记统一放入 `daily_research/`
 
-用户要求记录、整理或归档当日个股研究时，统一写入：
+每日人工投研讨论统一写入：
 
 ```text
 daily_research/YYYY-MM-DD.md
 ```
 
 - 每个研究日期只保留一份笔记；同日已有文件时在原文件中合并更新，不另建重复文件。
-- 笔记用于归档人工研究对话、持仓判断、候选股逻辑、关键价量区间、触发条件、失效条件和后续观察点。
+- 每日投研笔记是用户与 Codex 共同讨论、验证和修正判断的思考过程记录，不是系统行情摘要、用户口述转录或只有最终结论的清单。
+- 对话中优先完成分析和讨论，再归档双方已经形成的判断；写日志不能代替回应用户，也不能只按用户原话记录。Codex 应补充客观数据、独立判断、不同意见、不确定性和推翻条件。
+- 笔记应在适用时记录：当日市场与执行背景、真实交易事实、原计划、关键价量证据、供给与承接解释、讨论中的分歧及修正、最终仓位或候选结论、关键价格区间、触发/失效条件、下一交易日检查项。
+- 记录的是提炼后的推理链和决策依据，不逐字保存对话。应明确区分客观事实、用户观点、Codex 补充判断和共同结论，避免把尚未确认的假设写成事实。
+- 当用户确认建仓、加减仓或清仓但未提供成交价、数量或时间时，可在研究笔记中记录策略事实并注明信息不完整；不得推断缺失成交字段，也不得据此写入正式交易账本。
+- 下一交易日开始相关研究前，优先回顾最近的 `daily_research/` 记录，沿用已有观察框架，只更新新增证据、验证结果和观点变化，避免从头重复讨论。
 - `reports/daily/` 保留给流水线或脚本生成的系统日报，不存放人工投研对话归档。
 - `dev_logs/` 只记录工程开发、规则调整和故障复盘，不代替每日投研笔记。
-- 笔记中的行情、财务数据和判断应注明或隐含对应研究日期，不用后续信息改写当时结论；需要修订时追加后续验证记录。
+- 笔记中的行情、财务数据和判断应注明或隐含对应研究日期，不用后续信息改写当时结论；需要修订时追加后续验证记录，保留观点演变轨迹，便于复盘思考如何成长。
 - `daily_research/` 属于本地研究产物，默认不纳入 Git，除非用户明确要求提交。
 
 ## 目录职责
@@ -150,7 +155,7 @@ quant_lab/  # Huaxin Quant 本地运行实例
 
 ### 模型一：海选初筛（Pool）
 
-全市场基本面过滤 + 行业排除 + 软标签评分。执行方式参考 `instructions/01-pool.md`。
+基本面核心质量池 + RS 强势扩展池 + 来源与软标签；不再整体排除行业。执行方式参考 `instructions/01-pool.md`。
 
 ```bash
 python3 scripts/run_pool.py
@@ -192,7 +197,7 @@ python3 scripts/global_macro.py status --days 7
 
 ### Bloom 信号层
 
-消费模型二 JSON，维护跨日信号生命周期，LLM 解读重点观察标的。执行方式参考 `instructions/signal-bloom.md`。
+优先消费策略库中的模型二结果（JSON 为兼容入口），维护跨日信号生命周期，LLM 解读重点观察标的。执行方式参考 `instructions/signal-bloom.md`。
 
 ```bash
 python3 scripts/bloom.py
@@ -210,7 +215,7 @@ python3 scripts/position.py rebuild --as-of 2026-07-06
 
 ### 模型三：深度估值（Valuation）
 
-LLM 拆解业务线 + 脚本 DCF/PE 计算，按需手动触发。执行方式参考 `instructions/03-valuation.md`。
+按需机构共识研究与三情景估值，默认使用 `run_valuation.py`；不由 Bloom 自动触发。执行方式参考 `instructions/03-valuation.md`。
 
 ```bash
 # 详见 instructions/03-valuation.md
@@ -228,3 +233,13 @@ LLM 拆解业务线 + 脚本 DCF/PE 计算，按需手动触发。执行方式�
 - 较大改动在 Git feature 分支上直接修改活跃文件；稳定后 commit/merge 保留历史，不靠复制文件发版。
 - 每次完成一组规则变更后，更新 `TODO.md` 勾掉已完成项。
 - mx-search 等 skill 并行执行后可能遗留 `tmp_*/` 目录，每次批量估值或搜索完成后清理。
+
+## 文档导航与当前实现边界
+
+最近核对：2026-09-08。完整模块导航见 [docs/README.md](docs/README.md)，架构见 [DESIGN.md](DESIGN.md)，执行流程见 [WORKFLOW.md](WORKFLOW.md)，待实现方案见 [docs/IMPROVEMENT_ROADMAP.md](docs/IMPROVEMENT_ROADMAP.md)。
+
+- daily.py 是每日总控；tracker.py 仅按需合并 Bloom 与 Signal Plan 报告。
+- cache/strategy/strategy_data.sqlite 是 Quant/Plan/Bloom/兑现与生命周期权威存储，文件是兼容发布；真实交易仍由 Position 流水管理。
+- market/、capital/、backtest/、signal_plan/、reports/ai_daily/ 均为运行产物；dashboard 页面源码入 Git，dashboard/data 生成包不入 Git。
+- Position 已有账本，账户级风控、独立持仓监控、自动估值队列尚未落地。不得把 TODO 或改进路线图中的建议当作现行规则。
+- 当前代码与文档描述不符时，先区分描述过期和规则变更；仅校正文档不更改策略版本，实际规则修改仍按指令卡→配置/脚本→验证执行。

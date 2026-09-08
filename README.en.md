@@ -8,7 +8,7 @@
 
 **An auditable research and review workflow for China A-shares.** Huaxin Quant combines fundamental screening, VCP price-volume structures, cross-session signal lifecycles, and independent market and capital-flow validation into reproducible, date-scoped research runs.
 
-Scripts and versioned strategy files determine structures, setups, scores, and position constraints. LLMs are limited to grounded market, signal, and valuation commentary; they do not rewrite deterministic conclusions.
+Scripts and versioned strategy files determine structures, setups, scores, and conditional position hints. LLMs are limited to grounded market, signal, and valuation commentary; they do not rewrite deterministic conclusions.
 
 > This project is for research, engineering experiments, and historical review only. It is not investment advice, and no signal, plan, valuation, or position hint implies a return guarantee.
 
@@ -26,32 +26,25 @@ Scripts and versioned strategy files determine structures, setups, scores, and p
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    DATA[Market and financial data] --> POOL[Pool<br/>Fundamental and strength candidates]
-    DATA --> MARKET[Market Regime<br/>Indexes · breadth · sectors]
-    DATA --> CAPITAL[Capital Observer<br/>Sector and stock flows]
+| Producer | Consumer / boundary |
+|---|---|
+| Shared data | Pool, Quant, Market and Capital |
+| Pool | Quant → Bloom and Signal Plan |
+| Quant + Plan + same-day environment | Signals publication and conditional position hints |
+| Bloom/Quant + historical Plan + prices | Backtest: VCP selection and Plan realization research |
+| User-selected company + financial evidence | Independent Valuation run; no automatic Quant trigger |
+| Confirmed transactions | Independent Position ledger |
+| Published Market/Capital/VCP/Signals | Deterministic AI daily report |
+| Published module packages | Read-only Dashboard |
 
-    POOL --> QUANT[Quant<br/>VCP structures and setups]
-    QUANT --> BLOOM[Bloom<br/>Cross-session lifecycle]
-    QUANT --> PLAN[Signal Plan<br/>Next-session conditions]
-
-    MARKET --> SIGNALS[Signal context and position constraints]
-    CAPITAL --> SIGNALS
-    BLOOM --> SIGNALS
-    PLAN --> SIGNALS
-
-    SIGNALS --> BACKTEST[Backtest<br/>Realization and condition value]
-    QUANT --> VALUATION[Valuation<br/>On-demand deep research]
-
-    MARKET --> DASHBOARD[Dashboard<br/>Read-only daily packages]
-    CAPITAL --> DASHBOARD
-    SIGNALS --> DASHBOARD
-    BACKTEST --> DASHBOARD
-    VALUATION --> DASHBOARD
-```
 
 Each module stays within its own decision boundary. Market regime does not rewrite VCP results, capital flow does not change setup scores, LLMs do not replace structure rules, and valuation does not automatically become a trading action.
+
+## Current boundaries
+
+Documentation reviewed on 2026-09-08. Backtest currently evaluates VCP first selection and prior Plan realization; its A/REGULAR grades are not Quant's A/B/C/D grades. Portfolio execution, account risk budgets and independent position monitoring remain future work. Quant uses point-in-time adjusted prices, while expansion-pool RS still uses raw closes. Historical --date runs do not guarantee point-in-time financial inputs. See the [improvement roadmap](docs/IMPROVEMENT_ROADMAP.md).
+
+Global Macro is an independent official-source collection and health module, outside the default daily pipeline. Valuation is user-triggered institutional-consensus research.
 
 ## Current capabilities
 
@@ -103,6 +96,8 @@ source .venv/bin/activate
 python3 -m pip install -r requirements.txt
 ```
 
+For an existing split runtime/source installation, run scripts from the runtime through its symlink and use `git -C <source-repo>` for Git. The commands above describe a new standalone checkout.
+
 ### 2. Configure the runtime
 
 ```bash
@@ -142,7 +137,7 @@ Default workflow:
 ```text
 Market data update → Pool → Quant → Bloom → Signal Plan → fundamental notes
 → full capital observation → Market / Backtest / VCP / Signals publication
-→ date and artifact verification → open Dashboard → optional watchlist sync
+→ deterministic AI daily report → date and artifact verification → open Dashboard → optional watchlist sync
 ```
 
 Open `dashboard/index.html` after completion to explore Market, Capital, VCP, Signals, Backtest, and Valuation by date.
@@ -152,13 +147,15 @@ Open `dashboard/index.html` after completion to explore Market, Capital, VCP, Si
 | Output | Description |
 |---|---|
 | `pool/pool_<YYMMDD>.csv` | Daily candidates and source channels |
-| `cache/quant_runs/quant_<YYMMDD>.json` | Authoritative Quant facts consumed by Bloom and Signal Plan |
+| `cache/strategy/strategy_data.sqlite` | Authoritative Quant/Plan/Bloom revisions, realization events and lifecycle records |
+| `cache/quant_runs/quant_<YYMMDD>.json` | Compatibility publication of Quant facts |
 | `bloom/state/bloom_input_<YYMMDD>.json` | Daily Bloom input and lifecycle result |
 | `signal_plan/signal_plan_<YYMMDD>.json` | Conditional next-session plan |
 | `market/market_regime_<YYMMDD>.json` | Market state, sector phases, and LLM publication status |
 | `capital/capital_observer_<YYMMDD>.json` | Full capital observation with actual source dates |
 | `backtest/backtest_<YYMMDD>.json` | Historical realization and condition-value statistics |
 | `cache/valuation_runs/<run_id>/` | Valuation evidence, research cards, parameters, results, and manifest |
+| `reports/ai_daily/<YYYYMM>/huaxin_quant_ai_report_<YYMMDD>.json` | Deterministic daily research package |
 | `dashboard/data/<YYYYMM>/*.js` | Read-only, date-scoped dashboard packages |
 
 Historical outputs retain their `strategy_version`. Main-order and margin-financing dates remain distinct. When historical sector snapshots are unavailable, non-point-in-time backfills are labeled explicitly and cannot masquerade as strict backtest data.
@@ -210,6 +207,9 @@ TODO.md        Implemented capabilities and roadmap
 Runtime outputs—including `cache/`, `pool/`, `quant/`, `bloom/`, `signal_plan/`, `market/`, `capital/`, `backtest/`, `reports/`, and `position/`—remain local by default.
 
 ## Documentation
+
+- Documentation map: [docs/README.md](docs/README.md)
+- Improvement plan and acceptance criteria: [roadmap](docs/IMPROVEMENT_ROADMAP.md)
 
 - System design: [DESIGN.md](DESIGN.md)
 - Daily workflow: [WORKFLOW.md](WORKFLOW.md)

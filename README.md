@@ -8,7 +8,7 @@
 
 **面向 A 股研究与复盘的可审计量化工作流。** 通过基本面筛选、VCP 量价结构、跨日信号生命周期、市场与资金旁路验证，把候选发现转化为按交易日归档、可复现的观察流程。
 
-核心结构、买点、评分和仓位约束由脚本与版本化策略执行；LLM 仅用于受约束的市场、信号和估值研究解读，不改写确定性结论。
+核心结构、买点、评分和条件仓位提示由脚本与版本化策略执行；LLM 仅用于受约束的市场、信号和估值研究解读，不改写确定性结论。
 
 > 本项目仅用于研究、工程实验与历史复盘，不构成投资建议。任何信号、计划、估值或仓位提示均不代表收益承诺。
 
@@ -26,32 +26,25 @@
 
 ## 系统架构
 
-```mermaid
-flowchart LR
-    DATA[市场与财务数据] --> POOL[Pool<br/>基本面与强势扩展池]
-    DATA --> MARKET[Market Regime<br/>指数·广度·板块]
-    DATA --> CAPITAL[Capital Observer<br/>板块与个股资金]
+| 上游 | 下游与边界 |
+|---|---|
+| 共享数据 | Pool、Quant、市场及资金模块 |
+| Pool | Quant → Bloom 与 Signal Plan |
+| Quant + Plan + 同日环境 | 信号发布与条件仓位提示 |
+| Bloom/Quant + 历史 Plan + 行情 | 回测：VCP 首次入选与 Plan 兑现研究 |
+| 用户指定公司 + 财务证据 | 独立估值运行，不由 Quant 自动触发 |
+| 已确认真实交易 | 独立 Position 账本 |
+| 已发布市场/资金/VCP/信号包 | 确定性 AI 日报 |
+| 各模块发布包 | 只读 Dashboard |
 
-    POOL --> QUANT[Quant<br/>VCP 结构与买点]
-    QUANT --> BLOOM[Bloom<br/>跨日信号生命周期]
-    QUANT --> PLAN[Signal Plan<br/>次日量价计划]
-
-    MARKET --> SIGNALS[信号环境与仓位约束]
-    CAPITAL --> SIGNALS
-    BLOOM --> SIGNALS
-    PLAN --> SIGNALS
-
-    SIGNALS --> BACKTEST[Backtest<br/>条件价值与兑现跟踪]
-    QUANT --> VALUATION[Valuation<br/>按需深度估值]
-
-    MARKET --> DASHBOARD[Dashboard<br/>按交易日只读发布]
-    CAPITAL --> DASHBOARD
-    SIGNALS --> DASHBOARD
-    BACKTEST --> DASHBOARD
-    VALUATION --> DASHBOARD
-```
 
 各模块只处理自己职责内的事实或判断。市场状态不重写 VCP，资金不改变买点评分，LLM 不替代结构规则，估值也不自动变成交易动作。
+
+## 当前边界
+
+文档核对日期：2026-09-08。当前回测评价 VCP 首次入选和前日 Plan 兑现，其 A/REGULAR 不等于模型二 A/B/C/D；账户执行、风险预算及独立持仓监控尚待实现。Quant 已使用时点前复权，扩展池 RS 仍使用原始价格；指定历史日期不保证财务输入严格点时。改进顺序及验收见 [路线图](docs/IMPROVEMENT_ROADMAP.md)。
+
+Global Macro 已有独立官方信源采集与健康检查，未加入默认每日链路；Valuation 按用户指定标的进行机构共识研究。
 
 ## 当前能力
 
@@ -103,6 +96,8 @@ source .venv/bin/activate
 python3 -m pip install -r requirements.txt
 ```
 
+已有双目录实例在 runtime-workspace 通过软链运行脚本，Git 使用 `git -C <source-repo>`；上面的安装命令用于新的独立检出目录，不改变已有实例的路径约束。
+
 ### 2. 配置运行环境
 
 ```bash
@@ -142,7 +137,7 @@ python3 scripts/monitor.py --date 260812
 ```text
 市场数据更新 → Pool → Quant → Bloom → Signal Plan → 财务提示
 → 完整资金观测 → 市场 / 回测 / VCP / 信号页面发布
-→ 日期与产物完整性核验 → 打开 Dashboard → 可选自选同步
+→ AI 研读数据包 → 日期与产物完整性核验 → 打开 Dashboard → 可选自选同步
 ```
 
 执行完成后打开 `dashboard/index.html`，按日期查看市场环境、资金观测、VCP 结构、信号发现、回测和估值结果。
@@ -152,13 +147,15 @@ python3 scripts/monitor.py --date 260812
 | 输出 | 说明 |
 |---|---|
 | `pool/pool_<YYMMDD>.csv` | 当日候选池与来源通道 |
-| `cache/quant_runs/quant_<YYMMDD>.json` | 模型二结构化事实，是 Bloom 与 Plan 的权威输入 |
+| `cache/strategy/strategy_data.sqlite` | Quant/Plan/Bloom 修订、兑现事件及生命周期的权威存储 |
+| `cache/quant_runs/quant_<YYMMDD>.json` | 模型二结构化事实的兼容发布文件 |
 | `bloom/state/bloom_input_<YYMMDD>.json` | 当日 Bloom 输入及生命周期结果 |
 | `signal_plan/signal_plan_<YYMMDD>.json` | 下一交易日条件计划 |
 | `market/market_regime_<YYMMDD>.json` | 市场状态、板块阶段与 LLM 解读状态 |
 | `capital/capital_observer_<YYMMDD>.json` | 完整资金观测及实际数据日期 |
 | `backtest/backtest_<YYMMDD>.json` | 历史兑现和条件价值统计 |
 | `cache/valuation_runs/<run_id>/` | 估值证据、研究卡、参数、结果与运行清单 |
+| `reports/ai_daily/<YYYYMM>/huaxin_quant_ai_report_<YYMMDD>.json` | 确定性 AI 研读数据包 |
 | `dashboard/data/<YYYYMM>/*.js` | 同日只读页面数据包 |
 
 历史运行结果会保存对应 `strategy_version`。资金数据分别保留主力和融资的实际日期；历史板块快照不足时明确标注非严格点时回填，不伪装成可回测数据。
@@ -210,6 +207,9 @@ TODO.md        已完成能力与后续路线
 运行产物包括 `cache/`、`pool/`、`quant/`、`bloom/`、`signal_plan/`、`market/`、`capital/`、`backtest/`、`reports/` 和 `position/`，默认只保存在本地。
 
 ## 文档导航
+
+- 完整文档索引：[docs/README.md](docs/README.md)
+- 改进方案与验收：[路线图](docs/IMPROVEMENT_ROADMAP.md)
 
 - 总体设计：[DESIGN.md](DESIGN.md)
 - 日常运行：[WORKFLOW.md](WORKFLOW.md)

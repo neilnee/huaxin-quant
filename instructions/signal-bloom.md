@@ -32,6 +32,9 @@ Bloom 不负责：
 
 ## 二、输入
 
+权威来源核对（2026-09-08）：优先读取 cache/strategy/strategy_data.sqlite 的同日 Quant 与已有 Bloom 状态；下列 JSON/CSV/JSONL 是兼容发布与迁移回退，不再是唯一账本。先提交数据库后发布文件，见 [strategy-data.md](strategy-data.md)。
+
+
 Bloom 以模型二 JSON 为权威输入：
 
 ```text
@@ -263,7 +266,7 @@ valuation_priority
 | `LOW` | `EARLY` 或结构还不稳定 |
 | `NONE` | `INVALID` / `EXIT` / `DATA_ISSUE` / `RISK_BLOCKED` |
 
-`valuation_candidate=true` 仅表示值得进入估值触发层排队，不表示估值通过，也不表示可以买入。
+`valuation_candidate=true` 仅表示研究候选，不表示估值通过，也不表示可以买入。自动估值队列尚未实现；当前模型三由用户主动指定标的运行。
 
 ---
 

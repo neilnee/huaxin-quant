@@ -1,5 +1,5 @@
 {
-  "strategy_version": "model1_pool_v4",
+  "strategy_version": "model1_pool_v5",
   "description": "Model 1 dual-channel screening parameters for the core quality pool and relative-strength expansion pool.",
   "runtime": {
     "cache_max_age_days": 5,
@@ -67,6 +67,11 @@
       "minimum_history_sessions": 240,
       "minimum_active_sessions_20": 18,
       "minimum_average_amount_20": 100000000
+    },
+    "tracking": {
+      "enabled": true,
+      "rebuild_observation_trade_days": 20,
+      "retain_data_issue": true
     },
     "unverified_fundamental_tag": "FUNDAMENTAL_UNVERIFIED"
   },

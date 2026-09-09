@@ -39,15 +39,20 @@ from scripts.data.strategy_data_store import (
     document_dates as strategy_document_dates,
     load_all_bloom_events,
     load_bloom_state,
+    load_pool_tracking_rows,
     load_document as load_strategy_document,
     save_bloom,
+    save_pool_tracking_rows,
 )
+from scripts.data.pool_tracking import finalize_tracking_rows
 
 
 BLOOM_STRATEGY_FILE = "04-bloom.json"
 
 CONFIG, STRATEGY_PATH = load_strategy_config(BLOOM_STRATEGY_FILE)
 STRATEGY_VERSION = CONFIG["strategy_version"]
+POOL_CONFIG, _ = load_strategy_config("01-pool.json")
+POOL_TRACKING_CONFIG = POOL_CONFIG.get("expansion_pool", {}).get("tracking", {})
 
 QUANT_RUNS_DIR = Path(PROJECT_ROOT) / CONFIG["inputs"]["quant_run_dir"]
 BLOOM_STATE_PATH = Path(PROJECT_ROOT) / CONFIG["inputs"]["state_path"]
@@ -1725,6 +1730,22 @@ def main():
         bloom = load_strategy_document(strategy_conn, "bloom", bloom["summary"]["date"])
         if not args.no_state_update:
             new_state = load_bloom_state(strategy_conn, bloom["summary"]["date"])
+            tracking_rows = load_pool_tracking_rows(strategy_conn, trade_date)
+            if tracking_rows and POOL_TRACKING_CONFIG.get("enabled", False):
+                quant_by_code = {
+                    normalize_code(row.get("code")): row
+                    for row in payload.get("results", [])
+                    if normalize_code(row.get("code"))
+                }
+                finalized_tracking = finalize_tracking_rows(
+                    trade_date,
+                    tracking_rows.values(),
+                    quant_by_code,
+                    new_state,
+                    int(POOL_TRACKING_CONFIG["rebuild_observation_trade_days"]),
+                    bool(POOL_TRACKING_CONFIG.get("retain_data_issue", True)),
+                )
+                save_pool_tracking_rows(strategy_conn, trade_date, finalized_tracking)
             all_events = load_all_bloom_events(strategy_conn)
 
     if not args.no_state_update:

@@ -12,7 +12,7 @@ from scripts.shared import PROJECT_ROOT
 
 
 DB_PATH = Path(PROJECT_ROOT) / "cache" / "strategy" / "strategy_data.sqlite"
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 
 
 def _json(value) -> str:
@@ -133,6 +133,31 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             payload_json TEXT NOT NULL,
             PRIMARY KEY(trade_date, event_id)
         );
+        CREATE TABLE IF NOT EXISTS pool_candidate_tracking_daily (
+            trade_date TEXT NOT NULL,
+            code TEXT NOT NULL,
+            name TEXT,
+            tracking_status TEXT NOT NULL,
+            resolution_status TEXT NOT NULL,
+            first_seen_date TEXT NOT NULL,
+            last_rs_eligible_date TEXT,
+            rs_current_eligible INTEGER NOT NULL DEFAULT 0,
+            grace_start_date TEXT,
+            grace_trade_days INTEGER NOT NULL DEFAULT 0,
+            grace_remaining_days INTEGER NOT NULL DEFAULT 0,
+            tracking_source TEXT,
+            quant_stage TEXT,
+            bloom_status TEXT,
+            post_breakout_state TEXT,
+            exit_reason TEXT,
+            strategy_version TEXT,
+            payload_json TEXT NOT NULL,
+            PRIMARY KEY(trade_date, code)
+        );
+        CREATE INDEX IF NOT EXISTS idx_pool_tracking_code_date
+            ON pool_candidate_tracking_daily(code, trade_date);
+        CREATE INDEX IF NOT EXISTS idx_pool_tracking_date_status
+            ON pool_candidate_tracking_daily(trade_date, tracking_status, resolution_status);
         CREATE TABLE IF NOT EXISTS buy_point_events (
             event_id TEXT PRIMARY KEY,
             plan_id TEXT,
@@ -363,6 +388,67 @@ def load_bloom_state(conn: sqlite3.Connection, trade_date: str) -> dict[str, dic
             (row[0],),
         )
     }
+
+
+def load_latest_bloom_state_before(conn: sqlite3.Connection, trade_date: str) -> dict[str, dict]:
+    row = conn.execute(
+        "SELECT max(trade_date) FROM current_documents WHERE module='bloom' AND trade_date<?",
+        (trade_date,),
+    ).fetchone()
+    return load_bloom_state(conn, row[0]) if row and row[0] else {}
+
+
+def save_pool_tracking_rows(conn: sqlite3.Connection, trade_date: str, rows: list[dict]) -> None:
+    """Replace one date's Pool tracking snapshot."""
+    conn.execute("DELETE FROM pool_candidate_tracking_daily WHERE trade_date=?", (trade_date,))
+    for row in rows:
+        payload = dict(row)
+        payload["trade_date"] = trade_date
+        payload["code"] = _code(row)
+        conn.execute(
+            """INSERT INTO pool_candidate_tracking_daily
+               (trade_date,code,name,tracking_status,resolution_status,first_seen_date,
+                last_rs_eligible_date,rs_current_eligible,grace_start_date,grace_trade_days,
+                grace_remaining_days,tracking_source,quant_stage,bloom_status,
+                post_breakout_state,exit_reason,strategy_version,payload_json)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                trade_date, payload["code"], payload.get("name"), payload["tracking_status"],
+                payload.get("resolution_status") or "PENDING", payload["first_seen_date"],
+                payload.get("last_rs_eligible_date"), int(bool(payload.get("rs_current_eligible"))),
+                payload.get("grace_start_date"), int(payload.get("grace_trade_days") or 0),
+                int(payload.get("grace_remaining_days") or 0), payload.get("tracking_source"),
+                payload.get("quant_stage"), payload.get("bloom_status"),
+                payload.get("post_breakout_state"), payload.get("exit_reason"),
+                payload.get("strategy_version"), _json(payload),
+            ),
+        )
+    conn.commit()
+
+
+def load_pool_tracking_rows(conn: sqlite3.Connection, trade_date: str) -> dict[str, dict]:
+    return {
+        row["code"]: json.loads(row["payload_json"])
+        for row in conn.execute(
+            "SELECT code,payload_json FROM pool_candidate_tracking_daily WHERE trade_date=? ORDER BY code",
+            (trade_date,),
+        )
+    }
+
+
+def load_latest_pool_tracking_before(conn: sqlite3.Connection, trade_date: str) -> dict[str, dict]:
+    row = conn.execute(
+        "SELECT max(trade_date) FROM pool_candidate_tracking_daily WHERE trade_date<? AND resolution_status='FINAL'",
+        (trade_date,),
+    ).fetchone()
+    return load_pool_tracking_rows(conn, row[0]) if row and row[0] else {}
+
+
+def pool_tracking_pending_count(conn: sqlite3.Connection, trade_date: str) -> int:
+    return int(conn.execute(
+        "SELECT count(*) FROM pool_candidate_tracking_daily WHERE trade_date=? AND resolution_status='PENDING'",
+        (trade_date,),
+    ).fetchone()[0])
 
 
 def load_all_bloom_events(conn: sqlite3.Connection) -> list[dict]:

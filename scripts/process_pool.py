@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Process pool screening: phases 2-5."""
-import csv, os, sys
+import csv, os, sqlite3, sys
 from datetime import datetime, date
 from pathlib import Path
 from collections import Counter
@@ -8,6 +8,14 @@ from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.data.pool_data import PoolSegmentCache, find_key, parse_date, parse_num, parse_pct
 from scripts.data.pool_expansion import build_expansion_pool
+from scripts.data.market_data_store import DB_PATH as MARKET_DB_PATH
+from scripts.data.pool_tracking import EXITED, prepare_tracking_rows
+from scripts.data.strategy_data_store import (
+    connect as connect_strategy_db,
+    load_latest_bloom_state_before,
+    load_latest_pool_tracking_before,
+    save_pool_tracking_rows,
+)
 from scripts.shared import get_latest_annual_period, expected_trade_date
 from scripts.strategy_config import load_strategy_config
 
@@ -25,6 +33,7 @@ HARD_FILTER_CFG = POOL_STRATEGY["hard_filters"]
 INDUSTRY_CFG = POOL_STRATEGY["industry"]
 SOFT_TAG_CFG = POOL_STRATEGY["soft_tags"]
 EXPANSION_CFG = POOL_STRATEGY["expansion_pool"]
+TRACKING_CFG = EXPANSION_CFG.get("tracking", {})
 
 SEMICONDUCTOR_KW = INDUSTRY_CFG["semiconductor_keyword"]
 
@@ -403,6 +412,8 @@ fieldnames = [
     "扩展RS排名","扩展RS评分","20日RS百分位","60日RS百分位",
     "20日涨幅_pct","60日涨幅_pct","20日平均成交额_元",
     "历史交易日数","最近20日有效交易日数",
+    "RS当日入选","跟踪状态","首次跟踪日","最近RS入选日",
+    "观察期已用交易日","观察期剩余交易日","跟踪来源",
     "strategy_version",
 ]
 
@@ -484,20 +495,64 @@ for code in sorted(final):
         "20日平均成交额_元": "",
         "历史交易日数": "",
         "最近20日有效交易日数": "",
+        "RS当日入选": "",
+        "跟踪状态": "",
+        "首次跟踪日": "",
+        "最近RS入选日": "",
+        "观察期已用交易日": "",
+        "观察期剩余交易日": "",
+        "跟踪来源": "",
         "strategy_version": STRATEGY_VERSION,
     })
 
+tracking_enabled = bool(TRACKING_CFG.get("enabled", False))
+previous_tracking = {}
+bootstrap_codes = set()
+if tracking_enabled:
+    with connect_strategy_db() as strategy_conn:
+        previous_tracking = load_latest_pool_tracking_before(strategy_conn, TODAY.isoformat())
+        if not previous_tracking:
+            bootstrap = load_latest_bloom_state_before(strategy_conn, TODAY.isoformat())
+            bootstrap_codes = {
+                code for code, state in bootstrap.items()
+                if str(state.get("bloom_status") or "").upper() != "EXIT"
+            }
+tracked_codes = {
+    code for code, state in previous_tracking.items()
+    if state.get("tracking_status") != EXITED
+} | bootstrap_codes
 expansion_rows, expansion_summary = build_expansion_pool(
     TODAY.isoformat(),
     EXPANSION_CFG,
     core_codes=set(final),
+    tracked_codes=tracked_codes,
 )
+tracking_by_code = {}
+if tracking_enabled:
+    with sqlite3.connect(str(MARKET_DB_PATH)) as market_conn:
+        trade_dates = [row[0] for row in market_conn.execute(
+            "SELECT DISTINCT trade_date FROM daily_bars WHERE trade_date<=? ORDER BY trade_date",
+            (TODAY.isoformat(),),
+        )]
+    tracking_rows = prepare_tracking_rows(
+        TODAY.isoformat(), expansion_rows, previous_tracking, trade_dates,
+        int(TRACKING_CFG["rebuild_observation_trade_days"]),
+        bootstrap_codes=bootstrap_codes,
+        strategy_version=STRATEGY_VERSION,
+    )
+    tracking_by_code = {row["code"]: row for row in tracking_rows}
+    with connect_strategy_db() as strategy_conn:
+        save_pool_tracking_rows(strategy_conn, TODAY.isoformat(), tracking_rows)
+
 rows_by_code = {
     str(row["股票代码"]).replace('="', "").replace('"', ""): row
     for row in rows_out
 }
 for expansion in expansion_rows:
     code = expansion["code"]
+    tracking = tracking_by_code.get(code)
+    if expansion.get("hard_filter_reason") or (tracking and tracking["tracking_status"] == EXITED):
+        continue
     row = rows_by_code.get(code)
     if row is None:
         row = {field: "" for field in fieldnames}
@@ -518,7 +573,7 @@ for expansion in expansion_rows:
         row["pool_channel"] = "BOTH"
         row["fundamental_status"] = "CORE_VERIFIED"
     row.update({
-        "扩展RS排名": str(expansion["rs_rank"]),
+        "扩展RS排名": str(expansion["rs_rank"]) if expansion.get("rs_rank") is not None else "",
         "扩展RS评分": fmt(expansion["expansion_score"]),
         "20日RS百分位": fmt(expansion["rs_short_percentile"]),
         "60日RS百分位": fmt(expansion["rs_long_percentile"]),
@@ -527,6 +582,13 @@ for expansion in expansion_rows:
         "20日平均成交额_元": fmt(expansion["average_amount_20"]),
         "历史交易日数": str(expansion["history_sessions"]),
         "最近20日有效交易日数": str(expansion["active_sessions_20"]),
+        "RS当日入选": "Y" if expansion.get("rs_current_eligible") else "N",
+        "跟踪状态": tracking.get("tracking_status", "") if tracking else "RS_ACTIVE",
+        "首次跟踪日": tracking.get("first_seen_date", "") if tracking else TODAY.isoformat(),
+        "最近RS入选日": tracking.get("last_rs_eligible_date", "") if tracking else TODAY.isoformat(),
+        "观察期已用交易日": str(tracking.get("grace_trade_days", 0)) if tracking else "0",
+        "观察期剩余交易日": str(tracking.get("grace_remaining_days", 0)) if tracking else "",
+        "跟踪来源": tracking.get("tracking_source", "RS") if tracking else "RS",
     })
 
 rows_out.sort(key=lambda row: str(row["股票代码"]))
@@ -557,6 +619,20 @@ if expansion_summary.get("enabled"):
         print(f"    - {reason}: {count} 只")
     print(f"    - 与核心池重合: {expansion_summary['core_overlap_total']} 只")
     print(f"    - 扩展池新增: {expansion_summary['expansion_only_total']} 只")
+    if tracking_enabled:
+        tracking_counts = Counter(row["tracking_status"] for row in tracking_by_code.values())
+        hard_exits = sum(
+            1 for row in tracking_by_code.values()
+            if str(row.get("exit_reason") or "").startswith("HARD_FILTER:")
+        )
+        grace_exits = sum(
+            1 for row in tracking_by_code.values() if row.get("exit_reason") == "GRACE_EXPIRED"
+        )
+        print(f"    - 当日RS入选: {sum(bool(row.get('rs_current_eligible')) for row in tracking_by_code.values())} 只")
+        print(f"    - 结构跟踪: {tracking_counts.get('STRUCTURE_TRACKED', 0)} 只")
+        print(f"    - 观察期保留: {tracking_counts.get('GRACE_TRACKING', 0)} 只")
+        print(f"    - 观察期满退出: {grace_exits} 只")
+        print(f"    - 硬过滤退出: {hard_exits} 只")
 print(f"  合并后最终入池: {len(rows_out)} 只")
 
 # Industry distribution

@@ -102,6 +102,20 @@ class PoolExpansionTest(unittest.TestCase):
         self.assertEqual(by_code["000004"]["fundamental_status"], "FUNDAMENTAL_UNVERIFIED")
         self.assertEqual(summary["expansion_only_total"], 1)
 
+    def test_tracked_stock_outside_top_n_keeps_metrics(self):
+        rows, summary = build_expansion_pool(
+            self.as_of,
+            self.config(2),
+            tracked_codes={"000004"},
+            db_path=self.db_path,
+        )
+        by_code = {row["code"]: row for row in rows}
+        self.assertTrue(by_code["000002"]["rs_current_eligible"])
+        self.assertFalse(by_code["000004"]["rs_current_eligible"])
+        self.assertEqual(by_code["000004"]["hard_filter_reason"], "")
+        self.assertEqual(summary["initial_top_total"], 2)
+        self.assertEqual(summary["tracked_metrics_total"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,7 +8,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pandas as pd
+
 from scripts import market_regime
+from scripts.data.tdx_block_data import TDXBlockSource
 
 from scripts.market_regime import (
     classify_news_phase,
@@ -52,6 +55,34 @@ def sector(name, rel1, rel5, rel20, breadth, volume, density, kind="gn"):
 
 
 class DailyMainlineTests(unittest.TestCase):
+    def test_tdx_uses_separate_xdxr_probe_for_corporate_actions(self):
+        class FakeQuotes:
+            def index(self, **_kwargs):
+                return pd.DataFrame()
+
+            def xdxr(self, **_kwargs):
+                return pd.DataFrame([{"category": 1}])
+
+        fake = FakeQuotes()
+        with patch("scripts.data.tdx_block_data.probe_servers", return_value=[("127.0.0.1", 7709)]), \
+             patch("scripts.data.tdx_block_data.Quotes.factory", return_value=fake):
+            source = TDXBlockSource()
+            self.assertIs(source._corporate_action_client(), fake)
+            self.assertEqual(len(source.fetch_corporate_actions("000017")), 1)
+
+    def test_tdx_xdxr_probe_falls_back_to_cached_servers(self):
+        class FakeQuotes:
+            def xdxr(self, **_kwargs):
+                return pd.DataFrame([{"category": 1}])
+
+        fake = FakeQuotes()
+        with patch("scripts.data.tdx_block_data.probe_servers", side_effect=RuntimeError("already consumed")), \
+             patch("scripts.data.market_data.TDXSource._load_cached_servers", return_value=[("127.0.0.2", 7709)]), \
+             patch("scripts.data.tdx_block_data.Quotes.factory", return_value=fake) as factory:
+            source = TDXBlockSource()
+            self.assertIs(source._corporate_action_client(), fake)
+            factory.assert_called_once_with(market="std", server=("127.0.0.2", 7709), timeout=10)
+
     def test_market_liquidity_overlay_is_separate_from_market_state(self):
         self.assertEqual(classify_market_liquidity(1.15, 65, 58)["overlay_label"], "放量扩散")
         self.assertEqual(classify_market_liquidity(1.15, 40, 42)["overlay_label"], "放量承压")

@@ -8,6 +8,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pandas as pd
+
 from scripts import backtest
 
 
@@ -40,6 +42,26 @@ def plan(action="NEW", family="BREAKOUT", anchor="2026-01-01", quality="A"):
 
 
 class BacktestEventTests(unittest.TestCase):
+    def test_corporate_actions_use_xdxr_capability_client(self):
+        class FakeSource:
+            def fetch_corporate_actions(self, code):
+                self.code = code
+                return pd.DataFrame([{
+                    "category": 1, "year": 2026, "month": 8, "day": 1,
+                    "fenhong": 1.0, "songzhuangu": 0.0,
+                    "peigu": 0.0, "peigujia": 0.0,
+                }])
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(backtest, "CORPORATE_ACTION_CACHE_DIR", Path(tmp)), \
+             patch("scripts.data.tdx_block_data.TDXBlockSource", FakeSource):
+            backtest._CORPORATE_ACTION_SOURCE = None
+            try:
+                actions = backtest.load_corporate_actions("000989", "2026-09-10")
+            finally:
+                backtest._CORPORATE_ACTION_SOURCE = None
+            self.assertEqual(actions[0]["date"], "2026-08-01")
+
     def test_plan_grade_is_mutually_exclusive(self):
         self.assertEqual(backtest.plan_hit_grade(plan(), row(close=11, volume=130)), "A")
         self.assertEqual(backtest.plan_hit_grade(plan(), row(close=11, volume=100)), "REGULAR")

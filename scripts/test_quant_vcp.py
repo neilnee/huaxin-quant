@@ -1075,5 +1075,61 @@ class CloseBasedContractionTests(unittest.TestCase):
         self.assertIn("结构阶段未达到突破前提", result["reason"])
 
 
+class HistoricalContractionTrendTests(unittest.TestCase):
+    def test_historical_anchor_not_latest_or_pullback_low(self):
+        df = make_frame([9, 7, 12, 8, 20])
+        df["MA120"] = [10, 10, 10, 10, 10]
+        raw = [{"start_idx": 0, "end_idx": 1},
+               {"start_idx": 2, "end_idx": 3}]
+        audit, eligible = quant.filter_contractions_by_historical_trend(df, raw)
+        self.assertEqual([x["start_idx"] for x in eligible], [2])
+        self.assertEqual(audit[0]["historical_trend_reason"], "BELOW_MA120")
+        self.assertNotIn("historical_trend_eligible", raw[0])
+        df.loc[4, ["close", "MA120"]] = [30, 1]
+        self.assertEqual(quant.filter_contractions_by_historical_trend(df, raw)[0], audit)
+
+    def test_equal_missing_and_provisional(self):
+        df = make_frame([10, 9, 8])
+        df["MA120"] = [10, float("nan"), 10]
+        raw = [{"start_idx": i, "end_idx": i, "confirmation_status": "PROVISIONAL"}
+               for i in range(3)]
+        audit, eligible = quant.filter_contractions_by_historical_trend(df, raw)
+        self.assertEqual(len(eligible), 0)
+        self.assertEqual(audit[1]["historical_trend_reason"], "BEFORE_TREND_RESET")
+        self.assertIsNone(audit[1]["historical_trend_ma120"])
+        self.assertFalse(audit[2]["historical_trend_eligible"])
+
+    def test_last_rejected_segment_cuts_all_earlier_segments(self):
+        df = make_frame([12, 9, 12, 9, 12, 8])
+        df["MA120"] = 10.0
+        raw = [{"start_idx": i, "end_idx": i} for i in range(5)]
+        audit, eligible = quant.filter_contractions_by_historical_trend(df, raw)
+        self.assertEqual([s["start_idx"] for s in eligible], [4])
+        self.assertEqual(audit[0]["historical_trend_reason"], "BEFORE_TREND_RESET")
+        self.assertEqual(audit[2]["historical_trend_reason"], "BEFORE_TREND_RESET")
+        self.assertTrue(all(s["historical_trend_boundary_date"] == df.iloc[3]['date'] for s in audit))
+
+    def test_no_reset_preserves_equal_and_missing_ma120(self):
+        df = make_frame([10, 9])
+        df["MA120"] = [10, float("nan")]
+        raw = [{"start_idx": i, "end_idx": i} for i in range(2)]
+        audit, eligible = quant.filter_contractions_by_historical_trend(df, raw)
+        self.assertEqual(len(eligible), 2)
+        self.assertEqual(audit[1]["historical_trend_reason"], "MA120_UNAVAILABLE")
+        self.assertIsNone(audit[0]["historical_trend_boundary_date"])
+
+    def test_rejected_segments_never_reach_group_selection(self):
+        df = quant.calc_indicators(make_frame([10] * 130))
+        df.loc[120, "close"] = 9
+        segment = {"start_idx": 120, "end_idx": 125}
+        with patch.object(quant, "detect_contractions", return_value=[segment]), \
+             patch.object(quant, "detect_right_edge_provisional_contraction", return_value=None), \
+             patch.object(quant, "select_current_vcp_group", return_value=(None, None)) as select:
+            result = quant.detect_vcp_structure(df)
+        self.assertEqual(select.call_args.args[1], [])
+        self.assertEqual(result["contraction_count"], 0)
+        self.assertFalse(result["contractions"][0]["historical_trend_eligible"])
+
+
 if __name__ == "__main__":
     unittest.main()

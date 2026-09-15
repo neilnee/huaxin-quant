@@ -1,7 +1,7 @@
 # 模型二：量价精筛模型（自执行指令）
 
 - **版本管理**: 由 Git 分支与提交历史管理，文件名不再携带版本号
-- **最近更新**: 2026-09-01（model2_quant_v30）
+- **最近更新**: 2026-09-15（model2_quant_v32）
 - **核心目标**: 在模型一基本面候选池中，寻找 VCP 蓄力结构和可交易触发，输出可复现、可回测、可供模型三/四复用的结构化量价结果。
 - **核心哲学**: 基本面先过滤烂公司，模型二只判断资金行为和价格位置。脚本负责确定性计算，LLM 只做可选解释，不参与结构阶段或交易触发判定。
 - **输入**: `pool/pool_<YYMMDD>.csv`，或命令行指定 `--code/--codes`
@@ -544,6 +544,21 @@ support_price / invalid_price / breakout_level
 ```
 
 ### VCP 结构过程监控
+
+历史收缩段趋势资格（v32）：原始收缩识别完成后、结构选组之前，按每段
+起点（收盘摆动高点）的收盘价与**该日起点 MA120**比较。低于 MA120 的段
+作为趋势中断依据。以最后一个不合格段的结束日为分界，它及之前的所有段
+不参与结构选组、枢纽、计数、扩展加分或突破判断，只保留起点在分界之后的段。
+不得跳过不合格段拼接两侧结构，也不得因右侧段被排除而回选更老的结构。
+后来的站回均线不能重新激活分界之前的段；尚无分界后收缩时允许没有标准 VCP。
+等于均线时保留，不要求段内低点或每个交易日都在均线上，不追加斜率门槛。
+已确认段与右端暂定段使用同一规则。MA120 尚未形成时沿用现有缺失兼容口径，
+保留但注明未验证，不将其描述为已通过历史趋势验证。
+原始 `contractions` 保留审计字段 `historical_trend_eligible`、
+`historical_trend_reason`（AT_OR_ABOVE_MA120 / BELOW_MA120 / MA120_UNAVAILABLE /
+BEFORE_TREND_RESET）、`historical_trend_boundary_date`（最后不合格段结束日，无则 null）、
+`historical_trend_anchor_date`、`historical_trend_anchor_close`、`historical_trend_ma120`；
+`contraction_group` 等有效结构字段只消费过滤后的段。当前交易日的下述基础及背景判断不变。
 
 基础条件：
 

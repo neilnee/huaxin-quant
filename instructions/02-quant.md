@@ -1320,11 +1320,11 @@ setup_plan_inputs.retest:
 
 ```text
 DEEPSEEK_API_KEY=...
-DEEPSEEK_MODEL=deepseek-v4-flash
+DEEPSEEK_MODEL=deepseek-flash
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 ```
 
-本地 `.env` 不进入 Git。默认模型使用 `deepseek-v4-flash`。
+本地 `.env` 不进入 Git。默认模型使用 `deepseek-flash`，对应 DeepSeek-V4.1-Flash；旧名称 `deepseek-v4-flash` 只作为官方临时兼容别名，不作为项目默认值。
 
 DeepSeek 调用使用 OpenAI 兼容的 Chat Completions 接口，并启用 JSON Output：
 

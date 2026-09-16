@@ -33,13 +33,13 @@
     "sector_heat": {"relative_strength": 0.30, "volume_activity": 0.20, "up_breadth": 0.20, "strong_density": 0.15, "persistence": 0.15}
   },
   "reporting": {
-    "model": "deepseek-v4-flash",
+    "model": "deepseek-flash",
     "thinking": "disabled",
     "llm_max_tokens": 1600,
     "llm_max_retries": 4
   },
   "daily_mainline": {
-    "model": "deepseek-v4-flash",
+    "model": "deepseek-flash",
     "thinking": "enabled",
     "fallback_thinking": "disabled",
     "block_types": ["industry_sw_l1", "industry_sw_l2", "gn"],

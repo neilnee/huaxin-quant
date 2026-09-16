@@ -1508,7 +1508,7 @@ def call_daily_mainline_analysis(as_of: str, candidates: dict, news: dict) -> di
     api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
     if not api_key:
         return daily_mainline_fallback(candidates, news, "DEEPSEEK_API_KEY missing")
-    model = settings.get("model", "deepseek-v4-flash")
+    model = settings.get("model", "deepseek-flash")
     base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
     block_payload = [{key: item[key] for key in ("block_id", "block_type", "block_name", "rank_1", "daily_score", "relative_strength_1", "median_return_1", "up_breadth", "volume_activity", "daily_strong_density", "qualified")} for item in candidates["blocks"]]
     stock_payload = [{key: item[key] for key in ("code", "name", "return_1", "rps1_market", "rps5_market", "volume_ratio_20", "daily_strength_score", "candidate_block_ids")} for item in candidates["stocks"]]
@@ -1641,7 +1641,7 @@ def call_market_llm_analysis(report: dict) -> dict:
     api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
     if not api_key:
         return {"status": "skipped", "reason": "DEEPSEEK_API_KEY missing", "analysis": ""}
-    model = CONFIG.get("reporting", {}).get("model", "deepseek-v4-flash")
+    model = CONFIG.get("reporting", {}).get("model", "deepseek-flash")
     base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
     system_prompt = (
         "你是A股市场环境解读助手。只根据用户提供的结构化数据，用90-150个中文字符解释当前市场表现；这是硬上限，超过150字视为失败。"

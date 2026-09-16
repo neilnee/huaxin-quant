@@ -3844,7 +3844,7 @@ def maybe_call_llm(results, top_n):
     if not results:
         return {"status": "skipped", "reason": "no_results", "reviews": []}
     api_key = os.environ.get("DEEPSEEK_API_KEY")
-    model = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
+    model = os.environ.get("DEEPSEEK_MODEL", "deepseek-flash")
     base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
     if not api_key:
         return {"status": "skipped", "reason": "DEEPSEEK_API_KEY missing", "reviews": []}

@@ -204,7 +204,7 @@ python3 scripts/dashboard_valuation.py --all
 2. 搜索返回限流、失败、空数据、超过 6 个月的研报，均不是“无覆盖”的证据，必须记录为 `insufficient_evidence`。
 3. 共识阶段只有在至少 3 家有效、未过期机构预测齐备时才能标记 `done`；否则为 `insufficient_consensus`，不得勾选完成。
 4. 每条机构预测、目标估值、研究判断及新增事项必须有证据引用。缺少引用、引用不存在或数值不合规时，脚本拒绝调用计算引擎。
-5. LLM/API 未配置、调用失败、输出非 JSON 或校验失败时，运行显式失败；不得使用模型自行补写的兜底研究结论。默认读取全局 `DEEPSEEK_MODEL=deepseek-v4-flash`。
+5. LLM/API 未配置、调用失败、输出非 JSON 或校验失败时，运行显式失败；不得使用模型自行补写的兜底研究结论。默认读取全局 `DEEPSEEK_MODEL=deepseek-flash`，对应 DeepSeek-V4.1-Flash。
 
 ### 脚本化检索清单
 

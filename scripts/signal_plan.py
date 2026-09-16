@@ -899,7 +899,7 @@ def call_llm_notes(plans, progress_file=None):
             "returned": 0,
         }
 
-    model = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
+    model = os.environ.get("DEEPSEEK_MODEL", "deepseek-flash")
     base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
     status = {
         "status": "pending",

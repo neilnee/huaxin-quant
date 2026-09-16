@@ -4031,8 +4031,8 @@ def main():
     parser.add_argument("--include-reject", action="store_true", help="CSV 中包含未纳入 model2_include 的标的")
     parser.add_argument("--no-cache", action="store_true", help="跳过缓存，重新拉取行情")
     parser.add_argument("--refresh", action="store_true", help="强制刷新候选标的近期日线后重新计算")
-    parser.add_argument("--with-llm", action="store_true", help="可选调用 LLM 对 top 标的做解释")
-    parser.add_argument("--llm-top", type=int, default=10, help="LLM 解释 Top N，默认 10")
+    parser.add_argument("--with-llm", action="store_true", help="兼容参数：LLM 文字解读已暂停，传入也跳过")
+    parser.add_argument("--llm-top", type=int, default=10, help="兼容参数：LLM 文字解读已暂停")
     parser.add_argument("--progress-file", help="进度文件路径（供 daily.py 流水线使用）")
     args = parser.parse_args()
 
@@ -4064,11 +4064,9 @@ def main():
         print("提示：强制从主备源刷新候选标的近期日线")
 
     results, stats = process_codes(codes, today_yy, run_date, use_cache=use_cache, progress_file=args.progress_file)
-    llm_results = [r for r in results if should_write_to_quant(r, include_reject=args.include_reject)]
-    llm_results.sort(key=lambda x: x["structure_score"], reverse=True)
-    llm_payload = {"status": "skipped", "reason": "not_requested", "reviews": []}
+    llm_payload = {"status": "skipped", "reason": "disabled", "reviews": []}
     if args.with_llm:
-        llm_payload = maybe_call_llm(llm_results, args.llm_top)
+        print("提示：Quant LLM 文字解读已暂停，跳过 --with-llm")
 
     payload = {
         "meta": {

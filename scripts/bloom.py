@@ -1310,10 +1310,12 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False, progres
     # ── LLM 解读：只为达到独立分数门槛的重点观察标的生成自然语言洞察 ──
     watching = sections.get("watching", [])
     llm_min_score = safe_float(CONFIG.get("reporting", {}).get("llm_min_structure_score"), 70.0)
-    llm_watching = [r for r in watching if should_call_llm_insight(r)]
+    llm_enabled = CONFIG.get("reporting", {}).get("llm_enabled", False)
+    llm_watching = [r for r in watching if should_call_llm_insight(r)] if llm_enabled else []
     llm_status = {
         "status": "skipped",
-        "reason": f"no watching rows at or above structure score {fmt_num(llm_min_score)}",
+        "reason": (f"no watching rows at or above structure score {fmt_num(llm_min_score)}"
+                   if llm_enabled else "disabled"),
         "requested": 0,
         "returned": 0,
         "minimum_structure_score": llm_min_score,

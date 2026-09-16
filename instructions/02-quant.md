@@ -50,7 +50,7 @@ python3 scripts/quant_filter.py --code 300604 --json
 | 模型三 | 估值锚点，判断贵便宜 |
 | 模型四 | 结合估值和持仓执行交易动作 |
 
-LLM 失败不能影响主流程。默认不调用 LLM。
+当前暂停 Quant 的 LLM 文字解读，不发送解释请求；`--with-llm` / `--llm-top` 仅保留命令行兼容性，传入也跳过。输出 `llm.status=skipped`、`reason=disabled`。结构识别、评分和触发判定继续由脚本执行。本文其他可选 LLM 说明作为恢复后的接口约定。
 
 ### 策略配置边界
 

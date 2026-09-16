@@ -12,6 +12,8 @@
 
 Signal Plan 只做次日量价计划，不重新识别 VCP，不替代模型二买点判定，不输出最终交易动作。
 
+当前暂停 LLM 计划说明：`reporting.llm_enabled=false`，不发送说明生成请求；调用层返回 `status=skipped`、`reason=disabled`、`requested=0`、`returned=0`。页面与报告继续使用确定性量价说明，计划价格、量能和失效条件保持原计算规则。`--no-llm` 参数继续兼容。
+
 Signal Plan 负责：
 
 - 消费模型二结构化 JSON。

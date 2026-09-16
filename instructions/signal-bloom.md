@@ -391,6 +391,7 @@ Markdown 的“重点观察”表格列为：
 
 LLM 观察要点：
 
+- 当前暂停文字解读：`reporting.llm_enabled=false`，不发送 LLM 请求，summary 记录 `status=skipped`、`reason=disabled`、请求数为 0；报告使用规则生成的 `watch_reason`。以下调用约定仅在重新启用后适用，历史解读不删除。
 - Bloom 可调用 DeepSeek 为重点观察标的生成 `llm_insight`。
 - 只有 `structure_score >= 70` 的重点观察标的才调用 LLM；低于门槛的标的继续保留在重点观察列表，并使用脚本生成的 `watch_reason`，不得改变其 Bloom 状态、买点或排序。
 - 传给 LLM 的上下文必须包含 `model2_setup_signal`、`setup_score`、`setup_quality`、`setup_reasons`、`setup_misses` 和 `suggested_position`，观察要点应考虑买点类型与质量。

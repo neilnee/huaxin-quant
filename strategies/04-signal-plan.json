@@ -147,6 +147,7 @@
     "invalid_pivot_ratio": 0.98
   },
   "reporting": {
+    "llm_enabled": false,
     "main_limit": 30,
     "watch_limit": 30,
     "data_issue_limit": 20,

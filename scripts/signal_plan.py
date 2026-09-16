@@ -883,6 +883,13 @@ def call_llm_notes(plans, progress_file=None):
     Returns (notes_by_key, status). Missing or failed LLM calls are non-fatal;
     Markdown falls back to deterministic note generation.
     """
+    if not CONFIG.get("reporting", {}).get("llm_enabled", False):
+        return {}, {
+            "status": "skipped",
+            "reason": "disabled",
+            "requested": 0,
+            "returned": 0,
+        }
     api_key = os.environ.get("DEEPSEEK_API_KEY")
     if not api_key:
         return {}, {
@@ -1082,7 +1089,7 @@ def field_notes():
         "- `触发量`: 次日成交量需要满足的普通买点最低放量或最高缩量条件；“以上”多用于突破，“以下”多用于回踩。",
         "- `A级量`: A 类买点需要满足的更严格量能条件；最高不足 A级 时不展示。",
         "- `失效`: 跌破后不再按当前买点计划处理。",
-        "- `说明`: LLM 基于模型二阈值生成的量价区间说明；调用失败时回退为确定性量价说明，具体公式来源保留在 JSON 的 `formula_ref` 中。",
+        "- `说明`: 默认使用确定性量价说明；仅配置启用 LLM 后使用生成说明，失败时回退为规则文本。具体公式来源保留在 JSON 的 `formula_ref` 中。",
     ]
 
 

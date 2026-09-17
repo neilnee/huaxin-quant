@@ -1445,7 +1445,9 @@ def daily_mainline_trigger_topics(candidates: dict, limit: int = 8) -> list[str]
         key=lambda item: (coverage[item["block_id"]], item["daily_score"]),
         reverse=True,
     )
-    return daily_mainline_search_topics([item["block_name"] for item in ranked[:limit]])[:limit]
+    leaders = sorted(ranked, key=lambda item: item["daily_score"], reverse=True)[:2]
+    names = list(dict.fromkeys(item["block_name"] for item in leaders + ranked))
+    return daily_mainline_search_topics(names[:limit])[:limit]
 
 
 def fetch_daily_mainline_news(as_of: str, candidates: dict) -> dict:
@@ -1454,9 +1456,9 @@ def fetch_daily_mainline_news(as_of: str, candidates: dict) -> dict:
     block_names = [item["block_name"] for item in ranked_blocks[:12]]
     search_topics = daily_mainline_search_topics(block_names)
     context_topics = search_topics[:2] if search_topics[:2] == ["AI应用", "AI商业化"] else search_topics[:8]
-    context_query = f"{as_of} A股 早盘高开 原因 隔夜消息 海外财报 商业化催化 " + " ".join(context_topics)
+    context_query = f"{as_of} A股 当日盘面异动 领涨板块 产业催化 隔夜消息 盘中验证 " + " ".join(context_topics)
     context_raw, context_status, context_error = fetch_mx_search_cache(
-        STATE_DIR / f"daily_mainline_context_news_v7_{today_stamp(as_of)}.json", context_query,
+        STATE_DIR / f"daily_mainline_context_news_v8_{today_stamp(as_of)}.json", context_query,
     )
     context_results = mx_search_items(context_raw) or []
     entities = catalyst_entities(context_results, as_of)
@@ -1464,7 +1466,7 @@ def fetch_daily_mainline_news(as_of: str, candidates: dict) -> dict:
     trigger_topics = daily_mainline_trigger_topics(candidates)
     trigger_query = f"{as_of} A股 开盘前 隔夜 核心催化 原始公告 事件日期 最新财报 政策 {focused_entity} " + " ".join(trigger_topics)
     trigger_raw, trigger_status, trigger_error = fetch_mx_search_cache(
-        STATE_DIR / f"daily_mainline_trigger_news_v8_{today_stamp(as_of)}.json", trigger_query,
+        STATE_DIR / f"daily_mainline_trigger_news_v9_{today_stamp(as_of)}.json", trigger_query,
     )
     trigger_results = mx_search_items(trigger_raw) or []
     raw_results = trigger_results + context_results
@@ -1482,18 +1484,30 @@ def fetch_daily_mainline_news(as_of: str, candidates: dict) -> dict:
 def daily_mainline_fallback(candidates: dict, news: dict, reason: str) -> dict:
     settings = CONFIG["daily_mainline"]
     blocks = sorted((item for item in candidates["blocks"] if item["qualified"]), key=lambda item: item["daily_score"], reverse=True)[:settings["maximum_strong_blocks"]]
-    allowed_codes = {stock["code"] for block in blocks for stock in block["leaders"]}
-    stocks = [item for item in candidates["stocks"] if item["code"] in allowed_codes][:settings["maximum_strong_stocks"]]
     block_ids = [item["block_id"] for item in blocks]
     block_map = {item["block_id"]: item for item in blocks}
-    stock_map = {item["code"]: item for item in stocks}
-    linked_stocks, _ = link_mainline_stocks(block_ids, list(stock_map), block_map, stock_map)
+    stock_map = {}
+    for block in blocks:
+        for stock in block["leaders"]:
+            item = stock_map.setdefault(stock["code"], {**stock, "candidate_block_ids": []})
+            item["candidate_block_ids"].append(block["block_id"])
+    selected = []
+    for block in blocks:
+        if any(block["block_id"] in stock_map[code]["candidate_block_ids"] for code in selected):
+            continue
+        leaders = block["leaders"]
+        if leaders:
+            selected.append(max(leaders, key=lambda item: item.get("daily_strength_score", 0))["code"])
+    ranked = sorted(stock_map, key=lambda code: stock_map[code].get("daily_strength_score", 0), reverse=True)
+    selected = list(dict.fromkeys(selected + ranked))[:settings["maximum_strong_stocks"]]
+    linked_stocks, _ = link_mainline_stocks(block_ids, selected, block_map, stock_map)
     return {
         "status": "degraded", "name": "当日主线待归纳" if blocks else "当日无清晰主线",
         "core_event": "资讯或主线归纳不可用，未生成事件判断。",
         "narrative_logic": "仅保留当日行情筛选结果，不根据模型常识补写催化或因果关系。",
         "strong_blocks": [{key: value for key, value in item.items() if key != "leaders"} for item in blocks], "strong_stocks": linked_stocks, "evidence": [],
         "reason": reason, "news_status": news.get("status", "unknown"),
+        "selection_basis": "market_candidates", "catalyst_status": "unconfirmed",
     }
 
 
@@ -1515,7 +1529,10 @@ def call_daily_mainline_analysis(as_of: str, candidates: dict, news: dict) -> di
     system_prompt = (
         "你是A股盘后主线归纳器。只能依据输入的当日行情候选和妙想资讯证据，归纳一条今日盘面主线。"
         "主线是多个强势板块和核心个股围绕同一事件与预期变化形成的叙事链，不是简单复制涨幅最高的概念名。"
-        "如果候选方向互不相关、只有单点上涨，或资讯无法解释盘面共振，status必须为unclear。"
+        "只需从候选中找到最有解释力的一组，不要求所有强势方向受同一事件驱动；"
+        "行业与概念的同链共振（如种植业与种业）可构成一组，其他无关方向不否决该组。"
+        "如果找不到共振组合、只有单点上涨，或可靠资讯无法解释该组共振，status必须为unclear。"
+        "unclear时说明是盘面分散还是催化待核验，不得把缺少催化说成没有强势方向；不要填入与领涨组无关的核心事件。"
         "在资讯能够支持的前提下，优先解释daily_score靠前且被多只候选股共同覆盖的板块组合，不得仅因某条资讯更容易命名就忽略更强的盘面共振。"
         "status=clear时，从候选block_id中选择2至6个strong_block_ids，从候选股票代码中选择2至6个strong_stock_codes；"
         "每只核心股的candidate_block_ids必须至少包含一个最终选择的strong_block_id，每个最终选择的strong_block_id也必须至少被一只核心股覆盖。"
@@ -1572,12 +1589,22 @@ def call_daily_mainline_analysis(as_of: str, candidates: dict, news: dict) -> di
                 raise ValueError("mainline text fields are incomplete")
             if not 4 <= len(name) <= 24 or any(term in name for term in ("引爆", "狂欢", "全面爆发", "主升", "掀起", "暴涨", "涨停潮")):
                 raise ValueError("mainline name is not neutral and concise")
+            if parsed["status"] == "unclear":
+                result = daily_mainline_fallback(candidates, news, "")
+                result.update({"status": "unclear", "name": "当日事件主线待确认",
+                    "core_event": "核心催化待核验，行情强势方向见下方候选。",
+                    "narrative_logic": logic,
+                    "evidence": [{key: evidence_map[item].get(key, "") for key in
+                        ("title", "date", "source", "event_date", "core_timing_basis")} for item in titles],
+                    "provider": "deepseek", "model": model, "thinking_mode": thinking_mode})
+                return result
             return {
                 "status": parsed["status"], "name": name if parsed["status"] == "clear" else "当日无清晰主线",
                 "core_event": core_event, "narrative_logic": logic,
                 "strong_blocks": [{key: value for key, value in block_map[item].items() if key != "leaders"} for item in block_ids], "strong_stocks": linked_stocks,
                 "evidence": [{key: evidence_map[item][key] for key in ("title", "date", "source", "event_date", "core_timing_basis")} for item in titles],
                 "news_status": news["status"], "provider": "deepseek", "model": model, "thinking_mode": thinking_mode,
+                "selection_basis": "event_mainline", "catalyst_status": "verified",
             }
         except Exception as exc:
             last_error = str(exc)[:300]

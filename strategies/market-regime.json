@@ -1,5 +1,5 @@
 {
-  "strategy_version": "market_regime_v6",
+  "strategy_version": "market_regime_v7",
   "description": "Independent market regime and TDX block heat parameters. It does not read or modify Model 2 Quant outputs.",
   "benchmarks": {
     "shanghai_composite": "000001",

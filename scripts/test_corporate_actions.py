@@ -1,6 +1,7 @@
 """Regression tests for point-in-time corporate-action adjustment."""
 
 import sqlite3
+import socket
 import unittest
 from unittest.mock import patch
 
@@ -49,6 +50,25 @@ class FakeTDXSource:
 
 
 class CorporateActionTests(unittest.TestCase):
+    def test_baostock_login_timeout_is_bounded_and_not_retried(self):
+        verifier = BaoStockVerifier()
+        original_timeout = socket.getdefaulttimeout()
+        observed = []
+
+        def timed_out_login():
+            observed.append(socket.getdefaulttimeout())
+            raise TimeoutError("login recv timed out")
+
+        with patch("baostock.login", side_effect=timed_out_login) as login:
+            with self.assertRaises(TimeoutError):
+                verifier._login()
+            with self.assertRaisesRegex(RuntimeError, "本轮已失败"):
+                verifier._login()
+
+        self.assertEqual(observed, [10])
+        self.assertEqual(login.call_count, 1)
+        self.assertEqual(socket.getdefaulttimeout(), original_timeout)
+
     def test_tdx_source_uses_cached_server_adapter_when_live_probe_is_empty(self):
         expected = object()
         with patch("scripts.data.tdx_block_data.probe_servers", return_value=[]), patch(

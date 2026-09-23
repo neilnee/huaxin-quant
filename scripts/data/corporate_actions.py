@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import math
+import socket
 import sqlite3
 from contextlib import redirect_stdout
 from datetime import date, datetime, timedelta
@@ -190,16 +191,28 @@ class BaoStockVerifier:
 
     def __init__(self):
         self.client = None
+        self.login_error = None
 
     def _login(self):
         if self.client is not None:
             return self.client
-        import baostock as bs
+        if self.login_error is not None:
+            raise RuntimeError(f"BaoStock 登录本轮已失败: {self.login_error}")
+        previous_timeout = socket.getdefaulttimeout()
+        try:
+            import baostock as bs
 
-        with redirect_stdout(io.StringIO()):
-            result = bs.login()
-        if result.error_code != "0":
-            raise RuntimeError(result.error_msg)
+            # BaoStock creates its socket inside login; bound both connect and recv.
+            socket.setdefaulttimeout(10)
+            with redirect_stdout(io.StringIO()):
+                result = bs.login()
+            if result.error_code != "0":
+                raise RuntimeError(result.error_msg)
+        except Exception as exc:
+            self.login_error = exc
+            raise
+        finally:
+            socket.setdefaulttimeout(previous_timeout)
         self.client = bs
         return bs
 

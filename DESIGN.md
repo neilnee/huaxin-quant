@@ -1,281 +1,96 @@
 # Huaxin Quant Design
 
-最近更新：2026-07-05
+最近核对：2026-09-08。本文描述当前实现；未实现的改进见 [TODO](TODO.md) 和 [工程与策略改进路线图](docs/IMPROVEMENT_ROADMAP.md)。模块阈值以配套指令卡和策略 JSON 为准，本文件不重复维护阈值表。
 
-本文记录 Huaxin Quant 当前的模型边界、分层原则和策略配置化方向。指令卡仍是每个模型的执行口径来源；本文用于统一架构理解，避免后续重构时把数据、策略、状态和交易动作混在一起。
+## 1. 目标与当前边界
 
-## 1. 总体目标
+Huaxin Quant 是面向 A 股的候选发现、信号跟踪和研究复盘系统。日常链路已经覆盖数据准备、双池筛选、VCP、生命周期、次日计划、市场与资金环境、回测及页面发布。它尚未形成账户级自动交易系统，也未完成当前版本买点的独立样本外验证。
 
-Huaxin Quant 是多模型流水线的股票发现与跟踪系统：
+脚本决定结构、信号、评分、状态和计算结果；LLM 解释受约束的事实，并完成按需机构共识研究。LLM 失败不能补造数据；不同模块的发布门禁见 WORKFLOW。
 
-```text
-模型一 Pool       → 基础股票池初筛
-模型二 Quant      → VCP 量价结构扫描
-模型三 Valuation  → 估值锚点与安全边际
-模型四 Tracker     → 信号生命周期、持仓管理和交易建议
-```
+## 2. 源码与运行实例
 
-设计原则：
+| 层 | 职责 | 典型内容 |
+|---|---|---|
+| source-repo | Git 管理的源码与文档 | instructions、scripts、strategies、dashboard 页面源码、docs |
+| runtime-workspace | 日常执行与数据积累 | .venv、.env、cache、pool、quant、bloom、signal_plan、market、capital、backtest、reports、position、.tmp |
+| 人工记录 | 研究讨论与工程复盘 | daily_research、dev_logs，默认不纳入 Git |
 
-- 模型一负责"哪些股票值得进入量价扫描"。
-- 模型二负责"当天量价结构事实、触发信号和结构评分"。
-- 模型三负责"估值锚点和安全边际"。
-- 模型四 Tracker 负责"信号生命周期跟踪、持仓管理和交易建议"。
-- 每个模型只输出自己职责范围内的事实或判断，不越界替其他模型决策。
+本地实例通过软链访问源码。Git 使用 `git -C <source-repo>`，项目脚本始终在运行实例通过 `.venv/bin/python scripts/...` 调用。仓库独立部署可在检出目录初始化；已有双目录实例不得因此改变执行根目录。
 
-## 2. 分层原则
+物理存放位置与 Git 跟踪范围是两回事：本实例的 dashboard、daily_research 和 dev_logs 也通过软链访问云盘目录，其中生成数据及人工记录仍默认被 Git 忽略。
 
-模型一、模型二、模型四都按三层理解：
+## 3. 当前模块与依赖
 
-```text
-共享数据层 data
-  读取、缓存、数据源降级、字段标准化。
+| 模块 | 主要输入 | 主要职责与下游 |
+|---|---|---|
+| Market Data | 通达信、妙想备用数据 | 原始日线、证券母体、板块快照、独立公司行为；供 Market、Pool、Quant 等复用 |
+| Pool | 财务筛选缓存、全 A 日线 | 核心质量池与 RS 扩展池合并，供 Quant 扫描；扩展独有标的财务未核验 |
+| Quant | 当日 Pool、时点前复权行情 | 单日 VCP 结构、三类买点、评分、风险和突破后上下文 |
+| Bloom | Quant、既有生命周期 | 跨日状态、事件、重点观察与估值候选标记 |
+| Signal Plan | Quant 的 setup_plan_inputs | 次日条件计划；不补造模型二当日信号 |
+| Market Regime | 共享原始行情与板块快照 | 宽基、广度、板块阶段、主线解释；不回写 Quant |
+| Capital Observer | 成交额与资金数据 | 独立资金事实和解释；不参与模型二评分 |
+| Signal Fundamentals | 当日信号、计划和 Pool | 补查扩展独有股票财务，提供非阻断风险提示 |
+| Dashboard Signals | Quant、Plan、市场/板块及旁路提示 | 展示当日买点与次日计划；当前环境仓位提示在此适配器计算 |
+| Backtest | Bloom/Quant、前日 Plan、后续行情与环境 | VCP 首次入选和 Plan 兑现的事件研究、总回报与生命周期 |
+| Valuation | 用户指定标的、财务与证据 | 独立机构共识研究和三情景估值；不由 Quant/Bloom 自动触发 |
+| Position | 用户确认的真实交易及计划 | FIFO 批次、持仓状态和年度账本重建；策略监控待建 |
+| Global Macro | 官方 API/RSS | 独立观测、事件和信源健康；未接入每日主链路 |
+| AI Daily Report | 已发布市场/资金/VCP/信号包 | 确定性汇总 JSON，不调用新 LLM |
+| Watchlist Sync | Bloom 与模型二买点、受管自选账本 | 可选外部自选同步，保留手工自选 |
 
-策略层 strategy
-  阈值、权重、分层标准、状态映射、保留期、风险标记。
+`daily.py` 是每日总控，直接调用 Bloom 和 Plan。`tracker.py` 是按需生成两者合并日报的工具；不调度估值或持仓，不替代 daily。
 
-实现逻辑层 runner/app
-  CLI、流程编排、文件读写、输出报告。
-```
+## 4. 数据、规则、状态与展示
 
-共享数据层可以跨模型复用；策略层由各模型自己管理，避免不同模型的规则混成一团。
+| 层 | 当前实现 |
+|---|---|
+| 数据 | scripts/data 下行情、财务筛选、资金、宏观、公司行为适配与 SQLite 存储 |
+| 规则 | strategies/*.json 与模块内确定性算法 |
+| 状态 | 策略数据库中的 Quant/Plan/Bloom 修订、事件和生命周期；真实交易另存 Position 账本 |
+| 编排 | daily、run_pool、run_valuation 及独立模块 CLI |
+| 发布 | strategy_publish、dashboard_* 和各模块发布函数 |
 
-已落地的共享数据能力：
+策略配置承载阈值、权重和枚举，算法仍由代码实现。当前加载器校验 JSON 和 strategy_version，尚无全量字段类型、范围和跨参数约束校验。
 
-- `scripts/data/market_data.py`
-  - `DataSource`
-  - `MiaoxiangSource`
-  - `TDXSource`
-- `scripts/data/pool_data.py`
-  - `PoolSegmentCache`
-  - `XuanguSource`
-  - xuangu raw JSON 读取、缓存匹配、字段解析和合并去重
-- `scripts/shared.py`
-  - `DailyCache`
-  - `fetch_daily()`
-  - `RateLimiter`
-  - 项目路径、报告期推断、估值索引路径等公共能力
+环境仓位计算目前位于 `dashboard_signals.py`，因此“页面只读”指浏览器消费已发布包，并不意味着所有发布适配器都只搬运字段。独立决策模块是后续改进，不是当前能力。
 
-模型一通过 `pool_data.py` 共享股票池 raw 数据接入能力；模型二和模型四共享 `fetch_daily()` 与日线缓存。
+## 5. 权威数据与兼容发布
 
-## 3. 策略配置化
+| 数据 | 权威来源 | 兼容/展示产物 |
+|---|---|---|
+| 原始日线与公司行为 | cache/market_data/market_data.sqlite | 按需行情窗口及审计字段 |
+| Quant、Plan、Bloom、兑现与生命周期 | cache/strategy/strategy_data.sqlite | quant CSV、quant_runs JSON、Bloom 状态文件、Plan JSON/Markdown |
+| 市场派生状态 | cache/market_regime/market_regime.sqlite 及模块发布产物 | market/、Dashboard 市场包 |
+| 资金 | cache/capital_flow/capital_data.sqlite | capital/、Dashboard 资金包 |
+| 宏观 | cache/global_macro/global_macro.sqlite | macro/ 健康与采集摘要 |
+| 真实交易 | position/trades/ 与 position_plan.csv | lots_current、日快照、年度表现 |
+| 估值研究 | cache/valuation_runs/<run_id>/ 已验证运行包 | 报告、索引、排名和公司页 |
 
-策略参数放在独立目录：
+核心策略模块先提交数据库，再发布兼容文件；同日内容变化保留修订，current_documents 指向当前版本。旧文件只作兼容或迁移回退。历史修订存在，不等于已冻结回测使用的全部代码、配置和输入版本。
 
-```text
-strategies/
-  01-pool.json
-  02-quant.json
-  04-bloom.json
-```
+## 6. 日期与价格口径
 
-本地运行目录的 `strategies/` 是指向云盘源码仓库的软链，便于运行和版本管理使用同一份配置。
+- 原始 OHLCV 不被复权结果覆盖；公司行为独立存储。
+- Quant 显式使用不晚于 run_date 的公司行为计算时点前复权 OHLC，量额保持原始口径。
+- Pool 扩展 RS 当前直接使用原始收盘价；Market 未显式申请复权的计算也使用原始价格。不能把 Quant 的复权能力描述为所有消费者已统一。
+- Backtest 的 5/10/20 日收益采用包含公司行为的持有期总回报。
+- 默认日期函数按 15:00 和周末回退，尚不包含完整节假日日历；日期有效性仍需行情与交易日记录核验。
+- 历史板块/行业回填须保留来源和 history_basis，不得解释为当时可得事实；指定 --date 不自动保证全部输入严格点时。
 
-统一加载器：
+## 7. 三种不同的机会记录
 
-```text
-scripts/strategy_config.py
-```
+| 记录 | 当前定义 | 不能替代 |
+|---|---|---|
+| VCP_SELECTION | 同股票同结构首次进入 VCP active 展示列表 | 买点触发或真实成交 |
+| 模型二 setup_signal | 当日规则触发，质量为 A/B/C/D | 前日计划等级 |
+| 回测 BUY_POINT | 前日 Plan 次日量价兑现，等级为 A/REGULAR | 模型二当日全部买点 |
 
-策略配置只承载"可调参数"：
+目前第三类允许当天模型二没有同名信号。页面仅在实际信号与计划命中一致时增加审计标签。独立的模型二信号研究集合与版本隔离尚待补齐。
 
-- 阈值
-- 权重
-- 分层标准
-- 状态映射
-- 风险分数
-- 保留期天数
-- 行业排除列表
-- 查询模板和输出字段模板
+## 8. 验证与后续演进
 
-策略配置不承载算法：
+现有离线检查涵盖语法、单元测试、策略 JSON、JavaScript 语法及 Git 空白；CI 使用 Python 3.11/3.12。测试通过证明覆盖场景下的实现行为，不证明盈利能力、严格点时或完整灾难恢复能力。
 
-- 数据源调用流程
-- 指标计算公式
-- swing high / swing low 识别算法
-- VCP 收缩轮次扫描流程
-- 文件读写和 CLI 编排
-- 复杂状态机执行代码
-
-每个模型输出都应写入 `strategy_version`。JSON 类输出还应写入 `strategy_file`。这样历史结果可以追溯生成口径。
-
-## 4. 模型一：Pool
-
-模型一目标：从全市场筛出基本面候选池，供模型二扫描。
-
-入口：
-
-```bash
-python3 scripts/run_pool.py
-python3 scripts/process_pool.py
-```
-
-策略配置：
-
-```text
-strategies/01-pool.json
-strategy_version = model1_pool_v1
-```
-
-已配置化内容：
-
-- xuangu 查询过滤词。
-- xuangu 输出字段模板。
-- 市值分段。
-- 缓存有效天数。
-- 分段调用间隔。
-- 截断阈值和 PE 正序/倒序补充查询。
-- 市值、上市天数、净利润、OCF/NP、负债率、毛利率等硬过滤阈值。
-- 半导体高增长豁免阈值。
-- 行业排除关键词。
-- 软标签触发阈值和扣分。
-
-模型一输出：
-
-```text
-pool/pool_<YYMMDD>.csv
-```
-
-CSV 包含 `strategy_version`。
-
-模型一不负责量价结构、不负责估值、不负责交易建议。
-
-## 5. 模型二：Quant
-
-模型二目标：对模型一候选池做每日 VCP 结构扫描，输出当天结构事实和触发信号。
-
-入口：
-
-```bash
-python3 scripts/quant_filter.py --pool pool/pool_<YYMMDD>.csv
-python3 scripts/quant_filter.py --code 300604 --name 长川科技
-```
-
-策略配置：
-
-```text
-strategies/02-quant.json
-strategy_version = model2_quant_v1
-```
-
-核心结构阶段：
-
-| 阶段 | 含义 |
-|------|------|
-| `VCP_EARLY` | 早期收缩，1 轮以上 |
-| `VCP_FORMING` | 形成中，2 轮以上 near 递减 |
-| `VCP_MATURE` | 成熟，3 轮以上 strict 递减 |
-| `VCP_TIGHT` | 紧致，MATURE + 最后一轮 < 10% + 量能干燥 |
-| `TREND_WATCH` | 强趋势但无收缩轮次 |
-| `POST_BREAKOUT` | 结构后涨幅过大（>25%） |
-| `TREND_REBUILD` | 结构后深度回撤，需重建 |
-
-触发信号：
-
-| 信号 | 条件 |
-|------|------|
-| `PULLBACK_BUY` | VCP 结构内缩量回踩 MA20/MA60，前低不破 |
-| `RETEST_BUY` | 有效 VCP（MATURE/TIGHT）+ 放量突破 + 3-10天缩量回踩不破位 + 站回突破位/MA10 |
-
-RETEST_BUY 的关键约束：`structure_valid=true`、stage 为 VCP_MATURE/VCP_TIGHT、突破日非长上影、硬风险不阻断。`old_structure_broken_out` 已移除 —— 突破不再因幅度被踢出 VCP 结构。
-
-模型二输出：
-
-```text
-quant/quant_<YYMMDD>.csv
-cache/quant_runs/quant_<YYMMDD>.json
-```
-
-核心输出字段：`structure_type`, `structure_stage`, `setup_signal`, `action_hint`, `suggested_position`, `model2_include`, `structure_score`, `structure_risk_score`, `structure_risk_flags`, `support_price`, `invalid_price`, `breakout_level`, `strategy_version`
-
-模型二不维护跨日状态，不决定最终买卖，不判断估值安全边际，不管理持仓。
-
-## 6. 模型三：Valuation
-
-模型三目标：形成估值锚点和安全边际。相对独立，核心输出供模型四使用。
-
-## 7. 模型四：Tracker
-
-模型四总控名为 Tracker，由多个独立信号模块组成：
-
-```text
-Tracker 总控
-├── Bloom 信号层     ← 当前已实现
-├── 估值触发层        ← 后续
-└── 持仓管理层        ← 后续
-```
-
-所有模型四内部信号模块指令卡使用 `signal-` 前缀，统一放在 `instructions/` 下。
-
-### 7.1 Bloom 信号层
-
-Bloom 消费模型二 JSON，把单日横截面发现转为跨日信号生命周期。只做信号判断，不读模型三估值，不读持仓，不输出最终交易动作。
-
-**入口：**
-
-```bash
-python3 scripts/bloom.py
-python3 scripts/bloom.py --date 260705
-```
-
-**输入：**
-
-```text
-cache/quant_runs/quant_<YYMMDD>.json     ← 权威输入（仅全量模式）
-bloom/state/bloom_state.csv              ← 状态延续
-bloom/state/bloom_events.jsonl           ← 事件续写、幂等重跑
-strategies/04-bloom.json                 ← 策略参数
-```
-
-**输出：**
-
-```text
-bloom/bloom_<YYMMDD>.md                  Bloom 日报（4 板块）
-bloom/state/bloom_state.csv              机器状态表
-bloom/state/bloom_events.jsonl           事件流水（幂等：同日重跑先删再写）
-bloom/state/bloom_input_<YYMMDD>.json    结构化输入（下游消费）
-```
-
-**Bloom 状态（大写枚举）：**
-
-| bloom_status | 含义 |
-|-------------|------|
-| `EARLY` | 早期结构，低优先级观察 |
-| `FORMING` | 结构形成中 |
-| `MATURE` | 结构成熟或紧致，重点观察 |
-| `TRIGGERED` | 模型二出现 PULLBACK_BUY / RETEST_BUY |
-| `RISK_BLOCKED` | 结构存在但风险过高（HIGH/HARD） |
-| `COOLDOWN` | 临时出局，保留观察 |
-| `INVALID` | 结构失效或等待重建 |
-| `EXIT` | 移出 Bloom 池 |
-| `DATA_ISSUE` | 数据异常，不改变长期判断 |
-
-**池子决策：** `ADD` / `KEEP_FOCUS`（FORMING 及以上）/ `KEEP_LOW`（EARLY）/ `COOLDOWN` / `EXIT` / `DATA_HOLD`
-
-**信号类型：** `NEW_ENTRY` / `UPGRADE` / `DOWNGRADE` / `SETUP_TRIGGER` / `RISK_BLOCK` / `COOLDOWN` / `EXIT` / `DATA_HOLD` / `CONTINUED`
-
-**日报结构：** 📊 今日概要 → 🔥 重点观察（7 列表格）→ 📋 池子变化（8 列网格）→ 📖 字段说明
-
-### 7.2 估值触发层（后续）
-
-消费 Bloom 输出，判断哪些股票值得进入模型三估值流程。
-
-### 7.3 持仓管理层（后续）
-
-消费持仓数据、Bloom 信号和模型三估值，输出仓位管理建议。
-
-## 8. 目录约定
-
-源码仓库：`instructions/` `scripts/` `strategies/` `DESIGN.md` `README.md` `WORKFLOW.md`
-
-运行目录：`cache/` `pool/` `quant/` `bloom/` `signals/` `reports/` `tmp/`
-
-运行产物不提交 Git。
-
-## 9. 后续演进
-
-1. ~~稳定模型一、模型二策略配置口径~~ ✅
-2. ~~重构 Bloom 信号层（bloom.py + signal-bloom.md + 04-bloom.json）~~ ✅
-3. 用配置文件持续调参，不修改脚本逻辑
-4. 后续新增估值触发层
-5. 后续新增持仓管理层
+后续按顺序推进：事件口径与数据正确性 → 当前版本评估和样本外跟踪 → 账户风险与持仓监控 → 运维恢复与适度模块拆分。验收细则集中维护在 [改进路线图](docs/IMPROVEMENT_ROADMAP.md)。

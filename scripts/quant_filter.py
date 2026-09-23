@@ -1648,6 +1648,43 @@ def detect_post_failure_rebuild_watch(df, failure_context):
     }
 
 
+def filter_contractions_by_historical_trend(df, contractions):
+    """Keep only contractions after the latest historically weak segment."""
+    annotated = []
+    eligible = []
+    for contraction in contractions:
+        item = dict(contraction)
+        anchor = df.iloc[int(item["start_idx"])]
+        ma120 = anchor.get("MA120", np.nan)
+        close = float(anchor["close"])
+        unavailable = pd.isna(ma120)
+        accepted = bool(unavailable or close >= ma120)
+        item.update({
+            "historical_trend_eligible": accepted,
+            "historical_trend_reason": (
+                "MA120_UNAVAILABLE" if unavailable else
+                "AT_OR_ABOVE_MA120" if accepted else "BELOW_MA120"
+            ),
+            "historical_trend_anchor_date": str(anchor["date"]),
+            "historical_trend_anchor_close": close,
+            "historical_trend_ma120": None if unavailable else float(ma120),
+        })
+        annotated.append(item)
+    rejected = [item for item in annotated if not item["historical_trend_eligible"]]
+    boundary = max(rejected, key=lambda item: item["end_idx"]) if rejected else None
+    for item in annotated:
+        item["historical_trend_boundary_date"] = (
+            str(df.iloc[int(boundary["end_idx"])]["date"]) if boundary else None
+        )
+        if boundary and item["start_idx"] <= boundary["end_idx"]:
+            if item["historical_trend_eligible"]:
+                item["historical_trend_reason"] = "BEFORE_TREND_RESET"
+            item["historical_trend_eligible"] = False
+        if item["historical_trend_eligible"]:
+            eligible.append(item)
+    return annotated, eligible
+
+
 def detect_vcp_structure(
     df, detect_consumed_breakout=True, enable_rebuild_discovery=True
 ):
@@ -1724,8 +1761,11 @@ def detect_vcp_structure(
     if provisional_contraction:
         raw_contractions.append(provisional_contraction)
 
+    raw_contractions, trend_contractions = filter_contractions_by_historical_trend(
+        df, raw_contractions
+    )
     baseline_current, baseline_invalid_group = select_current_vcp_group(
-        df, raw_contractions, detect_consumed_breakout=detect_consumed_breakout
+        df, trend_contractions, detect_consumed_breakout=detect_consumed_breakout
     )
     destructive_reset = detect_destructive_reset(df)
     destructive_rebuild = destructive_reset_rebuild_status(df, destructive_reset)
@@ -1734,7 +1774,7 @@ def detect_vcp_structure(
         not base_ok
         or not above_ma120
         or not destructive_reset_relevant_to_current(
-            destructive_reset, raw_contractions, baseline_current
+            destructive_reset, trend_contractions, baseline_current
         )
     ):
         destructive_reset = None
@@ -1743,12 +1783,15 @@ def detect_vcp_structure(
         contractions, groupable_contractions = annotate_contractions_for_destructive_reset(
             raw_contractions, destructive_reset, destructive_rebuild["ready"]
         )
+        groupable_contractions = [
+            item for item in groupable_contractions if item["historical_trend_eligible"]
+        ]
         selected_current, invalid_group = select_current_vcp_group(
             df, groupable_contractions, detect_consumed_breakout=detect_consumed_breakout
         )
     else:
         contractions = raw_contractions
-        groupable_contractions = raw_contractions
+        groupable_contractions = trend_contractions
         selected_current = baseline_current
         invalid_group = baseline_invalid_group
     rebuild_pending = bool(destructive_reset and not destructive_rebuild["ready"])
@@ -1867,6 +1910,9 @@ def detect_vcp_structure(
 
     if confirmed_contractions:
         conditions.append(f"历史扫描共{len(confirmed_contractions)}轮确认收缩")
+    excluded_trend_count = len(raw_contractions) - len(trend_contractions)
+    if excluded_trend_count:
+        conditions.append(f"历史MA120趋势中断，排除分界及之前{excluded_trend_count}轮收缩")
     if provisional_contraction:
         right_days = provisional_contraction["right_confirm_days"]
         required_days = provisional_contraction["required_right_confirm_days"]
@@ -1995,7 +2041,7 @@ def detect_vcp_structure(
     # Extension types strengthen an existing valid VCP only. They never create
     # a structure, change its stage, or revive a group rejected by base/risk rules.
     if has_structure and post_breakout_state == "PRE_BREAKOUT":
-        contraction_extensions = detect_contraction_extensions(df, contractions, current)
+        contraction_extensions = detect_contraction_extensions(df, groupable_contractions, current)
         extension_cfg = CONTRACTION_CFG.get("extensions", {})
         contraction_extension_score = min(
             extension_cfg.get("max_total_bonus", 0),
@@ -3798,7 +3844,7 @@ def maybe_call_llm(results, top_n):
     if not results:
         return {"status": "skipped", "reason": "no_results", "reviews": []}
     api_key = os.environ.get("DEEPSEEK_API_KEY")
-    model = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
+    model = os.environ.get("DEEPSEEK_MODEL", "deepseek-flash")
     base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
     if not api_key:
         return {"status": "skipped", "reason": "DEEPSEEK_API_KEY missing", "reviews": []}
@@ -3985,8 +4031,8 @@ def main():
     parser.add_argument("--include-reject", action="store_true", help="CSV 中包含未纳入 model2_include 的标的")
     parser.add_argument("--no-cache", action="store_true", help="跳过缓存，重新拉取行情")
     parser.add_argument("--refresh", action="store_true", help="强制刷新候选标的近期日线后重新计算")
-    parser.add_argument("--with-llm", action="store_true", help="可选调用 LLM 对 top 标的做解释")
-    parser.add_argument("--llm-top", type=int, default=10, help="LLM 解释 Top N，默认 10")
+    parser.add_argument("--with-llm", action="store_true", help="兼容参数：LLM 文字解读已暂停，传入也跳过")
+    parser.add_argument("--llm-top", type=int, default=10, help="兼容参数：LLM 文字解读已暂停")
     parser.add_argument("--progress-file", help="进度文件路径（供 daily.py 流水线使用）")
     args = parser.parse_args()
 
@@ -4018,11 +4064,9 @@ def main():
         print("提示：强制从主备源刷新候选标的近期日线")
 
     results, stats = process_codes(codes, today_yy, run_date, use_cache=use_cache, progress_file=args.progress_file)
-    llm_results = [r for r in results if should_write_to_quant(r, include_reject=args.include_reject)]
-    llm_results.sort(key=lambda x: x["structure_score"], reverse=True)
-    llm_payload = {"status": "skipped", "reason": "not_requested", "reviews": []}
+    llm_payload = {"status": "skipped", "reason": "disabled", "reviews": []}
     if args.with_llm:
-        llm_payload = maybe_call_llm(llm_results, args.llm_top)
+        print("提示：Quant LLM 文字解读已暂停，跳过 --with-llm")
 
     payload = {
         "meta": {

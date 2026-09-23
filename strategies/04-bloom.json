@@ -90,6 +90,7 @@
     "allow_medium_risk_for_medium_priority": true
   },
   "reporting": {
+    "llm_enabled": false,
     "top_candidates": 20,
     "section_limit": 30,
     "human_review_limit": 12,

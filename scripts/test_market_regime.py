@@ -8,7 +8,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pandas as pd
+
 from scripts import market_regime
+from scripts.data.tdx_block_data import TDXBlockSource
 
 from scripts.market_regime import (
     classify_news_phase,
@@ -52,6 +55,34 @@ def sector(name, rel1, rel5, rel20, breadth, volume, density, kind="gn"):
 
 
 class DailyMainlineTests(unittest.TestCase):
+    def test_tdx_uses_separate_xdxr_probe_for_corporate_actions(self):
+        class FakeQuotes:
+            def index(self, **_kwargs):
+                return pd.DataFrame()
+
+            def xdxr(self, **_kwargs):
+                return pd.DataFrame([{"category": 1}])
+
+        fake = FakeQuotes()
+        with patch("scripts.data.tdx_block_data.probe_servers", return_value=[("127.0.0.1", 7709)]), \
+             patch("scripts.data.tdx_block_data.Quotes.factory", return_value=fake):
+            source = TDXBlockSource()
+            self.assertIs(source._corporate_action_client(), fake)
+            self.assertEqual(len(source.fetch_corporate_actions("000017")), 1)
+
+    def test_tdx_xdxr_probe_falls_back_to_cached_servers(self):
+        class FakeQuotes:
+            def xdxr(self, **_kwargs):
+                return pd.DataFrame([{"category": 1}])
+
+        fake = FakeQuotes()
+        with patch("scripts.data.tdx_block_data.probe_servers", side_effect=RuntimeError("already consumed")), \
+             patch("scripts.data.market_data.TDXSource._load_cached_servers", return_value=[("127.0.0.2", 7709)]), \
+             patch("scripts.data.tdx_block_data.Quotes.factory", return_value=fake) as factory:
+            source = TDXBlockSource()
+            self.assertIs(source._corporate_action_client(), fake)
+            factory.assert_called_once_with(market="std", server=("127.0.0.2", 7709), timeout=10)
+
     def test_market_liquidity_overlay_is_separate_from_market_state(self):
         self.assertEqual(classify_market_liquidity(1.15, 65, 58)["overlay_label"], "放量扩散")
         self.assertEqual(classify_market_liquidity(1.15, 40, 42)["overlay_label"], "放量承压")
@@ -233,6 +264,8 @@ class DailyMainlineTests(unittest.TestCase):
                  "leaders": [{"code": "300001"}]}
         result = daily_mainline_fallback({"blocks": [block], "stocks": []}, {"status": "skipped"}, "test")
         self.assertNotIn("leaders", result["strong_blocks"][0])
+        self.assertEqual(result["strong_stocks"][0]["code"], "300001")
+        self.assertEqual(result["strong_stocks"][0]["selected_block_names"], ["AI应用"])
 
     def test_news_phase_respects_a_share_session_timeline(self):
         as_of = "2026-07-31"
@@ -297,7 +330,39 @@ class DailyMainlineTests(unittest.TestCase):
             {"candidate_block_ids": ["gn:核电", "gn:电网"]},
             {"candidate_block_ids": ["gn:风电"]},
         ]
-        self.assertEqual(daily_mainline_trigger_topics({"blocks": blocks, "stocks": stocks}, 3), ["核电", "电网", "风电"])
+        self.assertEqual(daily_mainline_trigger_topics({"blocks": blocks, "stocks": stocks}, 3), ["风电", "核电", "电网"])
+
+    def test_unclear_preserves_market_candidates_without_claiming_catalyst(self):
+        blocks = []
+        stocks = []
+        for i, name in enumerate(["种业", "种植业"]):
+            code = str(i)
+            block_id = "gn:" + name
+            stocks.append({"code": code, "candidate_block_ids": [block_id],
+                "name": name, "return_1": 5, "rps1_market": 99, "rps5_market": 90,
+                "volume_ratio_20": 2, "daily_strength_score": 99})
+            blocks.append({"block_id": block_id, "block_type": "gn", "block_name": name,
+                "rank_1": i + 1, "daily_score": 99, "relative_strength_1": 5,
+                "median_return_1": 5, "up_breadth": 100, "volume_activity": 2,
+                "daily_strong_density": 80, "qualified": True, "leaders": [stocks[-1]]})
+        parsed = {"status": "unclear", "name": "当日无清晰主线", "core_event": "未核实事件",
+            "narrative_logic": "农业板块形成共振，但现有资讯不足以核验催化。",
+            "strong_block_ids": [], "strong_stock_codes": [], "evidence_titles": []}
+        from unittest.mock import Mock
+        response = Mock()
+        response.json.return_value = {"choices": [{"finish_reason": "stop",
+            "message": {"content": json.dumps(parsed)}}]}
+        with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test"}), patch.object(market_regime.requests, "post", return_value=response):
+            result = market_regime.call_daily_mainline_analysis("2026-09-17",
+                {"blocks": blocks, "stocks": stocks, "qualified_count": 2},
+                {"status": "fetched", "items": [{"title": "参考资讯"}]})
+        self.assertEqual(len(result["strong_blocks"]), 2)
+        self.assertEqual(len(result["strong_stocks"]), 2)
+        self.assertEqual(result["status"], "unclear")
+        self.assertEqual(result["catalyst_status"], "unconfirmed")
+        self.assertEqual(result["selection_basis"], "market_candidates")
+        self.assertEqual(result["evidence"], [])
+        self.assertNotIn("未核实事件", result["core_event"])
 
     def test_catalyst_entities_rank_by_context_frequency(self):
         raw = [

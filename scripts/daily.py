@@ -34,6 +34,7 @@ from scripts.shared import PROJECT_ROOT, default_pipeline_date
 from scripts.progress_utils import ProgressTracker
 from scripts.io_utils import FileLock, LockBusyError
 from scripts.daily_ai_report import SCHEMA_VERSION as AI_REPORT_SCHEMA_VERSION
+from scripts.data.strategy_data_store import connect as connect_strategy_db, pool_tracking_pending_count
 
 PROGRESS_DIR = Path(PROJECT_ROOT) / ".tmp"
 DAILY_LOCK_PATH = PROGRESS_DIR / "locks" / "daily.lock"
@@ -264,6 +265,11 @@ def verify_pipeline_outputs(date_yy):
         root / "reports" / "ai_daily" / f"20{date_yy[:4]}" / f"huaxin_quant_ai_report_{date_yy}.json",
     ]
     missing = [str(path.relative_to(root)) for path in required if not path.exists()]
+    expected_date = datetime.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
+    with connect_strategy_db() as strategy_conn:
+        pending_tracking = pool_tracking_pending_count(strategy_conn, expected_date)
+    if pending_tracking:
+        missing.append(f"Pool候选生命周期待收口:{pending_tracking}")
     index_path = root / "dashboard" / "data" / "index.js"
     if not index_path.exists():
         missing.append("dashboard/data/index.js")
@@ -281,7 +287,6 @@ def verify_pipeline_outputs(date_yy):
     if capital_path.exists():
         try:
             meta = (json.loads(capital_path.read_text(encoding="utf-8")).get("meta") or {})
-            expected_date = datetime.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
             if meta.get("trade_date") != expected_date:
                 missing.append(f"capital observer 日期:{meta.get('trade_date')}")
             if meta.get("fetch_enabled") is not True:
@@ -330,7 +335,6 @@ def verify_pipeline_outputs(date_yy):
     if ai_report_path.exists():
         try:
             ai_report = json.loads(ai_report_path.read_text(encoding="utf-8"))
-            expected_date = datetime.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
             if ai_report.get("schema_version") != AI_REPORT_SCHEMA_VERSION:
                 missing.append(f"AI日报 schema:{ai_report.get('schema_version')}")
             if ai_report.get("report_date") != expected_date:

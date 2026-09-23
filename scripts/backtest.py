@@ -223,11 +223,11 @@ def load_corporate_actions(code: str, through_date: str | None = None) -> list[d
                 return payload.get("actions", [])
     try:
         global _CORPORATE_ACTION_SOURCE
-        from scripts.data.market_data import TDXSource
+        from scripts.data.tdx_block_data import TDXBlockSource
 
         if _CORPORATE_ACTION_SOURCE is None:
-            _CORPORATE_ACTION_SOURCE = TDXSource()
-        frame = _CORPORATE_ACTION_SOURCE._get_client().xdxr(symbol=code)
+            _CORPORATE_ACTION_SOURCE = TDXBlockSource()
+        frame = _CORPORATE_ACTION_SOURCE.fetch_corporate_actions(code)
         actions = []
         for _, row in frame.iterrows():
             if int(row.get("category") or 0) != 1:

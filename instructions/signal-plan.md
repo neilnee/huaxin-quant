@@ -12,6 +12,8 @@
 
 Signal Plan 只做次日量价计划，不重新识别 VCP，不替代模型二买点判定，不输出最终交易动作。
 
+当前暂停 LLM 计划说明：`reporting.llm_enabled=false`，不发送说明生成请求；调用层返回 `status=skipped`、`reason=disabled`、`requested=0`、`returned=0`。页面与报告继续使用确定性量价说明，计划价格、量能和失效条件保持原计算规则。`--no-llm` 参数继续兼容。
+
 Signal Plan 负责：
 
 - 消费模型二结构化 JSON。
@@ -68,6 +70,9 @@ Signal Plan 不负责：
 
 ### Dashboard 板块环境与仓位建议
 
+实现边界核对（2026-09-08）：本节计算当前位于 scripts/dashboard_signals.py，参数来自 04-signal-plan.json 的 position_guidance。它尚无账户总资产/单票目标额度的完整分母契约，也不按失效距离约束风险金额。不得将页面提示描述为已经通过账户风控；独立风险模块与分母定义见 [路线图 R7](../docs/IMPROVEMENT_ROADMAP.md)，尚未实现。
+
+
 信号发现页在不改写模型二买点和 Signal Plan 结果的前提下，生成一层确定性的环境仓位建议。该建议不调用 LLM，不读取持仓或估值，只使用同日已经存在的数据：
 
 ```text
@@ -120,7 +125,7 @@ market/sector_heat_<YYMMDD>.csv
 
 ## 二、输入
 
-Signal Plan 以模型二 JSON 为权威输入：
+Signal Plan 优先读取策略库中同日 Quant 文档；以下 JSON 是兼容输入。策略库的事务、修订与文件回退边界见 [strategy-data.md](strategy-data.md)：
 
 ```text
 cache/quant_runs/quant_<YYMMDD>.json

@@ -1,7 +1,7 @@
 # 模型四：Tracker 总控指令卡
 
 - **版本管理**: 由 Git 分支与提交历史管理
-- **最近更新**: 2026-07-09
+- **最近更新**: 2026-09-08（文档对齐，策略不变）
 - **策略配置**: `strategies/04-tracker.json`
 - **核心目标**: 模型四是多个独立信号模块的统一编排层。tracker 本身不做信号判断、不拉数据、不算指标，只负责调度子模块运行 + 生成合并日报。
 
@@ -37,7 +37,7 @@ tracker 内部流程：
 1. 定位 quant_<YYMMDD>.json
 2. 调 Bloom  →  写 bloom_state / bloom_events / bloom_input / bloom_<date>.md
 3. 调 Plan   →  写 signal_plan_<date>.json / signal_plan_<date>.md
-4. 读两边 dict，交叉合并 → 写 tracker/tracker_<date>.md
+4. 读两边 dict，交叉合并 → 写 tracker/花期策览_<date>.md
 ```
 
 tracker 不重复计算，不修改子模块逻辑。子模块仍可独立运行。
@@ -80,8 +80,11 @@ AI研读数据包必须在市场、资金、VCP、信号四类 Dashboard 数据�
 
 ## 四、输入
 
+核心策略权威存储为 cache/strategy/strategy_data.sqlite，子模块优先读取已提交文档与状态；下列文件保留兼容入口。Tracker 不另维护一份权威生命周期，见 [strategy-data.md](strategy-data.md)。
+
+
 ```text
-cache/quant_runs/quant_<YYMMDD>.json          # 模型二 JSON（唯一上游输入）
+cache/quant_runs/quant_<YYMMDD>.json          # 模型二 JSON（兼容上游输入）
 bloom/state/bloom_state.csv                   # Bloom 跨日状态（由 Bloom 模块读写）
 bloom/state/bloom_events.jsonl                # Bloom 事件流水
 ```

@@ -39,15 +39,20 @@ from scripts.data.strategy_data_store import (
     document_dates as strategy_document_dates,
     load_all_bloom_events,
     load_bloom_state,
+    load_pool_tracking_rows,
     load_document as load_strategy_document,
     save_bloom,
+    save_pool_tracking_rows,
 )
+from scripts.data.pool_tracking import finalize_tracking_rows
 
 
 BLOOM_STRATEGY_FILE = "04-bloom.json"
 
 CONFIG, STRATEGY_PATH = load_strategy_config(BLOOM_STRATEGY_FILE)
 STRATEGY_VERSION = CONFIG["strategy_version"]
+POOL_CONFIG, _ = load_strategy_config("01-pool.json")
+POOL_TRACKING_CONFIG = POOL_CONFIG.get("expansion_pool", {}).get("tracking", {})
 
 QUANT_RUNS_DIR = Path(PROJECT_ROOT) / CONFIG["inputs"]["quant_run_dir"]
 BLOOM_STATE_PATH = Path(PROJECT_ROOT) / CONFIG["inputs"]["state_path"]
@@ -1090,7 +1095,7 @@ def call_llm_insights(watching_rows, quant_results=None, progress_file=None):
             "returned": 0,
         }
 
-    model = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
+    model = os.environ.get("DEEPSEEK_MODEL", "deepseek-flash")
     base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
     status = {
         "status": "pending",
@@ -1305,10 +1310,12 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False, progres
     # ── LLM 解读：只为达到独立分数门槛的重点观察标的生成自然语言洞察 ──
     watching = sections.get("watching", [])
     llm_min_score = safe_float(CONFIG.get("reporting", {}).get("llm_min_structure_score"), 70.0)
-    llm_watching = [r for r in watching if should_call_llm_insight(r)]
+    llm_enabled = CONFIG.get("reporting", {}).get("llm_enabled", False)
+    llm_watching = [r for r in watching if should_call_llm_insight(r)] if llm_enabled else []
     llm_status = {
         "status": "skipped",
-        "reason": f"no watching rows at or above structure score {fmt_num(llm_min_score)}",
+        "reason": (f"no watching rows at or above structure score {fmt_num(llm_min_score)}"
+                   if llm_enabled else "disabled"),
         "requested": 0,
         "returned": 0,
         "minimum_structure_score": llm_min_score,
@@ -1725,6 +1732,22 @@ def main():
         bloom = load_strategy_document(strategy_conn, "bloom", bloom["summary"]["date"])
         if not args.no_state_update:
             new_state = load_bloom_state(strategy_conn, bloom["summary"]["date"])
+            tracking_rows = load_pool_tracking_rows(strategy_conn, trade_date)
+            if tracking_rows and POOL_TRACKING_CONFIG.get("enabled", False):
+                quant_by_code = {
+                    normalize_code(row.get("code")): row
+                    for row in payload.get("results", [])
+                    if normalize_code(row.get("code"))
+                }
+                finalized_tracking = finalize_tracking_rows(
+                    trade_date,
+                    tracking_rows.values(),
+                    quant_by_code,
+                    new_state,
+                    int(POOL_TRACKING_CONFIG["rebuild_observation_trade_days"]),
+                    bool(POOL_TRACKING_CONFIG.get("retain_data_issue", True)),
+                )
+                save_pool_tracking_rows(strategy_conn, trade_date, finalized_tracking)
             all_events = load_all_bloom_events(strategy_conn)
 
     if not args.no_state_update:

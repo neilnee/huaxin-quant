@@ -139,6 +139,7 @@ def target_row(row, date_iso):
     return {
         "code": code,
         "name": str(row.get("name") or "").strip(),
+        "date": date_iso,
         "selection": selection,
         "model2_stage": stage,
         "structure_score": row.get("structure_score", ""),

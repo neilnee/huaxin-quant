@@ -1,7 +1,7 @@
 # 模型二：量价精筛模型（自执行指令）
 
 - **版本管理**: 由 Git 分支与提交历史管理，文件名不再携带版本号
-- **最近更新**: 2026-09-01（model2_quant_v30）
+- **最近更新**: 2026-09-15（model2_quant_v32）
 - **核心目标**: 在模型一基本面候选池中，寻找 VCP 蓄力结构和可交易触发，输出可复现、可回测、可供模型三/四复用的结构化量价结果。
 - **核心哲学**: 基本面先过滤烂公司，模型二只判断资金行为和价格位置。脚本负责确定性计算，LLM 只做可选解释，不参与结构阶段或交易触发判定。
 - **输入**: `pool/pool_<YYMMDD>.csv`，或命令行指定 `--code/--codes`
@@ -50,7 +50,7 @@ python3 scripts/quant_filter.py --code 300604 --json
 | 模型三 | 估值锚点，判断贵便宜 |
 | 模型四 | 结合估值和持仓执行交易动作 |
 
-LLM 失败不能影响主流程。默认不调用 LLM。
+当前暂停 Quant 的 LLM 文字解读，不发送解释请求；`--with-llm` / `--llm-top` 仅保留命令行兼容性，传入也跳过。输出 `llm.status=skipped`、`reason=disabled`。结构识别、评分和触发判定继续由脚本执行。本文其他可选 LLM 说明作为恢复后的接口约定。
 
 ### 策略配置边界
 
@@ -197,6 +197,8 @@ VCP_MATURE / VCP_TIGHT 结构已经成立
 
 ### 交易触发仓位路径
 
+以下是模型二量价侧的示意提示，不是自动加减仓程序：模块不读取账户或真实持仓，不能推断已买入。Dashboard 另按 Signal Plan 指令中的同日环境折算 A/B 条件提示；账户分母与组合风险预算仍待完善。
+
 ```text
 PULLBACK_BUY 买入 20%-30%
 → 若直接突破且触发 BREAKOUT_BUY：加至 40%-50%
@@ -228,7 +230,7 @@ SQLite 日线库 → 缺口检测与补数 → 通达信 TDX/mootdx → 妙想 A
 
 免费源对送转与极小额现金分红的复权因子可能存在交易所舍入差异：归一化因子相对误差不超过 `1%`、原始收盘价误差不超过 `0.15%` 视为通过；超过任一阈值才记为 `CONFLICT`。阈值调整时允许根据已保存的误差重新分类，不重复请求核验源。
 
-免费核验适配器依赖 `baostock`（项目虚拟环境执行 `.venv/bin/pip install baostock`）。依赖缺失或服务暂时不可用时记录 `PENDING`，不得回写或伪造核验成功。
+免费核验适配器依赖 `baostock`（项目虚拟环境执行 `.venv/bin/pip install baostock`）。登录连接须设置 10 秒网络超时；登录失败后本轮不再重复连接。依赖缺失、超时或服务暂时不可用时记录 `PENDING`，不得回写或伪造核验成功。
 
 复权状态口径：
 
@@ -249,8 +251,8 @@ CONFLICT   复权因子或原始价格超出容差；该标的本轮不得进入
 数据库只保存原始日线和独立公司行为记录，不保存复权日线或指标列；复权价格与指标每次实时计算，避免锚点或规则变化后旧结果污染。数据库命中必须同时满足：
 
 ```text
-文件名日期 = 当前运行日期；或运行日缓存未命中时，为该股票不晚于运行日的最近可用缓存
-缓存内最后一条 K 线日期 >= 目标交易日
+按股票代码与 as_of_date 查询 SQLite，返回窗口不含 as_of_date 之后的行情
+目标日覆盖与历史窗口长度满足数据服务要求；不足时进入补数/失败处理
 ```
 
 若数据库中目标标的未覆盖运行日，脚本必须补数；若回源返回了目标交易日之后的数据，数据层必须先截断到 `<= as_of_date` 再写入，防止复盘指定日期时混入未来 K 线。
@@ -542,6 +544,21 @@ support_price / invalid_price / breakout_level
 ```
 
 ### VCP 结构过程监控
+
+历史收缩段趋势资格（v32）：原始收缩识别完成后、结构选组之前，按每段
+起点（收盘摆动高点）的收盘价与**该日起点 MA120**比较。低于 MA120 的段
+作为趋势中断依据。以最后一个不合格段的结束日为分界，它及之前的所有段
+不参与结构选组、枢纽、计数、扩展加分或突破判断，只保留起点在分界之后的段。
+不得跳过不合格段拼接两侧结构，也不得因右侧段被排除而回选更老的结构。
+后来的站回均线不能重新激活分界之前的段；尚无分界后收缩时允许没有标准 VCP。
+等于均线时保留，不要求段内低点或每个交易日都在均线上，不追加斜率门槛。
+已确认段与右端暂定段使用同一规则。MA120 尚未形成时沿用现有缺失兼容口径，
+保留但注明未验证，不将其描述为已通过历史趋势验证。
+原始 `contractions` 保留审计字段 `historical_trend_eligible`、
+`historical_trend_reason`（AT_OR_ABOVE_MA120 / BELOW_MA120 / MA120_UNAVAILABLE /
+BEFORE_TREND_RESET）、`historical_trend_boundary_date`（最后不合格段结束日，无则 null）、
+`historical_trend_anchor_date`、`historical_trend_anchor_close`、`historical_trend_ma120`；
+`contraction_group` 等有效结构字段只消费过滤后的段。当前交易日的下述基础及背景判断不变。
 
 基础条件：
 
@@ -1303,11 +1320,11 @@ setup_plan_inputs.retest:
 
 ```text
 DEEPSEEK_API_KEY=...
-DEEPSEEK_MODEL=deepseek-v4-flash
+DEEPSEEK_MODEL=deepseek-flash
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 ```
 
-本地 `.env` 不进入 Git。默认模型使用 `deepseek-v4-flash`。
+本地 `.env` 不进入 Git。默认模型使用 `deepseek-flash`，对应 DeepSeek-V4.1-Flash；旧名称 `deepseek-v4-flash` 只作为官方临时兼容别名，不作为项目默认值。
 
 DeepSeek 调用使用 OpenAI 兼容的 Chat Completions 接口，并启用 JSON Output：
 
@@ -1424,3 +1441,9 @@ Bloom 详细规则见 `instructions/signal-bloom.md`。
 - 所有核心判断可从 CSV/JSON 中复盘，不依赖对话上下文。
 
 待优化项见 `TODO.md`。历史版本由 Git 追溯，复盘记录见 `dev_logs/`。
+
+## 已知待改进边界（2026-09-08）
+
+volume_pattern_for_contractions 当前先判断近期 drying，再判断段均量 failed，因此可能出现段均量扩大而输出 drying 的情况。分离段均量和近期量能是 [路线图 R2](../docs/IMPROVEMENT_ROADMAP.md) 的待实现任务；本次只记录现状，不改变分数、阶段或买点权限。
+
+setup_signal/实际 A–D 与回测 Plan 兑现/A–REGULAR 是不同契约，详见 [backtest.md](backtest.md)。不能用当前 Plan 回测替代全部模型二信号的效果评价。

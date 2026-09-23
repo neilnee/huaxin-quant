@@ -57,6 +57,7 @@ class TDXBlockSource:
         self.timeout = timeout
         self.chunk_size = chunk_size
         self._quotes = None
+        self._action_quotes = None
 
     def _client(self):
         if self._quotes is not None:
@@ -91,6 +92,33 @@ class TDXBlockSource:
         except Exception as exc:
             errors.append(str(exc))
         raise RuntimeError(f"通达信 HQ 服务器连接失败: {'; '.join(errors[:3])}")
+
+    def _corporate_action_client(self):
+        """Select an HQ server by its XDXR capability, independently of index bars."""
+        if self._action_quotes is not None:
+            return self._action_quotes
+        from scripts.data.market_data import TDXSource
+
+        try:
+            servers = probe_servers(index="HQ", limit=5, sync=False)
+        except Exception:
+            servers = []
+        if not servers:
+            # mootdx consumes its process-global host list during async probing.
+            # A later capability probe in the same daily run must use the
+            # persisted candidates from the first successful probe.
+            servers = TDXSource._load_cached_servers()
+        errors = []
+        for ip, port in servers:
+            try:
+                quotes = Quotes.factory(market="std", server=(ip, port), timeout=self.timeout)
+                probe = quotes.xdxr(symbol="000001")
+                if probe is not None and not probe.empty:
+                    self._action_quotes = quotes
+                    return quotes
+            except Exception as exc:
+                errors.append(f"{ip}:{port} {exc}")
+        raise RuntimeError(f"通达信 XDXR 服务器连接失败: {'; '.join(errors[:3])}")
 
     def fetch_block_file(self, filename: str) -> BlockFile:
         quotes = self._client()
@@ -162,7 +190,7 @@ class TDXBlockSource:
 
     def fetch_corporate_actions(self, code: str):
         """Return the raw TDX XDXR frame; normalization belongs to the data layer."""
-        return self._client().xdxr(symbol=code)
+        return self._corporate_action_client().xdxr(symbol=code)
 
     def fetch_security_lists(self):
         quotes = self._client()

@@ -22,6 +22,7 @@ cache/zixuan/managed_watchlist.csv（旧版迁移来源，仅首次使用）
 ```
 
 - `target_watchlist.csv` 是系统受管账本：最近一次成功同步后，由工作流添加且未来有权删除的股票及其入选原因。
+- 账本 `date` 列记录本次同步消费的 Bloom 交易日期（`YYYY-MM-DD`）；当日目标写入账本时不得留空。
 - 首次升级时，若 `target_watchlist.csv` 不存在，读取旧版 `managed_watchlist.csv` 作为一次性迁移来源。
 - 两张表均为本地运行数据，不纳入 Git。
 
@@ -64,6 +65,7 @@ bloom_status=COOLDOWN，post_breakout_state=POST_BREAKOUT_HOT / POST_BREAKOUT_RE
 - 对当日目标集合按重点排序的反向顺序逐只调用添加接口：低权重标的先添加，高权重标的后添加，使高权重标的最终更靠前。
 - 重点排序从高到低为：已触发买点 > 突破后跟踪（按 `structure_breakout_score` 降序）> VCP_TIGHT > VCP_MATURE > FORMING / EARLY（按当日结构分降序）；同级按代码排序。
 - 添加成功后写入受管账本。
+- 写入的 `date` 与本次 Bloom 日期一致，用于核对账本属于哪一天的目标集合。
 - 如果添加接口提示该股票已存在或调用失败，不接管删除权，并由下一次工作流重新尝试添加。
 
 ### 账本更新

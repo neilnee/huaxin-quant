@@ -478,6 +478,7 @@ Bloom 与 Signal Plan 已实现；Position 已实现独立账本。后续优先�
 - [x] AI 日报协议健壮性：VCP板块机器字段严格类型化，信号与结构增加稳定关联标识，Bloom来源/页面状态计数明确互斥口径，并补齐主要决策枚举字典
 - [x] AI 日报协议冻结收尾：升级至 v1.1，按路径声明信号/Plan/VCP绝对成交量均以手计并明确100股/手，增加 LLM 原文可用性标记及交易价格 canonical 层声明
 - [x] AI 日报接入每日工作流：四类Dashboard分析数据全部发布后确定性生成月目录报告，作为阻断型必需产物纳入随后完整性核验与进度监控
+- [x] 自选同步账本补齐 Bloom 交易日期，保留每日目标集合的日期审计口径。
 - [x] Bloom 突破后状态映射修复（`structure_stage=NONE` 时优先消费 `post_breakout_state`，避免误兜底为 `FORMING`）
 - [x] VCP 突破后生命周期跟踪：页面“全部”改为“突破前跟踪”，新增 HOT/RETEST/CONSOLIDATING 独立列表，FAILED/EXPIRED 当日退出；Bloom、自选同步统一直接消费模型二突破后状态
 - [x] 突破后结构分冻结：模型二按突破日前时间锚点固化原 VCP `structure_breakout_score`，Bloom 与 VCP 页面只传递和展示冻结分，不再显示当日重扫分

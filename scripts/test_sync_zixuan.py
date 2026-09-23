@@ -23,6 +23,7 @@ class SyncZixuanTargetTests(unittest.TestCase):
             post_breakout_state="POST_BREAKOUT_HOT", structure_breakout_score="81",
         ), "2026-08-20")
         self.assertEqual(result["selection"], "POST_BREAKOUT_TRACKING")
+        self.assertEqual(result["date"], "2026-08-20")
         self.assertEqual(result["structure_breakout_score"], "81")
 
     def test_terminal_post_breakout_state_is_not_selected_by_rescanned_stage(self):

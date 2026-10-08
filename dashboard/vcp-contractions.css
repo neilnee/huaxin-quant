@@ -85,8 +85,32 @@
   color: #d7bbf7;
 }
 
+.vcp-score-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: 1fr;
+}
+
+.vcp-score-grid > .vcp-score-item {
+  min-height: 68px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.vcp-score-value {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.vcp-score-value small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 400;
+}
+
 .vcp-score-grid > .score-extension {
-  grid-column: 1 / -1;
   border-color: #51426d;
   background: #1d1929;
 }

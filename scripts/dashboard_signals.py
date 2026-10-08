@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Publish Model 2 setup triggers and next-day plans for the dashboard."""
 from __future__ import annotations
-import argparse, csv, json, math, os, re, sqlite3, sys
+import argparse, csv, json, math, os, re, shutil, sqlite3, sys
 from datetime import datetime
 from pathlib import Path
 sys.path.insert(0, str(Path(os.path.abspath(__file__)).parents[1]))
@@ -12,16 +12,17 @@ from scripts.data.capital_data_service import CapitalDataService
 from scripts.data.capital_data_sources import MiaoxiangCapitalSource, RequestBudget
 from scripts.plan_realization import realized_events_for_date
 from scripts.dashboard_index import update_dashboard_module
+from scripts.io_utils import atomic_write_text
 
 ROOT=Path(PROJECT_ROOT); RUNS=ROOT/"cache"/"quant_runs"; PLAN_RUNS=ROOT/"signal_plan"; POOL_DIR=ROOT/"pool"; SIGNAL_FIN_DIR=ROOT/"cache"/"signal_fundamentals"; MARKET_DB=ROOT/"cache"/"market_data"/"market_data.sqlite"; MARKET_DIR=ROOT/"market"; MARKET_CONTEXT_DIR=MARKET_DIR/"data"; OUT=ROOT/"dashboard"/"data"; START="260506"
 PLAN_CONFIG,_=load_strategy_config("04-signal-plan.json"); POSITION_CFG=PLAN_CONFIG["position_guidance"]
 FIELDS=("code","name","structure_stage","setup_signal","action_hint","suggested_position","setup_pattern_score","setup_score","setup_quality","setup_structure_score","setup_structure_anchor_date","setup_structure_base","setup_action_score","setup_current_action_score","setup_breakout_action_score","setup_score_components","setup_reasons","setup_misses","setup_risk_flags","structure_score","structure_risk_score","structure_risk_flags","prior_breakout_bonus_score","prior_breakout_bonus_reasons","prior_breakout_context_tag","close","MA20","MA60","pivot_price","structure_pivot","support_price","invalid_price","breakout_level","last_contraction_low","pivot_distance","distance_ma20","volume","vol_ma5","vol_ma20","volume_dry_up","vol_ratio","volume_pattern","chg_5","chg_20","setup_plan_inputs","reason")
 MARKET_ADVICE={
- "OFFENSIVE":("广泛参与","supportive","趋势与广度支持更广泛的板块机会，但仍须等待个股量价条件成立并遵守失效位。"),
- "SELECTIVE":("聚焦强势","selective","市场机会偏结构化，只对转强和主线板块计算条件仓位，避免只凭 VCP 形态执行。"),
- "RECOVERY_WATCH":("只选主线","caution","市场处于修复期，只有主线板块保留低仓条件预案，其余板块继续观察。"),
- "CONSOLIDATING":("暂停参与","caution","市场方向尚未明确，所有板块条件仓位归零，VCP 只用于建立观察顺序。"),
- "DEFENSIVE":("防守观望","blocked","市场处于弱势环境，所有板块条件仓位归零，等待波动、广度和趋势修复。"),
+ "OFFENSIVE":("广泛参与","supportive","单只计划额度最高使用80%，保留后手；板块资格和个股量价条件仍须分别成立。"),
+ "SELECTIVE":("结构参与","selective","单只计划额度使用40%—60%，板块资格和个股量价条件仍须分别成立。"),
+ "RECOVERY_WATCH":("修复参与","caution","单只计划额度使用20%—40%，板块资格和个股量价条件仍须分别成立。"),
+ "CONSOLIDATING":("小额参与","caution","单只计划额度使用10%—20%，板块资格和个股量价条件仍须分别成立。"),
+ "DEFENSIVE":("防御试探","caution","单只计划额度使用10%—20%，板块资格和个股量价条件仍须分别成立。"),
 }
 MARKET_LABEL_CODES={"趋势扩散":"OFFENSIVE","结构性强势":"OFFENSIVE","结构行情":"SELECTIVE","结构分化":"SELECTIVE","修复期":"RECOVERY_WATCH","修复观察":"RECOVERY_WATCH","弱势震荡":"CONSOLIDATING","弱势收敛":"CONSOLIDATING","防御期":"DEFENSIVE","弱势下行":"DEFENSIVE"}
 SOURCE_LABELS={
@@ -81,13 +82,6 @@ def sector_notices(date):
  return notices
 def default_sector_notice():
  return {"sector_name":"板块待确认","sector_state":"状态待确认","sector_phase":None,"sector_health":"数据不足","sector_health_level":None,"sector_health_score":None,"sector_policy_tier":None,"sector_data_status":None,"sector_rank_20":None,"sector_history_basis":None}
-def position_range(setup_signal,quality,factor):
- base=(POSITION_CFG["base_position_pct"].get(setup_signal) or {}).get(quality)
- if not base: return None,None,None
- step=float(POSITION_CFG["rounding_step_pct"])
- adjusted=[math.floor(float(value)*float(factor)/step+1e-9)*step for value in base]
- if adjusted[1]<step: adjusted=[0.0,0.0]
- return list(base),adjusted,float(factor)
 def position_range_text(values):
  if not values or values[1]<=0: return "观察"
  low,high=(int(value) if float(value).is_integer() else value for value in values)
@@ -96,29 +90,32 @@ def position_range_text(values):
  return f"{low}%-{high}%"
 def position_guidance(row,market,sector):
  state=market.get("state") or "UNKNOWN"; phase=sector.get("sector_phase")
- ready=sector.get("sector_data_status") in {None,"READY"} and phase in {"NONE","转强","主线","退潮"}
- factor=float((POSITION_CFG["phase_factors"].get(state) or {}).get(phase,POSITION_CFG["unknown_environment_factor"])) if ready else 0.0
+ level=pool_number(sector.get("sector_health_level")); amount=pool_number(POSITION_CFG.get("calculation_amount")); maximum=pool_number(POSITION_CFG.get("maximum_calculation_amount"))
+ level_valid=level is not None and math.isfinite(level) and level.is_integer() and -2<=level<=2
+ ready=sector.get("sector_data_status")=="READY" and sector.get("sector_history_basis")!="current_snapshot_backfill" and phase in POSITION_CFG["sector_allowed_health_levels"] and level_valid and sector.get("sector_health")!="数据不足"
+ eligible=ready and int(level) in POSITION_CFG["sector_allowed_health_levels"][phase]
+ amount_valid=amount is not None and maximum is not None and math.isfinite(amount) and math.isfinite(maximum) and 0<amount<=maximum<=100000
+ raw_range=POSITION_CFG["market_position_pct"].get(state)
+ market_range=[pool_number(value) for value in raw_range] if isinstance(raw_range,list) and len(raw_range)==2 else None
+ if market_range is not None and (any(value is None or not math.isfinite(value) for value in market_range) or not 0<=market_range[0]<=market_range[1]<=80): market_range=None
  phase_label="观察" if phase=="NONE" else phase or "板块待确认"
- common={"market_state":state,"sector_phase":phase,"environment_factor":factor,"position_strategy_version":PLAN_CONFIG["strategy_version"]}
- signal=row.get("setup_signal")
- if row.get("signal_kind")=="PLAN":
-  base_a,adjusted_a,_=position_range(signal,"A",factor); base_b,adjusted_b,_=position_range(signal,"B",factor)
-  if state in {"CONSOLIDATING","DEFENSIVE"}: status,advice,reason="OBSERVE_MARKET","观察（市场弱势）","弱势收敛或弱势下行不配置仓位"
-  elif state not in POSITION_CFG["phase_factors"]: status,advice,reason="OBSERVE_MARKET","观察（市场待确认）","缺少同日有效市场确认状态"
-  elif not ready: status,advice,reason="OBSERVE_SECTOR","观察（板块待确认）","缺少同日有效板块阶段"
-  elif factor<=0: status,advice,reason="OBSERVE_SECTOR",f"观察（{phase_label}）",f"当前市场阶段不开放{phase_label}板块仓位"
-  else: status,advice,reason="PLAN_CONDITIONAL",f"A {position_range_text(adjusted_a)} / B {position_range_text(adjusted_b)}","实际触发后按触发日买点等级与环境重算"
-  return {**common,"position_status":status,"position_advice":advice,"position_reason":reason,"base_position_a":base_a,"base_position_b":base_b,"plan_position_a":adjusted_a,"plan_position_b":adjusted_b,"base_position":None,"adjusted_position":None}
- quality=str(row.get("setup_quality") or "")
- base,adjusted,_=position_range(signal,quality,factor)
- if quality not in POSITION_CFG["eligible_setup_qualities"]: status,advice,reason="OBSERVE_QUALITY",f"观察（{quality or '未评级'}级）","仅 A/B 级买点进入仓位计算"
- elif state in {"CONSOLIDATING","DEFENSIVE"}: status,advice,reason="OBSERVE_MARKET","观察（市场弱势）","弱势收敛或弱势下行不配置仓位"
- elif state not in POSITION_CFG["phase_factors"]: status,advice,reason="OBSERVE_MARKET","观察（市场待确认）","缺少同日有效市场确认状态"
- elif not ready: status,advice,reason="OBSERVE_SECTOR","观察（板块待确认）","缺少同日有效板块阶段"
- elif factor<=0: status,advice,reason="OBSERVE_SECTOR",f"观察（{phase_label}）",f"当前市场阶段不开放{phase_label}板块仓位"
- elif not base: status,advice,reason="OBSERVE_QUALITY","观察（仓位规则缺失）","买点类型与等级未匹配基础仓位"
- else: status,advice,reason="ACTIONABLE",position_range_text(adjusted),f"基础{position_range_text(base)} × 环境{int(round(factor*100))}%"
- return {**common,"position_status":status,"position_advice":advice,"position_reason":reason,"base_position":base,"adjusted_position":adjusted,"base_position_a":None,"base_position_b":None,"plan_position_a":None,"plan_position_b":None}
+ common={"market_state":state,"sector_phase":phase,"sector_health_level":int(level) if level_valid else None,"sector_eligible":bool(eligible),"position_strategy_version":POSITION_CFG["strategy_version"],"position_guidance_mode":"MARKET_RANGE_SECTOR_GATE","position_denominator":POSITION_CFG["position_denominator"],"calculation_amount":amount if amount_valid else None,"normal_maximum_symbols":POSITION_CFG["normal_maximum_symbols"],"market_position_range":market_range,"allocation_amount_range":None,"adjusted_position":None,"plan_position_a":None,"plan_position_b":None}
+ planned=row.get("signal_kind")=="PLAN"; quality=str(row.get("setup_quality") or "")
+ if row.get("setup_signal") not in POSITION_CFG["eligible_setup_signals"]: status,advice,reason="OBSERVE_QUALITY","观察（买点待确认）","未形成支持的买点类型"
+ elif not planned and quality not in POSITION_CFG["eligible_setup_qualities"]: status,advice,reason="OBSERVE_QUALITY",f"观察（{quality or '未评级'}级）","仅实际 A/B 级买点参与，C/D继续观察"
+ elif market_range is None: status,advice,reason="OBSERVE_MARKET","观察（市场待确认）","缺少同日有效市场确认状态"
+ elif not ready: status,advice,reason="OBSERVE_SECTOR","观察（板块待确认）","缺少同日有效板块阶段或趋势"
+ elif not eligible: status,advice,reason="OBSERVE_SECTOR",f"观察（{sector.get('sector_health') or phase_label}）",f"板块{phase_label}与趋势{int(level):+d}不满足参与资格"
+ elif not amount_valid: status,advice,reason="OBSERVE_BUDGET","观察（额度待确认）","单只计划额度须大于0且不超过10万元"
+ else:
+  values=[round(amount*float(value)/100,2) for value in market_range]
+  amount_text=f"≤{values[1]/10000:g}万元" if market_range[0]==0 else f"{values[0]/10000:g}—{values[1]/10000:g}万元"
+  advice=f"{position_range_text(market_range)}（{amount_text}）"
+  status="PLAN_CONDITIONAL" if planned else "ACTIONABLE"
+  if planned: advice="触发后 "+advice
+  reason="板块资格通过；百分比以单只计划额度为分母，金额为目标配置，非追加订单。"+("实际 A/B 级触发后按触发日市场与板块重算。" if planned else "仍须核对个股承接、供给与赔率。")
+  common.update({"allocation_amount_range":values,"adjusted_position":None if planned else list(market_range),"plan_position_a":list(market_range) if planned else None,"plan_position_b":list(market_range) if planned else None})
+ return {**common,"position_status":status,"position_advice":advice,"position_reason":reason}
 def pool_code(value):
  match=re.search(r"\d{6}",str(value or ""))
  return match.group(0) if match else ""
@@ -254,12 +251,34 @@ def build(date,fetch_capital=False,max_mx_requests=None):
   if notice.get("financial_status")!="CORE_VERIFIED": notice.update(signal_financial_notice(date,code) or {})
   sector=dict(sectors.get(code,default_sector_notice())); row.update(notice); row.update(sector); row["capital_support"]=capital.get(code,missing_capital_notice()); row.update(position_guidance(row,market,sector))
  rows.sort(key=lambda r:(r["signal_kind"]!="TRIGGERED", -(r.get("setup_score") or 0), -(r.get("structure_score") or 0), r["code"], r["setup_signal"]))
- return {"meta":{"run_date":raw.get("meta",{}).get("run_date",f"20{date[:2]}-{date[2:4]}-{date[4:]}") ,"source":path.name,"plan_source":plan_path.name if plan_path.exists() else None,"position_strategy_version":PLAN_CONFIG["strategy_version"],"capital_fetch_enabled":fetch_capital,"capital_requests_used":capital_requests,"capital_errors":capital_errors},"market_notice":market,"summary":{"triggered":sum(r["signal_kind"]=="TRIGGERED" for r in rows),"plan_hits":plan_hits,"planned":sum(r["signal_kind"]=="PLAN" for r in rows),"total":len(rows)},"signals":rows}
+ return {"meta":{"run_date":raw.get("meta",{}).get("run_date",f"20{date[:2]}-{date[2:4]}-{date[4:]}") ,"source":path.name,"plan_source":plan_path.name if plan_path.exists() else None,"position_strategy_version":POSITION_CFG["strategy_version"],"capital_fetch_enabled":fetch_capital,"capital_requests_used":capital_requests,"capital_errors":capital_errors},"market_notice":market,"summary":{"triggered":sum(r["signal_kind"]=="TRIGGERED" for r in rows),"plan_hits":plan_hits,"planned":sum(r["signal_kind"]=="PLAN" for r in rows),"total":len(rows)},"signals":rows}
 def publish(date,fetch_capital=False,max_mx_requests=None):
  data=build(date,fetch_capital,max_mx_requests); folder=OUT/f"20{date[:4]}"; folder.mkdir(parents=True,exist_ok=True); target=folder/f"signals_context_{date}.js"
  target.write_text("window.QUANT_DASHBOARD_SIGNALS_CONTEXTS = window.QUANT_DASHBOARD_SIGNALS_CONTEXTS || {};\n"+f"window.QUANT_DASHBOARD_SIGNALS_CONTEXTS[{json.dumps(date)}] = "+json.dumps(data,ensure_ascii=False)+";\n",encoding="utf-8"); write_dashboard_index(); return target
+def refresh_position(date):
+ target=OUT/f"20{date[:4]}"/f"signals_context_{date}.js"
+ source=target.read_text(encoding="utf-8")
+ match=re.search(r'\['+re.escape(json.dumps(date))+r'\]\s*=\s*(\{.*\});\s*$',source,re.S)
+ if not match: raise ValueError(f"invalid signal context: {target.name}")
+ data=json.loads(match.group(1)); iso=datetime.strptime(date,"%y%m%d").strftime("%Y-%m-%d")
+ if data.get("meta",{}).get("run_date")!=iso: raise ValueError("signal context date mismatch")
+ market=market_notice(date); sectors=sector_notices(date)
+ for row in data.get("signals",[]):
+  sector=dict(sectors.get(str(row.get("code","")).zfill(6),default_sector_notice()))
+  for field in ("environment_factor","base_position","base_position_a","base_position_b"):
+   row.pop(field,None)
+  row.update(sector); row.update(position_guidance(row,market,sector))
+ data["market_notice"]=market; data.setdefault("meta",{})["position_strategy_version"]=POSITION_CFG["strategy_version"]
+ backup=ROOT/".tmp"/"position_guidance_refresh"/datetime.now().strftime("%Y%m%d_%H%M%S_%f")/target.name
+ backup.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(target,backup)
+ text=source[:match.start(1)]+json.dumps(data,ensure_ascii=False)+source[match.end(1):]
+ atomic_write_text(target,text)
+ return {"output":str(target),"backup":str(backup),"signals":len(data.get("signals",[])),"position_strategy_version":POSITION_CFG["strategy_version"]}
 def main():
- p=argparse.ArgumentParser();p.add_argument("--date");p.add_argument("--all",action="store_true");p.add_argument("--fetch-capital",action="store_true");p.add_argument("--max-mx-requests",type=int);a=p.parse_args()
+ p=argparse.ArgumentParser();p.add_argument("--date");p.add_argument("--all",action="store_true");p.add_argument("--fetch-capital",action="store_true");p.add_argument("--max-mx-requests",type=int);p.add_argument("--refresh-position",action="store_true",help="仅刷新已发布买点仓位提示并备份，不重算信号");a=p.parse_args()
+ if a.refresh_position:
+  if not a.date or a.all or a.fetch_capital: p.error("--refresh-position requires --date and cannot use --all or --fetch-capital")
+  print(json.dumps(refresh_position(stamp(a.date)),ensure_ascii=False)); return
  dates=sorted(x.stem.rsplit("_",1)[-1] for x in RUNS.glob("quant_*.json") if x.stem.rsplit("_",1)[-1]>=START) if a.all else [stamp(a.date) if a.date else sorted(RUNS.glob("quant_*.json"))[-1].stem.rsplit("_",1)[-1]]
  print(json.dumps({"outputs":[str(publish(d,a.fetch_capital,a.max_mx_requests)) for d in dates]},ensure_ascii=False))
 if __name__=="__main__": main()

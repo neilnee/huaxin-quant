@@ -357,10 +357,12 @@ def refresh_signal_environment(dates: set[str]) -> int:
         for row in payload.get("signals", []):
             code = str(row.get("code", "")).zfill(6)
             sector = dict(sectors.get(code, dashboard_signals.default_sector_notice()))
+            for field in ("environment_factor", "base_position", "base_position_a", "base_position_b"):
+                row.pop(field, None)
             row.update(sector)
             row.update(dashboard_signals.position_guidance(row, market, sector))
         payload["market_notice"] = market
-        payload.setdefault("meta", {})["position_strategy_version"] = dashboard_signals.PLAN_CONFIG["strategy_version"]
+        payload.setdefault("meta", {})["position_strategy_version"] = dashboard_signals.POSITION_CFG["strategy_version"]
         write_context_js(path, "QUANT_DASHBOARD_SIGNALS_CONTEXTS", payload)
         updated += 1
     return updated

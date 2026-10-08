@@ -106,6 +106,8 @@ python3 scripts/sync_zixuan.py --date 260709 --yes
 
 各模块也可独立运行，详见 `instructions/` 目录下各指令卡。
 
+只更新已发布同日买点仓位提示时，可调用 `.venv/bin/python scripts/dashboard_signals.py --date YYMMDD --refresh-position`，原包自动备份到 `.tmp/position_guidance_refresh/`。该命令保留信号事实与资金旁路，不重算工作流，也不替代每日信号资金补查。
+
 调试示例不是补齐今日流程的替代命令集；直接运行 `dashboard_signals.py` 未带 `--fetch-capital` 不满足正式日流程门禁。`sync_zixuan.py --yes` 会实际修改外部受管自选，文档审查不执行此命令。
 
 Tracker 的旧入口会调用 Bloom/Plan 函数重算并写兼容文件，不是只读拼接报告，也未完成独立 CLI 的策略库提交和候选收口；不得用它替代 daily 或重建权威状态。兼容文件恢复使用上文 `strategy_publish.py`，具体边界见 [Tracker 指令](instructions/04-tracker.md)。

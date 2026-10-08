@@ -22,7 +22,7 @@
 | 数据 | [市场数据](../instructions/market-data.md)、[策略存储](../instructions/strategy-data.md)、[资金数据](../instructions/capital-data.md) |
 | 发现 | [Pool](../instructions/01-pool.md)、[Quant](../instructions/02-quant.md) |
 | 结构评分 | [正式V10参考](../instructions/02-quant-score-ref.md)、[接入验收记录](QUANT_V10_INTEGRATION_PLAN.md) |
-| 信号 | [Bloom](../instructions/signal-bloom.md)、[Signal Plan](../instructions/signal-plan.md)、[Tracker](../instructions/04-tracker.md) |
+| 信号 | [Bloom](../instructions/signal-bloom.md)、[Signal Plan](../instructions/signal-plan.md)、[仓位提示参考](../instructions/signal-plan-ref.md)、[Tracker](../instructions/04-tracker.md) |
 | 环境 | [市场与板块](../instructions/market-regime.md)、[资金观测](../instructions/capital-observer.md)、[全球宏观](../instructions/global-macro.md) |
 | 研究与账本 | [估值](../instructions/03-valuation.md)、[持仓](../instructions/signal-position.md)、[信号财务](../instructions/signal-fundamentals.md) |
 | 评估与发布 | [回测](../instructions/backtest.md)、[AI 日报](../instructions/ai-daily-report.md)、[自选同步](../instructions/sync-zixuan.md) |

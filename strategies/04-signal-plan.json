@@ -59,21 +59,26 @@
     ]
   },
   "position_guidance": {
+    "strategy_version": "signal_position_guidance_v2",
     "eligible_setup_qualities": ["A", "B"],
-    "base_position_pct": {
-      "PULLBACK_BUY": {"A": [20, 30], "B": [10, 20]},
-      "BREAKOUT_BUY": {"A": [40, 50], "B": [20, 30]},
-      "RETEST_BUY": {"A": [60, 80], "B": [40, 50]}
+    "eligible_setup_signals": ["PULLBACK_BUY", "BREAKOUT_BUY", "RETEST_BUY"],
+    "position_denominator": "single_stock_calculation_amount",
+    "calculation_amount": 100000,
+    "maximum_calculation_amount": 100000,
+    "normal_maximum_symbols": 3,
+    "market_position_pct": {
+      "OFFENSIVE": [0, 80],
+      "SELECTIVE": [40, 60],
+      "RECOVERY_WATCH": [20, 40],
+      "CONSOLIDATING": [10, 20],
+      "DEFENSIVE": [10, 20]
     },
-    "phase_factors": {
-      "OFFENSIVE": {"NONE": 0.5, "转强": 0.8, "主线": 1.0, "退潮": 0.0},
-      "SELECTIVE": {"NONE": 0.0, "转强": 0.6, "主线": 1.0, "退潮": 0.0},
-      "RECOVERY_WATCH": {"NONE": 0.0, "转强": 0.0, "主线": 0.5, "退潮": 0.0},
-      "CONSOLIDATING": {"NONE": 0.0, "转强": 0.0, "主线": 0.0, "退潮": 0.0},
-      "DEFENSIVE": {"NONE": 0.0, "转强": 0.0, "主线": 0.0, "退潮": 0.0}
-    },
-    "unknown_environment_factor": 0.0,
-    "rounding_step_pct": 5
+    "sector_allowed_health_levels": {
+      "NONE": [1, 2],
+      "转强": [0, 1, 2],
+      "主线": [-1, 0, 1, 2],
+      "退潮": []
+    }
   },
   "capital_support": {
     "lookback_trade_days": 5,

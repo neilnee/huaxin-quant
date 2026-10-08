@@ -31,18 +31,19 @@ vm.runInContext(source.slice(start, end), context);
 const row = {
   code: "000001", name: "测试", signal_kind: "TRIGGERED", setup_signal: "PULLBACK_BUY",
   setup_quality: "A", sector_phase: "NONE", sector_health_level: 1, sector_health: "温和改善",
-  position_guidance_mode: "MARKET_RANGE_SECTOR_GATE", calculation_amount: 100000,
-  market_position_range: [10, 20], sector_eligible: true, normal_maximum_symbols: 3,
-  position_status: "ACTIONABLE", position_advice: "10%-20%（1—2万元）",
+  position_guidance_mode: "MARKET_RANGE_SECTOR_GATE",
+  market_position_range: [10, 20], sector_eligible: true,
+  position_status: "ACTIONABLE", position_advice: "10%-20%",
 };
 context.renderSignalDetail(row);
-assert(detail.innerHTML.includes("单只计划额度 10.00万元"));
+assert(!detail.innerHTML.includes("单只计划额度"));
 assert(detail.innerHTML.includes("市场配置 10%-20%"));
 assert(detail.innerHTML.includes("板块资格 通过"));
-assert(detail.innerHTML.includes("1—2万元"));
+assert(!detail.innerHTML.includes("万元"));
+assert(!detail.innerHTML.includes("最多"));
 assert(!detail.innerHTML.includes("阶段系数"));
 context.renderSignalDetail({...row, signal_kind: "PLAN", position_status: "PLAN_CONDITIONAL",
-  market_position_range: [0, 80], position_advice: "触发后 ≤80%（≤8万元）"});
+  market_position_range: [0, 80], position_advice: "触发后 ≤80%"});
 assert(detail.innerHTML.includes("市场配置 ≤80%"));
 assert(detail.innerHTML.includes("条件仓位预案"));
 context.renderSignalDetail({...row, position_status: "OBSERVE_SECTOR", sector_eligible: false,
@@ -63,7 +64,10 @@ if (process.argv[2]) {
   for (const actualRow of data.signals) {
     context.renderSignalDetail(actualRow);
     assert(detail.innerHTML.includes(actualRow.position_advice));
-    assert(detail.innerHTML.includes("单只计划额度"));
+    assert(!detail.innerHTML.includes("单只计划额度"));
+    assert(!detail.innerHTML.includes("正常最多"));
+    const positionHtml = detail.innerHTML.match(/<div class="signal-position-advice[\s\S]*?<\/div>/)[0];
+    assert(!positionHtml.includes("万元"));
     assert(!detail.innerHTML.includes("市场×板块阶段系数"));
   }
   console.log(`Published packet: ${data.signals.length} signal details rendered.`);

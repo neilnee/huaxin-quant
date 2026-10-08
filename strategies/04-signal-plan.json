@@ -59,13 +59,9 @@
     ]
   },
   "position_guidance": {
-    "strategy_version": "signal_position_guidance_v2",
+    "strategy_version": "signal_position_guidance_v3",
     "eligible_setup_qualities": ["A", "B"],
     "eligible_setup_signals": ["PULLBACK_BUY", "BREAKOUT_BUY", "RETEST_BUY"],
-    "position_denominator": "single_stock_calculation_amount",
-    "calculation_amount": 100000,
-    "maximum_calculation_amount": 100000,
-    "normal_maximum_symbols": 3,
     "market_position_pct": {
       "OFFENSIVE": [0, 80],
       "SELECTIVE": [40, 60],

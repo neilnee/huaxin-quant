@@ -153,9 +153,10 @@ class DashboardSignalsMarketNoticeTests(unittest.TestCase):
         self.assertNotIn("base_position", result)
         self.assertNotIn("environment_factor", result)
         self.assertEqual(result["adjusted_position"], [20, 40])
-        self.assertEqual(result["allocation_amount_range"], [20000, 40000])
-        self.assertEqual(result["position_denominator"], "single_stock_calculation_amount")
-        self.assertEqual(result["position_advice"], "20%-40%（2—4万元）")
+        for field in ("calculation_amount", "allocation_amount_range", "normal_maximum_symbols", "position_denominator"):
+            self.assertNotIn(field, result)
+            self.assertNotIn(field, dashboard_signals.POSITION_CFG)
+        self.assertEqual(result["position_advice"], "20%-40%")
 
     def test_c_or_d_setup_is_observation_only(self):
         row = {"signal_kind": "TRIGGERED", "setup_signal": "RETEST_BUY", "setup_quality": "C"}
@@ -178,10 +179,10 @@ class DashboardSignalsMarketNoticeTests(unittest.TestCase):
         )
 
         self.assertEqual(weak["position_status"], "ACTIONABLE")
-        self.assertEqual(weak["position_advice"], "10%-20%（1—2万元）")
+        self.assertEqual(weak["position_advice"], "10%-20%")
         self.assertEqual(blocked["position_advice"], "观察（退潮）")
         self.assertEqual(excluded["position_advice"], "观察（观察）")
-        self.assertIsNone(blocked["allocation_amount_range"])
+        self.assertIsNone(blocked["adjusted_position"])
 
     def test_plan_shows_same_range_for_a_and_b_without_treating_target_as_actual(self):
         row = {"signal_kind": "PLAN", "setup_signal": "PULLBACK_BUY", "setup_quality": "A"}
@@ -192,7 +193,7 @@ class DashboardSignalsMarketNoticeTests(unittest.TestCase):
         self.assertEqual(result["plan_position_a"], [40, 60])
         self.assertEqual(result["plan_position_b"], [40, 60])
         self.assertIsNone(result["adjusted_position"])
-        self.assertEqual(result["position_advice"], "触发后 40%-60%（4—6万元）")
+        self.assertEqual(result["position_advice"], "触发后 40%-60%")
 
     def test_all_twenty_sector_combinations_in_each_market(self):
         markets = {"OFFENSIVE": [0, 80], "SELECTIVE": [40, 60], "RECOVERY_WATCH": [20, 40],
@@ -208,16 +209,16 @@ class DashboardSignalsMarketNoticeTests(unittest.TestCase):
                         self.assertEqual(result["market_position_range"], expected_range)
                         self.assertEqual(result["sector_eligible"], level in levels)
                         self.assertEqual(result["position_status"], "ACTIONABLE" if level in levels else "OBSERVE_SECTOR")
-                        self.assertEqual(result["allocation_amount_range"], [v * 1000 for v in expected_range] if level in levels else None)
+                        self.assertEqual(result["adjusted_position"], expected_range if level in levels else None)
 
-    def test_signal_type_and_grade_do_not_change_allowed_amount(self):
+    def test_signal_type_and_grade_do_not_change_allowed_range(self):
         for signal in ("PULLBACK_BUY", "BREAKOUT_BUY", "RETEST_BUY"):
             for grade in ("A", "B"):
                 with self.subTest(signal=signal, grade=grade):
                     result = dashboard_signals.position_guidance(
                         {"setup_signal": signal, "setup_quality": grade}, {"state": "SELECTIVE"},
                         {"sector_phase": "NONE", "sector_data_status": "READY", "sector_health_level": 1})
-                    self.assertEqual(result["allocation_amount_range"], [40000, 60000])
+                    self.assertEqual(result["adjusted_position"], [40, 60])
 
     def test_invalid_or_missing_sector_evidence_does_not_default_to_stability(self):
         row = {"setup_signal": "PULLBACK_BUY", "setup_quality": "A"}
@@ -229,23 +230,21 @@ class DashboardSignalsMarketNoticeTests(unittest.TestCase):
             with self.subTest(change=change):
                 result = dashboard_signals.position_guidance(row, {"state": "OFFENSIVE"}, {**base, **change})
                 self.assertEqual(result["position_status"], "OBSERVE_SECTOR")
-                self.assertIsNone(result["allocation_amount_range"])
+                self.assertIsNone(result["adjusted_position"])
 
-    def test_calculation_amount_contract_and_offensive_upper_bound(self):
+    def test_offensive_upper_bound_and_invalid_range(self):
         row = {"setup_signal": "BREAKOUT_BUY", "setup_quality": "B"}
         sector = {"sector_phase": "主线", "sector_data_status": "READY", "sector_health_level": -1}
+        result = dashboard_signals.position_guidance(row, {"state": "OFFENSIVE"}, sector)
+        self.assertEqual(result["position_advice"], "≤80%")
+        self.assertEqual(result["adjusted_position"], [0, 80])
         cfg = copy.deepcopy(dashboard_signals.POSITION_CFG)
-        cfg["calculation_amount"] = 50000
-        with patch.object(dashboard_signals, "POSITION_CFG", cfg):
-            result = dashboard_signals.position_guidance(row, {"state": "OFFENSIVE"}, sector)
-        self.assertEqual(result["position_advice"], "≤80%（≤4万元）")
-        self.assertEqual(result["allocation_amount_range"], [0, 40000])
-        for amount in (0, -1, 100001, float("inf"), None):
-            cfg["calculation_amount"] = amount
-            with self.subTest(amount=amount), patch.object(dashboard_signals, "POSITION_CFG", cfg):
+        for values in ([-1, 80], [0, 81], [50, 40], [0, float("inf")], [None, 80], []):
+            cfg["market_position_pct"]["OFFENSIVE"] = values
+            with self.subTest(values=values), patch.object(dashboard_signals, "POSITION_CFG", cfg):
                 result = dashboard_signals.position_guidance(row, {"state": "OFFENSIVE"}, sector)
-                self.assertEqual(result["position_status"], "OBSERVE_BUDGET")
-                self.assertIsNone(result["allocation_amount_range"])
+                self.assertEqual(result["position_status"], "OBSERVE_MARKET")
+                self.assertIsNone(result["adjusted_position"])
 
     def test_guidance_does_not_mutate_signal_or_promote_unknown_market(self):
         row = {"signal_kind": "PLAN", "setup_signal": "PULLBACK_BUY", "setup_quality": "C"}
@@ -254,7 +253,7 @@ class DashboardSignalsMarketNoticeTests(unittest.TestCase):
                     {"sector_phase": "主线", "sector_data_status": "READY", "sector_health_level": 0})
         self.assertEqual(row, before)
         self.assertEqual(result["position_status"], "OBSERVE_MARKET")
-        self.assertIsNone(result["allocation_amount_range"])
+        self.assertIsNone(result["adjusted_position"])
 
     def test_position_refresh_preserves_signals_and_backs_up_original(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -265,7 +264,8 @@ class DashboardSignalsMarketNoticeTests(unittest.TestCase):
                            "code": "000001", "signal_kind": "TRIGGERED", "setup_signal": "BREAKOUT_BUY",
                            "setup_quality": "A", "close": 10.0, "setup_score": 85, "trigger_price_low": 9.9,
                            "capital_support": {"margin_data_date": "2026-10-08"},
-                           "environment_factor": 0, "base_position": [40, 50]}]}
+                           "environment_factor": 0, "base_position": [40, 50],
+                           "calculation_amount": 1, "normal_maximum_symbols": 1, "allocation_amount_range": [0, 1]}]}
             source = 'window.QUANT_DASHBOARD_SIGNALS_CONTEXTS["261008"] = ' + json.dumps(payload) + ';\n'
             path.write_text(source, encoding="utf-8")
             sector = {"sector_phase": "NONE", "sector_data_status": "READY", "sector_health_level": 1}
@@ -282,7 +282,9 @@ class DashboardSignalsMarketNoticeTests(unittest.TestCase):
                 self.assertEqual(after[field], payload["signals"][0][field])
             self.assertNotIn("environment_factor", after)
             self.assertNotIn("base_position", after)
-            self.assertEqual(after["position_advice"], "10%-20%（1—2万元）")
+            self.assertEqual(after["position_advice"], "10%-20%")
+            for field in ("calculation_amount", "normal_maximum_symbols", "allocation_amount_range"):
+                self.assertNotIn(field, after)
 
     def test_position_refresh_rejects_date_mismatch_before_mutation(self):
         with tempfile.TemporaryDirectory() as tmp:

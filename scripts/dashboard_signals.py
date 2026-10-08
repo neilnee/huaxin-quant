@@ -18,11 +18,11 @@ ROOT=Path(PROJECT_ROOT); RUNS=ROOT/"cache"/"quant_runs"; PLAN_RUNS=ROOT/"signal_
 PLAN_CONFIG,_=load_strategy_config("04-signal-plan.json"); POSITION_CFG=PLAN_CONFIG["position_guidance"]
 FIELDS=("code","name","structure_stage","setup_signal","action_hint","suggested_position","setup_pattern_score","setup_score","setup_quality","setup_structure_score","setup_structure_anchor_date","setup_structure_base","setup_action_score","setup_current_action_score","setup_breakout_action_score","setup_score_components","setup_reasons","setup_misses","setup_risk_flags","structure_score","structure_risk_score","structure_risk_flags","prior_breakout_bonus_score","prior_breakout_bonus_reasons","prior_breakout_context_tag","close","MA20","MA60","pivot_price","structure_pivot","support_price","invalid_price","breakout_level","last_contraction_low","pivot_distance","distance_ma20","volume","vol_ma5","vol_ma20","volume_dry_up","vol_ratio","volume_pattern","chg_5","chg_20","setup_plan_inputs","reason")
 MARKET_ADVICE={
- "OFFENSIVE":("广泛参与","supportive","单只计划额度最高使用80%，保留后手；板块资格和个股量价条件仍须分别成立。"),
- "SELECTIVE":("结构参与","selective","单只计划额度使用40%—60%，板块资格和个股量价条件仍须分别成立。"),
- "RECOVERY_WATCH":("修复参与","caution","单只计划额度使用20%—40%，板块资格和个股量价条件仍须分别成立。"),
- "CONSOLIDATING":("小额参与","caution","单只计划额度使用10%—20%，板块资格和个股量价条件仍须分别成立。"),
- "DEFENSIVE":("防御试探","caution","单只计划额度使用10%—20%，板块资格和个股量价条件仍须分别成立。"),
+ "OFFENSIVE":("广泛参与","supportive","计划仓位最高使用80%，保留后手；板块资格和个股量价条件仍须分别成立。"),
+ "SELECTIVE":("结构参与","selective","计划仓位使用40%—60%，板块资格和个股量价条件仍须分别成立。"),
+ "RECOVERY_WATCH":("修复参与","caution","计划仓位使用20%—40%，板块资格和个股量价条件仍须分别成立。"),
+ "CONSOLIDATING":("小额参与","caution","计划仓位使用10%—20%，板块资格和个股量价条件仍须分别成立。"),
+ "DEFENSIVE":("防御试探","caution","计划仓位使用10%—20%，板块资格和个股量价条件仍须分别成立。"),
 }
 MARKET_LABEL_CODES={"趋势扩散":"OFFENSIVE","结构性强势":"OFFENSIVE","结构行情":"SELECTIVE","结构分化":"SELECTIVE","修复期":"RECOVERY_WATCH","修复观察":"RECOVERY_WATCH","弱势震荡":"CONSOLIDATING","弱势收敛":"CONSOLIDATING","防御期":"DEFENSIVE","弱势下行":"DEFENSIVE"}
 SOURCE_LABELS={
@@ -90,31 +90,27 @@ def position_range_text(values):
  return f"{low}%-{high}%"
 def position_guidance(row,market,sector):
  state=market.get("state") or "UNKNOWN"; phase=sector.get("sector_phase")
- level=pool_number(sector.get("sector_health_level")); amount=pool_number(POSITION_CFG.get("calculation_amount")); maximum=pool_number(POSITION_CFG.get("maximum_calculation_amount"))
+ level=pool_number(sector.get("sector_health_level"))
  level_valid=level is not None and math.isfinite(level) and level.is_integer() and -2<=level<=2
  ready=sector.get("sector_data_status")=="READY" and sector.get("sector_history_basis")!="current_snapshot_backfill" and phase in POSITION_CFG["sector_allowed_health_levels"] and level_valid and sector.get("sector_health")!="数据不足"
  eligible=ready and int(level) in POSITION_CFG["sector_allowed_health_levels"][phase]
- amount_valid=amount is not None and maximum is not None and math.isfinite(amount) and math.isfinite(maximum) and 0<amount<=maximum<=100000
  raw_range=POSITION_CFG["market_position_pct"].get(state)
  market_range=[pool_number(value) for value in raw_range] if isinstance(raw_range,list) and len(raw_range)==2 else None
  if market_range is not None and (any(value is None or not math.isfinite(value) for value in market_range) or not 0<=market_range[0]<=market_range[1]<=80): market_range=None
  phase_label="观察" if phase=="NONE" else phase or "板块待确认"
- common={"market_state":state,"sector_phase":phase,"sector_health_level":int(level) if level_valid else None,"sector_eligible":bool(eligible),"position_strategy_version":POSITION_CFG["strategy_version"],"position_guidance_mode":"MARKET_RANGE_SECTOR_GATE","position_denominator":POSITION_CFG["position_denominator"],"calculation_amount":amount if amount_valid else None,"normal_maximum_symbols":POSITION_CFG["normal_maximum_symbols"],"market_position_range":market_range,"allocation_amount_range":None,"adjusted_position":None,"plan_position_a":None,"plan_position_b":None}
+ common={"market_state":state,"sector_phase":phase,"sector_health_level":int(level) if level_valid else None,"sector_eligible":bool(eligible),"position_strategy_version":POSITION_CFG["strategy_version"],"position_guidance_mode":"MARKET_RANGE_SECTOR_GATE","market_position_range":market_range,"adjusted_position":None,"plan_position_a":None,"plan_position_b":None}
  planned=row.get("signal_kind")=="PLAN"; quality=str(row.get("setup_quality") or "")
  if row.get("setup_signal") not in POSITION_CFG["eligible_setup_signals"]: status,advice,reason="OBSERVE_QUALITY","观察（买点待确认）","未形成支持的买点类型"
  elif not planned and quality not in POSITION_CFG["eligible_setup_qualities"]: status,advice,reason="OBSERVE_QUALITY",f"观察（{quality or '未评级'}级）","仅实际 A/B 级买点参与，C/D继续观察"
  elif market_range is None: status,advice,reason="OBSERVE_MARKET","观察（市场待确认）","缺少同日有效市场确认状态"
  elif not ready: status,advice,reason="OBSERVE_SECTOR","观察（板块待确认）","缺少同日有效板块阶段或趋势"
  elif not eligible: status,advice,reason="OBSERVE_SECTOR",f"观察（{sector.get('sector_health') or phase_label}）",f"板块{phase_label}与趋势{int(level):+d}不满足参与资格"
- elif not amount_valid: status,advice,reason="OBSERVE_BUDGET","观察（额度待确认）","单只计划额度须大于0且不超过10万元"
  else:
-  values=[round(amount*float(value)/100,2) for value in market_range]
-  amount_text=f"≤{values[1]/10000:g}万元" if market_range[0]==0 else f"{values[0]/10000:g}—{values[1]/10000:g}万元"
-  advice=f"{position_range_text(market_range)}（{amount_text}）"
+  advice=position_range_text(market_range)
   status="PLAN_CONDITIONAL" if planned else "ACTIONABLE"
   if planned: advice="触发后 "+advice
-  reason="板块资格通过；百分比以单只计划额度为分母，金额为目标配置，非追加订单。"+("实际 A/B 级触发后按触发日市场与板块重算。" if planned else "仍须核对个股承接、供给与赔率。")
-  common.update({"allocation_amount_range":values,"adjusted_position":None if planned else list(market_range),"plan_position_a":list(market_range) if planned else None,"plan_position_b":list(market_range) if planned else None})
+  reason="板块资格通过；计划仓位使用比例由市场状态决定。"+("实际 A/B 级触发后按触发日市场与板块重算。" if planned else "仍须核对个股承接、供给与赔率。")
+  common.update({"adjusted_position":None if planned else list(market_range),"plan_position_a":list(market_range) if planned else None,"plan_position_b":list(market_range) if planned else None})
  return {**common,"position_status":status,"position_advice":advice,"position_reason":reason}
 def pool_code(value):
  match=re.search(r"\d{6}",str(value or ""))
@@ -265,7 +261,7 @@ def refresh_position(date):
  market=market_notice(date); sectors=sector_notices(date)
  for row in data.get("signals",[]):
   sector=dict(sectors.get(str(row.get("code","")).zfill(6),default_sector_notice()))
-  for field in ("environment_factor","base_position","base_position_a","base_position_b"):
+  for field in ("environment_factor","base_position","base_position_a","base_position_b","position_denominator","calculation_amount","normal_maximum_symbols","allocation_amount_range"):
    row.pop(field,None)
   row.update(sector); row.update(position_guidance(row,market,sector))
  data["market_notice"]=market; data.setdefault("meta",{})["position_strategy_version"]=POSITION_CFG["strategy_version"]

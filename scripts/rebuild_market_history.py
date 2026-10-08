@@ -357,7 +357,8 @@ def refresh_signal_environment(dates: set[str]) -> int:
         for row in payload.get("signals", []):
             code = str(row.get("code", "")).zfill(6)
             sector = dict(sectors.get(code, dashboard_signals.default_sector_notice()))
-            for field in ("environment_factor", "base_position", "base_position_a", "base_position_b"):
+            for field in ("environment_factor", "base_position", "base_position_a", "base_position_b",
+                          "position_denominator", "calculation_amount", "normal_maximum_symbols", "allocation_amount_range"):
                 row.pop(field, None)
             row.update(sector)
             row.update(dashboard_signals.position_guidance(row, market, sector))

@@ -75,13 +75,6 @@
 .market-status-pill.market-selective { border-color: #4d668c; background: #22334f; color: #bcd2f5; }
 .market-status-pill.market-caution { border-color: #7b6735; background: #493b1f; color: #f0d895; }
 .market-status-pill.market-blocked { border-color: #7b414b; background: #542a34; color: #ffd1d5; }
-.signal-market-advice { margin: 12px 0; padding: 10px 12px; border: 1px solid var(--line); border-left-width: 3px; border-radius: 7px; background: #101722; }
-.signal-market-advice > span { display: block; margin-bottom: 4px; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .04em; }
-.signal-market-advice p { margin: 0; line-height: 1.65; }
-.signal-market-advice.market-supportive { border-left-color: #4da77e; }
-.signal-market-advice.market-selective { border-left-color: #7292c5; }
-.signal-market-advice.market-caution { border-left-color: #c6a74f; }
-.signal-market-advice.market-blocked { border-left-color: #c26774; }
 .signal-position-advice { margin: 10px 0 14px; padding: 11px 12px; border: 1px solid var(--line); border-left-width: 3px; border-radius: 7px; background: #101722; }
 .signal-position-advice > span { display: block; color: var(--muted); font-size: 11px; font-weight: 700; }
 .signal-position-advice > b { display: block; margin-top: 3px; font-size: 18px; }

@@ -4,6 +4,7 @@
 - **边界**：只拉取、快照、缓存、校验和提供数据；不计算市场状态、不产生选股或交易结论。
 - **主入口**：`scripts/data/market_data_service.py`，当前由 `scripts/market_regime.py` 调用。
 - **默认日期**：未指定日期时，统一调用 `scripts.shared.expected_trade_date()`，以交易日 15:00 为日度分隔线。
+- **安装依赖**：`requirements.txt` 包含通达信适配器及用于公司行为复权核验的 `baostock`；新环境须安装完整依赖，离线测试通过 mock 验证 BaoStock 登录超时，不访问外部行情。
 
 ## 数据范围
 

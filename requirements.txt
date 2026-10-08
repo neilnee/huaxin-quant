@@ -3,3 +3,4 @@ pandas>=2.0
 requests>=2.31
 mootdx>=0.11
 tdxpy>=0.2,<0.3
+baostock>=0.9.3

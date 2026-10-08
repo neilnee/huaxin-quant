@@ -16,4 +16,6 @@ R=(当前活动阶段各收缩段最低收盘-B)/(H-B)，保留原始值，评�
 
 输出保存`structure_score_policy_id`（参数ID加配置/映射指纹）、`structure_score_calibration_date`、`structure_score_maximum`、`structure_scoring_status`、`structure_score_details`及序列分/标签。完整明细记录Q/R/F、候选、阶段、尾段与序列，CSV和策略JSON/SQLite原样保存；展示读取同份分项。结构分0仅可作为DATA_ISSUE兼容占位，明细总分留空，不是有效评分。
 
+Dashboard“结构评分依据”必须展示同份`score_components`中的阶段基础、整理量能、推进成果、趋势、位置、扩展收缩、优质收缩序列七项，分项保留两位小数。推进的起止锚点、价量质量、成果保留及计分系数，尾段承接与序列的条件结果，直接读取`structure_score_details`，不在前端重新判定或计分。旧历史包只展示已保存的分项与证据，不把缺失的新字段填成0；突破后详情继续仅展示冻结的突破时结构分，不借用当前结构分项解释历史分数。
+
 运行用途显式为production，配置严格校验；正式结果不标研究。研究入口继续显式关闭正式评分，避免重复缩放。参数只能经独立研究、冻结与新版本接入，不按个股或信号数量现场修订。

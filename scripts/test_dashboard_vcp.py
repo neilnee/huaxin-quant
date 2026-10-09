@@ -12,6 +12,29 @@ from scripts import dashboard_vcp
 
 
 class DashboardVcpIndustryContextTests(unittest.TestCase):
+    def test_list_orders_only_by_displayed_score_without_status_priority(self):
+        rows = [
+            {"code": "000001", "bloom_status": "TRIGGERED", "structure_score": 60},
+            {"code": "000002", "bloom_status": "MATURE", "structure_score": 70},
+            {"code": "000003", "bloom_status": "FORMING", "structure_score": 90},
+            {"code": "000004", "bloom_status": "EARLY", "structure_score": ""},
+            {"code": "000005", "bloom_status": "EARLY", "structure_score": 0},
+            {"code": "000006", "bloom_status": "RISK_BLOCKED", "structure_score": 90},
+        ]
+        post = [{"code": "000007", "structure_score": 100, "structure_breakout_score": 80}]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bloom = {"summary": {"date": "2026-10-08"}, "sections": {"active": rows, "post_breakout": post}}
+            (root / "bloom_input_261008.json").write_text(json.dumps(bloom), encoding="utf-8")
+            with patch.object(dashboard_vcp, "BLOOM_INPUT_DIR", root), patch.object(
+                dashboard_vcp, "QUANT_RUN_DIR", root
+            ), patch.object(dashboard_vcp, "realized_events_for_date", return_value=[]), patch.object(
+                dashboard_vcp, "load_industry_context", return_value={}
+            ), patch.object(dashboard_vcp, "load_pool_sources", return_value={}):
+                result = dashboard_vcp.build_context("261008")
+        self.assertEqual([row["code"] for row in result["candidates"]],
+                         ["000003", "000006", "000007", "000002", "000001", "000005", "000004"])
+
     def test_compact_candidate_keeps_prior_breakout_reference(self):
         quant = {
             "prior_breakout_bonus_score": 47,
@@ -245,7 +268,7 @@ class DashboardVcpIndustryContextTests(unittest.TestCase):
         self.assertNotIn('$("vcp-detail").scrollTop=0', app)
         self.assertIn('id="vcp-list-scroll"', page)
         self.assertNotIn("vcp-detail-scroll", page)
-        self.assertIn("max-height:1236px", css)
+        self.assertIn("max-height:min(1236px,calc(100dvh - 24px))", css)
         self.assertIn("#vcp-table tbody tr{height:60px}", css)
 
     def test_same_day_market_csv_enriches_historical_candidate(self):

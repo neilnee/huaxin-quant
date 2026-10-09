@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import os
 import re
 import sqlite3
@@ -244,6 +245,15 @@ def compact_candidate(row: dict, quant: dict, industry: dict) -> dict:
     return result
 
 
+def display_structure_score(row: dict) -> float:
+    field = "structure_breakout_score" if row.get("tracking_scope") == "POST_BREAKOUT" else "structure_score"
+    try:
+        score = float(row.get(field))
+    except (TypeError, ValueError, OverflowError):
+        return -math.inf
+    return score if math.isfinite(score) else -math.inf
+
+
 def build_context(date_yy: str) -> dict:
     bloom_path = BLOOM_INPUT_DIR / f"bloom_input_{date_yy}.json"
     if not bloom_path.exists():
@@ -288,12 +298,7 @@ def build_context(date_yy: str) -> dict:
         candidate["previous_plan_hit"] = bool(event)
         candidate["previous_plan_source_date"] = event.get("plan_date") if event else None
         candidates.append(candidate)
-    candidates.sort(key=lambda row: (
-        row.get("tracking_scope") == "POST_BREAKOUT",
-        row.get("bloom_status") != "TRIGGERED",
-        row.get("bloom_status") != "MATURE",
-        -float((row.get("structure_breakout_score") if row.get("tracking_scope") == "POST_BREAKOUT" else row.get("structure_score")) or 0),
-    ))
+    candidates.sort(key=display_structure_score, reverse=True)
     summary = dict(bloom.get("summary", {}))
     summary["source_status_dist"] = summary.get("status_dist", {})
     summary["status_dist"] = {

@@ -3,8 +3,24 @@
   line-height: 1.55;
 }
 
-.vcp-metrics > .vcp-metric:nth-child(odd):last-child {
-  grid-column: 1 / -1;
+.vcp-detail .vcp-metrics {
+  grid-auto-rows: 1fr;
+}
+
+.vcp-detail .vcp-metrics > .vcp-metric,
+.vcp-key-levels > .vcp-metric {
+  min-height: 68px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.vcp-key-levels {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-auto-rows: 1fr;
+  gap: 8px;
 }
 
 .vcp-contraction-table table {

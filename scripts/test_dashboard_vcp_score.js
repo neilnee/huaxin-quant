@@ -64,12 +64,12 @@ for (const [label, maximum] of [["阶段基础",40],["整理量能",20],["趋势
 assert(detail.innerHTML.includes("价量质量 67.23/100"));
 assert(detail.innerHTML.includes("计分保留系数 79.96%"));
 assert(detail.innerHTML.includes("首末低点抬升满足"));
-assert(detail.innerHTML.includes('<span>推进起点</span><b>6.55</b><small>2026-08-07</small>'));
-assert(detail.innerHTML.includes('<span>推进终点</span><b>7.60</b><small>2026-08-20</small>'));
-assert(detail.innerHTML.includes('<span>推进涨幅</span><b>16.03%</b>'));
+assert(detail.innerHTML.includes('title="推进起点"><time>2026-08-07</time><b>6.55</b>'));
+assert(detail.innerHTML.includes('title="推进终点"><time>2026-08-20</time><b>7.60</b>'));
+assert(detail.innerHTML.includes('<b>+16.03%</b><small>9个交易日</small>'));
 assert(detail.innerHTML.includes('<span>上涨日放量</span><b>4.59倍</b>'));
-assert(detail.innerHTML.includes('<span>收缩最低成果保留</span><b>55.24%</b>'));
-assert(detail.innerHTML.includes('<span>当前收盘成果保留</span><b>90.00%</b>'));
+assert(detail.innerHTML.includes('title="收缩最低成果保留"><span>最低成果保留</span><b>55.24%</b>'));
+assert(detail.innerHTML.includes('title="当前收盘成果保留"><span>当前成果保留</span><b>90.00%</b>'));
 assert(detail.innerHTML.includes('关联当前第1、2轮标准收缩'));
 assert(!detail.innerHTML.includes('附加原因'));
 context.renderVcpDetail({...row, prior_breakout_bonus_score: 90, prior_breakout_bonus_reasons: ['旧摘要']});
@@ -84,7 +84,7 @@ context.renderVcpDetail({...row, structure_score_details: {...row.structure_scor
   impulse_evidence: {selected: {anchor: {anchor_id: 'different'}}},
 }});
 assert(detail.innerHTML.includes('推进锚点与评分记录不一致'));
-assert(!detail.innerHTML.includes('vcp-impulse-grid'));
+assert(!detail.innerHTML.includes('vcp-impulse-body'));
 context.renderVcpDetail({...row, score_components: {...row.score_components, impulse: 0, contraction_quality: 0}});
 assert.equal(card("推进成果"), "<b>0.00</b><small>满分 30</small>");
 assert.equal(card("优质收缩序列"), "<b>0.00</b>");
@@ -117,7 +117,7 @@ context.renderVcpDetail({...row, structure_score_details: {status: "COMPLETE", s
   contraction_quality: {status: "COMPLETE", checks: {}, score: 0, reasons: ["INSUFFICIENT_ROUNDS"]},
 }});
 assert(detail.innerHTML.includes("未识别到合格推进"));
-assert(!detail.innerHTML.includes("vcp-impulse-grid"));
+assert(!detail.innerHTML.includes("vcp-impulse-body"));
 assert(detail.innerHTML.includes("有效收缩不足两轮"));
 context.renderVcpDetail({...row, tracking_scope: "POST_BREAKOUT", structure_breakout_score: 70});
 assert(removedScore, "Post-breakout renderer must remove current score explanation");
@@ -134,10 +134,10 @@ if (process.argv[2]) {
     const scored = actual.structure_score_details;
     if (scored?.strategy_version === 'model2_quant_score_v10' && scored.status === 'COMPLETE'
         && scored.impulse?.status === 'COMPLETE') {
-      assert(detail.innerHTML.includes('vcp-impulse-grid'));
+      assert(detail.innerHTML.includes('vcp-impulse-body'));
       assert(detail.innerHTML.includes(scored.impulse.base_date));
       assert(detail.innerHTML.includes(scored.impulse.peak_date));
-      assert(detail.innerHTML.includes(`<span>收缩最低成果保留</span><b>${(scored.impulse.retention_raw * 100).toFixed(2)}%</b>`));
+      assert(detail.innerHTML.includes(`<span>最低成果保留</span><b>${(scored.impulse.retention_raw * 100).toFixed(2)}%</b>`));
     }
     if (actual.tracking_scope === "POST_BREAKOUT") {
       assert(removedScore);

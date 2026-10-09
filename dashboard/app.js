@@ -55,7 +55,7 @@ function vcpImpulsePanel(row){
   const anchor=selected.anchor||{},metrics=impulse.metrics||{},retention=selected.retention||{};
   if(impulse.status!=="COMPLETE"||!impulse.anchor_id||!anchor.anchor_id)return empty("推进段明细不完整，暂不展示。");
   if(impulse.anchor_id!==anchor.anchor_id)return empty("推进锚点与评分记录不一致，待核对。");
-  const metric=(label,value,note="")=>`<div class="vcp-metric"><span>${label}</span><b>${value}</b>${note?`<small>${esc(note)}</small>`:""}</div>`;
+  const metric=(label,value,title=label)=>`<div title="${esc(title)}"><span>${label}</span><b>${value}</b></div>`;
   const percent=value=>value==null?"—":`${vcpNumber(value,2)}%`;
   const ratio=value=>value==null?"—":`${vcpNumber(value,2)}倍`;
   const rounds=Array.isArray(selected.group_round_numbers)?selected.group_round_numbers:[];
@@ -63,7 +63,10 @@ function vcpImpulsePanel(row){
   if(rounds.length)notes.push(`关联当前第${rounds.join("、")}轮标准收缩`);
   if(impulse.retention_low_date)notes.push(`收缩最低收盘 ${vcpNumber(impulse.retention_low_close,2)}（${impulse.retention_low_date}）`);
   if(row.tracking_scope==="POST_BREAKOUT")notes.push("展示当前识别的推进，不用于解释突破时冻结结构分");
-  return `<section class="vcp-impulse-panel"><h4>推进段</h4><div class="vcp-impulse-grid">${metric("推进起点",vcpNumber(impulse.base_close,2),impulse.base_date)}${metric("推进终点",vcpNumber(impulse.peak_close,2),impulse.peak_date)}${metric("推进涨幅",percent(metrics.gain_pct))}${metric("推进用时",selected.price?.advance_days==null?"—":`${esc(selected.price.advance_days)}个交易日`)}${metric("上涨日放量",ratio(metrics.up_volume_ratio))}${metric("涨跌日均量比",impulse.no_down_days===true?"无下跌日":ratio(metrics.up_down_volume_ratio))}${metric("收缩最低成果保留",percent(impulse.retention_raw==null?null:impulse.retention_raw*100))}${metric("当前收盘成果保留",percent(retention.current_close_retention_pct))}</div>${notes.length?`<p class="detail-meta">${esc(notes.join("；"))}</p>`:""}</section>`;
+  const endpoint=(label,date,price)=>`<div class="vcp-impulse-anchor" title="${label}"><time>${esc(date||"—")}</time><b>${vcpNumber(price,2)}</b></div>`;
+  const gain=metrics.gain_pct>0?`+${percent(metrics.gain_pct)}`:percent(metrics.gain_pct);
+  const duration=selected.price?.advance_days==null?"—":`${esc(selected.price.advance_days)}个交易日`;
+  return `<section class="vcp-impulse-panel"><h4>推进段</h4><div class="vcp-impulse-body"><div class="vcp-impulse-summary"><div class="vcp-impulse-route">${endpoint("推进起点",impulse.base_date,impulse.base_close)}<span class="vcp-impulse-arrow" aria-hidden="true">→</span>${endpoint("推进终点",impulse.peak_date,impulse.peak_close)}</div><div class="vcp-impulse-change" title="推进涨幅与交易日跨度"><b>${gain}</b><small>${duration}</small></div></div><div class="vcp-impulse-facts">${metric("上涨日放量",ratio(metrics.up_volume_ratio))}${metric("涨跌日均量比",impulse.no_down_days===true?"无下跌日":ratio(metrics.up_down_volume_ratio))}${metric("最低成果保留",percent(impulse.retention_raw==null?null:impulse.retention_raw*100),"收缩最低成果保留")}${metric("当前成果保留",percent(retention.current_close_retention_pct),"当前收盘成果保留")}</div>${notes.length?`<p class="detail-meta">${esc(notes.join("；"))}</p>`:""}</div></section>`;
 }
 function vcpStructureScoreItems(row){
   const score=row.score_components||{},details=row.structure_score_details||{};

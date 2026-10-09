@@ -59,6 +59,11 @@
 .vcp-special-pill.special-extension { border-color: #6c5aa0; background: #322a4b; color: #d8c8ff; }
 #vcp-table th, #vcp-table td { vertical-align: middle; }
 #vcp-table th:nth-child(4), #vcp-table td:nth-child(4) { text-align: center; }
+#vcp-table .vcp-cell-content { display: flex; align-items: center; justify-content: flex-end; min-height: 40px; line-height: 1.35; }
+#vcp-table td:nth-child(-n+2) .vcp-cell-content { justify-content: flex-start; }
+#vcp-table td:nth-child(4) .vcp-cell-content { justify-content: center; }
+#vcp-table .vcp-symbol { display: flex; flex-direction: column; gap: 3px; }
+#vcp-table .status-pill, #vcp-table .post-breakout-pill { display: inline-flex; align-items: center; line-height: 1.35; }
 @media (max-width: 700px) { #vcp-content .vcp-summary { grid-template-columns: repeat(3, minmax(72px, 1fr)); } }
 @media (max-width: 560px) {
   #vcp-content .vcp-summary { grid-template-columns: repeat(2, minmax(72px, 1fr)); }

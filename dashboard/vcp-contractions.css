@@ -23,6 +23,30 @@
   gap: 8px;
 }
 
+.vcp-impulse-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: 1fr;
+  gap: 8px;
+}
+
+.vcp-impulse-grid > .vcp-metric {
+  min-height: 68px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  border-color: #345e69;
+  background: #142a32;
+}
+
+.vcp-impulse-grid small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
 .vcp-contraction-table table {
   min-width: min(560px, 100%);
   table-layout: fixed;

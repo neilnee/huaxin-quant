@@ -52,11 +52,6 @@
 .signal-financial-pill.financial-verified { border-color: #34735a; background: #173c30; color: #a8e8ca; }
 .signal-financial-pill.financial-risk, .signal-technical-pill { border-color: #7b414b; background: #542a34; color: #ffd1d5; }
 .signal-additional-pill { border-color: #b37a2b; background: #4a3217; color: #ffd58a; box-shadow: 0 0 0 1px rgba(255, 187, 77, .08); }
-.vcp-prior-bonus { border-color: #b37a2b !important; background: linear-gradient(145deg, #4a3217, #2d2318) !important; }
-.vcp-prior-bonus b { color: #ffd36f !important; }
-.vcp-prior-bonus small { display: block; margin-top: 2px; color: #e8ba68; font-size: 9px; font-weight: 700; }
-.vcp-prior-bonus-note { display: flex; gap: 8px; margin: 8px 0 2px; padding: 8px 10px; border-left: 3px solid #b37a2b; border-radius: 5px; background: rgba(179, 122, 43, .12); color: #d8c39d; font-size: 11px; line-height: 1.5; }
-.vcp-prior-bonus-note b { flex: 0 0 auto; color: #ffd36f; }
 .vcp-special-tags { display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 5px; min-width: 0; }
 .vcp-special-pill { display: inline-flex; align-items: center; min-height: 22px; padding: 2px 7px; border: 1px solid var(--line); border-radius: 999px; font-size: 10px; font-weight: 700; line-height: 1.2; white-space: nowrap; }
 .vcp-special-pill.special-bonus { border-color: #b37a2b; background: #4a3217; color: #ffd58a; }

@@ -166,7 +166,7 @@ renderVcpDetail = function (row) {
 const renderVcpBase = renderVcp;
 renderVcp = function () {
   const summary=vcpContext.summary||{},rows=vcpContext.candidates||[],status=summary.status_dist||{};
-  const filters=[["PRE_BREAKOUT_FOCUS","突破前跟踪"],["PRE_BREAKOUT_ALL","全部"],["TREND_REBUILD","趋势重建"],["TRIGGERED","已触发"],["MATURE","成熟"],["FORMING","形成中"],["EARLY","早期"],["RISK_BLOCKED","风险阻断"],["POST_BREAKOUT","突破后跟踪"]];
+  const filters=[["PRE_BREAKOUT_ALL","全部"],["PRE_BREAKOUT_FOCUS","突破前跟踪"],["EARLY","早期"],["FORMING","形成中"],["MATURE","成熟"],["TRIGGERED","已触发"],["POST_BREAKOUT","突破后跟踪"],["TREND_REBUILD","趋势重建"],["RISK_BLOCKED","风险阻断"]];
   const filtered=vcpFilter==="PRE_BREAKOUT_FOCUS"?rows.filter(row=>row.tracking_scope!=="POST_BREAKOUT"&&row.pre_breakout_focus===true):vcpFilter==="PRE_BREAKOUT_ALL"?rows.filter(row=>row.tracking_scope!=="POST_BREAKOUT"):vcpFilter==="TREND_REBUILD"?rows.filter(row=>row.tracking_scope!=="POST_BREAKOUT"&&row.model2_stage==="TREND_REBUILD"):vcpFilter==="POST_BREAKOUT"?rows.filter(row=>row.tracking_scope==="POST_BREAKOUT"):rows.filter(row=>row.tracking_scope!=="POST_BREAKOUT"&&row.bloom_status===vcpFilter);
   const postLabels={POST_BREAKOUT_HOT:{label:"强势",tone:"hot"},POST_BREAKOUT_RETEST:{label:"回踩",tone:"retest"},POST_BREAKOUT_CONSOLIDATING:{label:"整理",tone:"consolidating"},POST_BREAKOUT_FAILED:{label:"失败",tone:"failed"},POST_BREAKOUT_EXPIRED:{label:"到期",tone:"expired"}};
   $("vcp-summary").innerHTML=[["突破前跟踪",summary.pre_breakout_focus_total||0],["突破前全部",summary.pre_breakout_total||0],["趋势重建",summary.trend_rebuild_total||0],["突破后跟踪",summary.post_breakout_total||0],["结构成熟",status.MATURE||0],["形成中",status.FORMING||0]].map(([k,v])=>`<div><span>${k}</span><b>${v}</b></div>`).join("");

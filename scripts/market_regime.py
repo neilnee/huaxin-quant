@@ -795,7 +795,7 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
         industry_row = l2_heat.get(row.industry_name, {}) if pd.notna(row.industry_name) else {}
         trend_position = (50 if row.close > row.ma20 else 0) + (50 if row.close > row.ma60 else 0)
         strength = 0.35 * row.rps20_market + 0.25 * row.rps60_market + 0.20 * row.rps20_industry + 0.10 * trend_position + 0.10 * min(100, row.volume_ratio * 50)
-        daily_strength = 0.55 * row.rps1_market + 0.15 * row.rps5_market + 0.20 * row.volume_rank + 0.10 * trend_position
+        daily_strength = daily_stock_strength(row.rps1_market, row.volume_rank)
         stock_rows.append({"date": as_of, "code": row.code, "name": row.name, "close": round(float(row.close), 4), "return_1": round(float(row.ret1 * 100), 3), "return_5": round(float(row.ret5 * 100), 3), "return_20": round(float(row.ret20 * 100), 3), "return_60": round(float(row.ret60 * 100), 3), "rps1_market": round(float(row.rps1_market), 2), "rps5_market": round(float(row.rps5_market), 2), "rps20_market": round(float(row.rps20_market), 2), "rps60_market": round(float(row.rps60_market), 2), "sw_l2_code": row.sw_l2_code, "sw_l2_name": row.industry_name if pd.notna(row.industry_name) else "", "rps20_industry": round(float(row.rps20_industry), 2), "rps60_industry": round(float(row.rps60_industry), 2), "industry_relative_strength_20": industry_row.get("relative_strength_20"), "industry_rank": industry_row.get("rank_20"), "above_ma20": bool(row.close > row.ma20), "above_ma60": bool(row.close > row.ma60), "distance_high60_pct": round(float((row.close / row.high60 - 1) * 100), 3), "atr14_pct": round(float(row.atr14_pct * 100), 3), "volume_ratio_20": round(float(row.volume_ratio), 3), "daily_strength_score": round(float(daily_strength), 2), "strength_score": round(float(strength), 2)})
     stock_by_code = {row["code"]: row for row in stock_rows}
     sector_leaders = {}
@@ -1149,6 +1149,33 @@ def completion_requires_nonthinking_retry(error: Exception) -> bool:
     return message.startswith("LLM completion exhausted") or message.startswith("LLM completion content is empty")
 
 
+def daily_stock_strength(rps1_market: float, volume_rank: float) -> float:
+    weights = CONFIG["daily_mainline"]["stock_weights"]
+    return weights["rps1_market"] * rps1_market + weights["volume_rank"] * volume_rank
+
+
+def mainline_block_key(item: dict) -> tuple:
+    return (
+        -float(item.get("relative_strength_1", 0)),
+        -float(item.get("up_breadth", 0)),
+        -float(item.get("daily_score", 0)),
+        item["block_name"],
+    )
+
+
+def mainline_ranked_blocks(candidates: dict, limits: dict | None = None) -> list[dict]:
+    """Interleave category leaders without comparing category percentile scores."""
+    groups = []
+    for kind in CONFIG["daily_mainline"]["block_types"]:
+        rows = sorted((item for item in candidates["blocks"]
+            if item.get("block_type", item["block_id"].split(":", 1)[0]) == kind
+            and item["qualified"] and item["block_name"] not in {"综合", "综合类"}),
+            key=mainline_block_key)
+        groups.append(rows[:int(limits[kind])] if limits is not None else rows)
+    return [group[index] for index in range(max(map(len, groups), default=0))
+            for group in groups if index < len(group)]
+
+
 def daily_mainline_candidates(report: dict, sectors: list[dict]) -> dict:
     settings = CONFIG["daily_mainline"]
     candidates = []
@@ -1156,9 +1183,9 @@ def daily_mainline_candidates(report: dict, sectors: list[dict]) -> dict:
     for kind in settings["block_types"]:
         rows = sorted(
             (row for row in sectors if row["block_type"] == kind),
-            key=lambda item: (item["daily_score"], item["relative_strength_1"]), reverse=True,
+            key=mainline_block_key,
         )[:int(settings["candidate_limits"][kind])]
-        for row in rows:
+        for mainline_rank, row in enumerate(rows, 1):
             block_id = f"{kind}:{row['block_name']}"
             leaders = report.get("daily_sector_leaders", {}).get(block_id, [])
             for stock in leaders:
@@ -1172,6 +1199,7 @@ def daily_mainline_candidates(report: dict, sectors: list[dict]) -> dict:
             candidates.append({
                 "block_id": block_id, "block_type": kind, "block_name": row["block_name"],
                 "rank_1": row["rank_1"], "daily_score": row["daily_score"],
+                "mainline_rank": mainline_rank,
                 "relative_strength_1": row["relative_strength_1"], "median_return_1": row["median_return_1"],
                 "up_breadth": row["up_breadth"], "volume_activity": row["volume_activity"],
                 "daily_strong_density": row["daily_strong_density"], "leaders": leaders,
@@ -1427,38 +1455,25 @@ def daily_mainline_search_topics(block_names: list[str]) -> list[str]:
     topics = list(block_names[:6])
     ai_markers = ("AI", "ChatGPT", "AIGC", "大模型", "多模态", "智谱", "Kimi")
     if sum(any(marker.lower() in name.lower() for marker in ai_markers) for name in block_names[:12]) >= 2:
-        topics = ["AI应用", "AI商业化"] + topics
-    return list(dict.fromkeys(topics))
+        topics += ["AI应用", "AI商业化"]
+    return list(dict.fromkeys(topics))[:6]
 
 
 def daily_mainline_trigger_topics(candidates: dict, limit: int = 8) -> list[str]:
-    """Focus catalyst verification on blocks jointly represented by strong stocks."""
-    block_map = {item["block_id"]: item for item in candidates["blocks"] if item["qualified"]}
-    coverage = {block_id: 0 for block_id in block_map}
-    for stock in candidates["stocks"]:
-        for block_id in set(stock.get("candidate_block_ids", [])):
-            if block_id in coverage:
-                coverage[block_id] += 1
-    generic_names = {"综合", "综合类"}
-    ranked = sorted(
-        (item for item in block_map.values() if item["block_name"] not in generic_names),
-        key=lambda item: (coverage[item["block_id"]], item["daily_score"]),
-        reverse=True,
-    )
-    leaders = sorted(ranked, key=lambda item: item["daily_score"], reverse=True)[:2]
-    names = list(dict.fromkeys(item["block_name"] for item in leaders + ranked))
+    """Verify catalysts for the same strongest one-day industry/concept directions."""
+    names = [item["block_name"] for item in mainline_ranked_blocks(candidates)]
     return daily_mainline_search_topics(names[:limit])[:limit]
 
 
 def fetch_daily_mainline_news(as_of: str, candidates: dict) -> dict:
     """Fetch separate trigger/context searches and attach a deterministic timeline."""
-    ranked_blocks = sorted(candidates["blocks"], key=lambda item: item["daily_score"], reverse=True)
+    ranked_blocks = mainline_ranked_blocks(candidates)
     block_names = [item["block_name"] for item in ranked_blocks[:12]]
     search_topics = daily_mainline_search_topics(block_names)
-    context_topics = search_topics[:2] if search_topics[:2] == ["AI应用", "AI商业化"] else search_topics[:8]
+    context_topics = search_topics[:6]
     context_query = f"{as_of} A股 当日盘面异动 领涨板块 产业催化 隔夜消息 盘中验证 " + " ".join(context_topics)
     context_raw, context_status, context_error = fetch_mx_search_cache(
-        STATE_DIR / f"daily_mainline_context_news_v8_{today_stamp(as_of)}.json", context_query,
+        STATE_DIR / f"daily_mainline_context_news_v10_{today_stamp(as_of)}.json", context_query,
     )
     context_results = mx_search_items(context_raw) or []
     entities = catalyst_entities(context_results, as_of)
@@ -1466,7 +1481,7 @@ def fetch_daily_mainline_news(as_of: str, candidates: dict) -> dict:
     trigger_topics = daily_mainline_trigger_topics(candidates)
     trigger_query = f"{as_of} A股 开盘前 隔夜 核心催化 原始公告 事件日期 最新财报 政策 {focused_entity} " + " ".join(trigger_topics)
     trigger_raw, trigger_status, trigger_error = fetch_mx_search_cache(
-        STATE_DIR / f"daily_mainline_trigger_news_v9_{today_stamp(as_of)}.json", trigger_query,
+        STATE_DIR / f"daily_mainline_trigger_news_v10_{today_stamp(as_of)}.json", trigger_query,
     )
     trigger_results = mx_search_items(trigger_raw) or []
     raw_results = trigger_results + context_results
@@ -1483,7 +1498,7 @@ def fetch_daily_mainline_news(as_of: str, candidates: dict) -> dict:
 
 def daily_mainline_fallback(candidates: dict, news: dict, reason: str) -> dict:
     settings = CONFIG["daily_mainline"]
-    blocks = sorted((item for item in candidates["blocks"] if item["qualified"]), key=lambda item: item["daily_score"], reverse=True)[:settings["maximum_strong_blocks"]]
+    blocks = mainline_ranked_blocks(candidates, settings["fallback_limits"])
     block_ids = [item["block_id"] for item in blocks]
     block_map = {item["block_id"]: item for item in blocks}
     stock_map = {}
@@ -1508,14 +1523,15 @@ def daily_mainline_fallback(candidates: dict, news: dict, reason: str) -> dict:
         "strong_blocks": [{key: value for key, value in item.items() if key != "leaders"} for item in blocks], "strong_stocks": linked_stocks, "evidence": [],
         "reason": reason, "news_status": news.get("status", "unknown"),
         "selection_basis": "market_candidates", "catalyst_status": "unconfirmed",
+        "observation_window": "1d",
     }
 
 
 def call_daily_mainline_analysis(as_of: str, candidates: dict, news: dict) -> dict:
     settings = CONFIG["daily_mainline"]
-    if candidates["qualified_count"] < 2:
-        result = daily_mainline_fallback(candidates, news, "fewer than two qualified blocks")
-        result.update({"status": "unclear", "name": "当日无清晰主线", "core_event": "强势板块未形成足够的横向共振。"})
+    if candidates["qualified_count"] < 1:
+        result = daily_mainline_fallback(candidates, news, "no qualified one-day blocks")
+        result.update({"status": "unclear", "name": "当日无清晰主线", "core_event": "当日没有通过门槛的明显强势板块。"})
         return result
     if not news.get("items"):
         return daily_mainline_fallback(candidates, news, "no auditable news evidence")
@@ -1525,16 +1541,21 @@ def call_daily_mainline_analysis(as_of: str, candidates: dict, news: dict) -> di
     model = settings.get("model", "deepseek-flash")
     base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
     block_payload = [{key: item[key] for key in ("block_id", "block_type", "block_name", "rank_1", "daily_score", "relative_strength_1", "median_return_1", "up_breadth", "volume_activity", "daily_strong_density", "qualified")} for item in candidates["blocks"]]
-    stock_payload = [{key: item[key] for key in ("code", "name", "return_1", "rps1_market", "rps5_market", "volume_ratio_20", "daily_strength_score", "candidate_block_ids")} for item in candidates["stocks"]]
+    for payload_item, item in zip(block_payload, candidates["blocks"]):
+        payload_item["mainline_rank"] = item.get("mainline_rank")
+    stock_payload = [{key: item[key] for key in ("code", "name", "return_1", "rps1_market", "volume_ratio_20", "daily_strength_score", "candidate_block_ids")} for item in candidates["stocks"]]
     system_prompt = (
         "你是A股盘后主线归纳器。只能依据输入的当日行情候选和妙想资讯证据，归纳一条今日盘面主线。"
-        "主线是多个强势板块和核心个股围绕同一事件与预期变化形成的叙事链，不是简单复制涨幅最高的概念名。"
+        "行情观察窗口只有今天：优先归纳各类别当日涨幅靠前、上涨扩散明显的板块与核心个股。"
+        "只使用当日涨幅、当日RPS、上涨覆盖及当日量能判断强势；不要要求5/20日趋势或均线位置良好。"
+        "主线围绕今日最强板块的交易焦点，可为单一明显强板块，也可为多个板块的同链共振。"
         "只需从候选中找到最有解释力的一组，不要求所有强势方向受同一事件驱动；"
         "行业与概念的同链共振（如种植业与种业）可构成一组，其他无关方向不否决该组。"
-        "如果找不到共振组合、只有单点上涨，或可靠资讯无法解释该组共振，status必须为unclear。"
+        "若没有明显强板块，或可靠资讯无法解释今日强势方向，status必须为unclear。"
         "unclear时说明是盘面分散还是催化待核验，不得把缺少催化说成没有强势方向；不要填入与领涨组无关的核心事件。"
-        "在资讯能够支持的前提下，优先解释daily_score靠前且被多只候选股共同覆盖的板块组合，不得仅因某条资讯更容易命名就忽略更强的盘面共振。"
-        "status=clear时，从候选block_id中选择2至6个strong_block_ids，从候选股票代码中选择2至6个strong_stock_codes；"
+        "行业与概念分别看当日相对涨幅优先级；daily_score中的类别内百分位不能跨类别当作统一强弱排名。"
+        "不得仅因某条资讯更容易命名而忽略今天更强的板块。过去消息仅用于核验今天异动的原因。"
+        "status=clear时，从候选block_id中选择1至6个strong_block_ids，从候选股票代码中选择2至6个strong_stock_codes；"
         "每只核心股的candidate_block_ids必须至少包含一个最终选择的strong_block_id，每个最终选择的strong_block_id也必须至少被一只核心股覆盖。"
         "从资讯标题中原样选择1至3个evidence_titles，第一条必须满足core_eligible=true，core_event只能概括第一条证据。"
         "core_timing_basis=article_pre_open表示文章本身盘前可知；reported_prior_event表示文章虽在盘中或盘后发布，但正文明确记载了event_date发生的更早事件，"
@@ -1567,7 +1588,7 @@ def call_daily_mainline_analysis(as_of: str, candidates: dict, news: dict) -> di
             titles = list(dict.fromkeys(parsed.get("evidence_titles") or []))
             if any(item not in block_map for item in block_ids) or any(item not in stock_map for item in stock_codes) or any(item not in evidence_map for item in titles):
                 raise ValueError("response contains evidence outside candidate set")
-            if parsed["status"] == "clear" and (not 2 <= len(block_ids) <= settings["maximum_strong_blocks"] or not 2 <= len(stock_codes) <= settings["maximum_strong_stocks"] or not titles):
+            if parsed["status"] == "clear" and (not 1 <= len(block_ids) <= settings["maximum_strong_blocks"] or not 2 <= len(stock_codes) <= settings["maximum_strong_stocks"] or not titles):
                 raise ValueError("clear mainline lacks cross-validated evidence")
             if parsed["status"] == "clear" and not core_evidence_is_eligible(titles, evidence_map):
                 raise ValueError("first evidence is not an eligible recent pre-open catalyst")
@@ -1605,6 +1626,7 @@ def call_daily_mainline_analysis(as_of: str, candidates: dict, news: dict) -> di
                 "evidence": [{key: evidence_map[item][key] for key in ("title", "date", "source", "event_date", "core_timing_basis")} for item in titles],
                 "news_status": news["status"], "provider": "deepseek", "model": model, "thinking_mode": thinking_mode,
                 "selection_basis": "event_mainline", "catalyst_status": "verified",
+                "observation_window": "1d",
             }
         except Exception as exc:
             last_error = str(exc)[:300]

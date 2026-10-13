@@ -23,6 +23,7 @@ from scripts.market_regime import (
     daily_mainline_trigger_topics,
     daily_mainline_candidates,
     daily_mainline_fallback,
+    daily_stock_strength,
     expand_mainline_block_ids,
     finalize_sector_rankings,
     confirm_market_state,
@@ -267,6 +268,60 @@ class DailyMainlineTests(unittest.TestCase):
         self.assertEqual(result["strong_stocks"][0]["code"], "300001")
         self.assertEqual(result["strong_stocks"][0]["selected_block_names"], ["AI应用"])
 
+    def test_today_rebound_is_not_displaced_by_old_trends_or_concept_scores(self):
+        rows = finalize_sector_rankings([
+            sector("元器件", 4.1, -9, -3, 93, 0.965, 63, "industry_sw_l2"),
+            sector("旧强行业", 0.5, 10, 20, 95, 2, 80, "industry_sw_l2"),
+            sector("一级背景", 8, 10, 20, 100, 3, 100, "industry_sw_l1"),
+        ] + [sector(f"概念{i}", 3 - i * 0.1, 10, 20, 100, 3, 90) for i in range(8)])
+        candidates = daily_mainline_candidates({"daily_sector_leaders": {}}, rows)
+        self.assertNotIn("一级背景", [r["block_name"] for r in candidates["blocks"]])
+        industry = [r for r in candidates["blocks"] if r["block_type"] == "industry_sw_l2"]
+        self.assertEqual(industry[0]["block_name"], "元器件")
+        self.assertEqual(industry[0]["mainline_rank"], 1)
+        self.assertTrue(industry[0]["qualified"])
+        result = daily_mainline_fallback(candidates, {"status": "cached"}, "failed")
+        self.assertIn("元器件", [r["block_name"] for r in result["strong_blocks"]])
+        self.assertEqual(sum(r["block_type"] == "gn" for r in result["strong_blocks"]), 3)
+        self.assertEqual(result["observation_window"], "1d")
+        topics = daily_mainline_trigger_topics(candidates)
+        self.assertEqual(topics[0], "元器件")
+
+    def test_daily_stock_score_only_uses_today_strength_and_volume(self):
+        self.assertAlmostEqual(daily_stock_strength(95, 50), 86)
+        self.assertGreater(daily_stock_strength(99, 50), daily_stock_strength(70, 50))
+
+    def test_single_strong_industry_can_have_an_event_mainline(self):
+        from unittest.mock import Mock
+        stocks = [{"code": str(i), "name": "示例", "return_1": 10,
+                   "rps1_market": 99, "rps5_market": 1, "volume_ratio_20": 2,
+                   "daily_strength_score": 95, "candidate_block_ids": ["industry_sw_l2:元器件"]}
+                  for i in range(2)]
+        block = {"block_id": "industry_sw_l2:元器件", "block_type": "industry_sw_l2",
+                 "block_name": "元器件", "rank_1": 7, "mainline_rank": 2,
+                 "daily_score": 87, "relative_strength_1": 4.1, "median_return_1": 4.3,
+                 "up_breadth": 93, "volume_activity": 0.965, "daily_strong_density": 63,
+                 "qualified": True, "leaders": stocks}
+        news = select_daily_mainline_news([{"title": "产业公告", "date": "2026-10-13 08:00:00",
+                "content": "盘前公告", "source": "测试"}], "2026-10-13", 12)
+        parsed = {"status": "clear", "name": "元器件当日修复", "core_event": "产业公告",
+                  "narrative_logic": "当日板块上涨扩散，代表股响应盘前公告。",
+                  "strong_block_ids": [block["block_id"]], "strong_stock_codes": ["0", "1"],
+                  "evidence_titles": ["产业公告"]}
+        response = Mock()
+        response.json.return_value = {"choices": [{"finish_reason": "stop",
+            "message": {"content": json.dumps(parsed)}}]}
+        with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test"}), \
+             patch.object(market_regime.requests, "post", return_value=response) as post:
+            result = market_regime.call_daily_mainline_analysis("2026-10-13",
+                {"blocks": [block], "stocks": stocks, "qualified_count": 1},
+                {"status": "cached", "items": news})
+        self.assertEqual(result["status"], "clear")
+        self.assertEqual(result["observation_window"], "1d")
+        payload = json.loads(post.call_args.kwargs["json"]["messages"][1]["content"])
+        self.assertNotIn("rps5_market", payload["stock_candidates"][0])
+        self.assertEqual(payload["block_candidates"][0]["mainline_rank"], 2)
+
     def test_news_phase_respects_a_share_session_timeline(self):
         as_of = "2026-07-31"
         self.assertEqual(classify_news_phase("2026-07-30 23:59:00", as_of), "pre_open")
@@ -315,10 +370,13 @@ class DailyMainlineTests(unittest.TestCase):
 
     def test_fragmented_ai_blocks_add_application_search_topic(self):
         topics = daily_mainline_search_topics(["AI营销", "智谱AI", "ChatGPT", "软件服务"])
-        self.assertEqual(topics[:2], ["AI应用", "AI商业化"])
+        self.assertEqual(topics[:4], ["AI营销", "智谱AI", "ChatGPT", "软件服务"])
+        self.assertEqual(topics[4:], ["AI应用", "AI商业化"])
+        self.assertEqual(daily_mainline_search_topics(["AI营销", "智谱AI", "甲", "乙", "丙", "丁"]),
+                         ["AI营销", "智谱AI", "甲", "乙", "丙", "丁"])
         self.assertNotIn("AI应用", daily_mainline_search_topics(["白酒概念", "预制菜"]))
 
-    def test_trigger_topics_prioritize_cross_covered_blocks(self):
+    def test_trigger_topics_keep_today_leader_ahead_of_cross_coverage(self):
         blocks = [
             {"block_id": "gn:风电", "block_name": "风电", "daily_score": 99.0, "qualified": True},
             {"block_id": "gn:核电", "block_name": "核电", "daily_score": 92.0, "qualified": True},

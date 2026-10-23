@@ -10,7 +10,7 @@ from typing import Iterable
 
 from tdxpy.reader.block_reader import BlockReader, BlockReader_TYPE_FLAT
 
-from scripts.data.tdx_client import connect_tdx, connection_info
+from scripts.data.tdx_client import connect_tdx, connection_info, request_tdx
 
 
 DEFAULT_CHUNK_SIZE = 0x7530
@@ -142,11 +142,18 @@ class TDXBlockSource:
             raise RuntimeError("通达信行业配置解析为空")
         return IndustryData(tdxhy, incon, mappings, definitions)
 
+    def _fetch_bars(self, method: str, code: str, offset: int):
+        return request_tdx(
+            self._client,
+            lambda: setattr(self, "_quotes", None),
+            lambda quotes: getattr(quotes, method)(symbol=code, frequency=9, offset=offset),
+        )
+
     def fetch_index_bars(self, code: str, offset: int):
-        return self._client().index(symbol=code, frequency=9, offset=offset)
+        return self._fetch_bars("index", code, offset)
 
     def fetch_stock_bars(self, code: str, offset: int):
-        return self._client().bars(symbol=code, frequency=9, offset=offset)
+        return self._fetch_bars("bars", code, offset)
 
     def fetch_corporate_actions(self, code: str):
         """Return the raw TDX XDXR frame; normalization belongs to the data layer."""

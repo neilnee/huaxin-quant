@@ -351,14 +351,20 @@ class TDXSource(DataSource):
         mootdx 自动根据 code 前缀识别沪深市场（6→SH, 0/2/3→SZ）。
         """
         try:
-            client = self._get_client()
+            self._get_client()
         except ImportError:
             return None, "mootdx 未安装，运行: pip install 'mootdx[all]'"
         except Exception as exc:
             return None, f"TDX 服务器探测失败: {exc}"
 
+        from scripts.data.tdx_client import request_tdx
+
         try:
-            raw = client.bars(symbol=code, frequency=9, offset=200)
+            raw = request_tdx(
+                self._get_client,
+                lambda: setattr(self, "_client", None),
+                lambda quotes: quotes.bars(symbol=code, frequency=9, offset=200),
+            )
         except Exception as exc:
             self._client = None
             self._server = None

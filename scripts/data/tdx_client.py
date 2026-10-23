@@ -11,7 +11,11 @@ import pandas as pd
 from mootdx.consts import HQ_HOSTS
 from mootdx.quotes import Quotes, StdQuotes
 from tdxpy.constants import hq_hosts
+from tdxpy.exceptions import TdxConnectionError
 from tdxpy.hq import TdxHq_API
+from tdxpy.parser.base import (
+    ResponseHeaderRecvFails, ResponseRecvFails, SendRequestPkgFails, SocketClientNotReady,
+)
 from tdxpy.parser.raw_parser import RawParser
 
 from scripts.io_utils import atomic_write_json
@@ -66,6 +70,27 @@ def close_client(quotes) -> None:
             api.disconnect()
         except Exception:
             pass
+
+
+def request_tdx(get_client, clear_client, request):
+    """Retry a daily-bar read once on a fresh, validated transport connection."""
+    for attempt in range(2):
+        # Selection already tries the full pool and maintains protocol breakers.
+        quotes = get_client()
+        try:
+            return request(quotes)
+        except Exception as exc:
+            cause = getattr(exc, "original_exception", None) or exc
+            if not isinstance(cause, (
+                OSError, TdxConnectionError, SocketClientNotReady,
+                SendRequestPkgFails, ResponseHeaderRecvFails, ResponseRecvFails,
+            )):
+                raise
+            close_client(quotes)
+            clear_client()
+            if attempt:
+                raise
+            print(f"[tdx] 日线传输失败，重新验活并重试一次: {type(cause).__name__}: {cause}")
 
 
 def _deduplicate(nodes) -> list[tuple[str, int]]:

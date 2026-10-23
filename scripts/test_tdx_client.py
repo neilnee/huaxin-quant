@@ -6,7 +6,9 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pandas as pd
+from tdxpy.exceptions import TdxFunctionCallError
 from tdxpy.hq import TdxHq_API
+from tdxpy.parser.base import ResponseHeaderRecvFails
 from tdxpy.parser.std.get_security_bars import GetSecurityBarsCmd
 
 from scripts.data import tdx_client
@@ -177,6 +179,101 @@ class TDXClientTests(unittest.TestCase):
             self.assertEqual(modern.call_count, 1)
             self.assertEqual(legacy.call_count, 1)
         self.assertEqual(fallback.fetch_bars.call_count, 2)
+
+    def test_stock_transport_failure_reselects_once_and_reuses_recovered_connection(self):
+        broken, recovered = quotes(), quotes()
+        wrapped = TdxFunctionCallError("calling function error")
+        wrapped.original_exception = ConnectionResetError("peer reset")
+        broken.bars.side_effect = wrapped
+        source = TDXBlockSource()
+        fallback = Mock()
+        service = MarketDataService({"data": {}})
+        with patch("scripts.data.tdx_block_data.connect_tdx", side_effect=[broken, recovered]) as connect:
+            for code in ("603766", "600838"):
+                rows = service.fetch_stock_bars(source, fallback, code, code, 200, "2026-10-23")
+                self.assertEqual(rows[-1][8], "tdx")
+            self.assertEqual(connect.call_count, 2)
+        broken.client.disconnect.assert_called_once()
+        broken.bars.assert_called_once_with(symbol="603766", frequency=9, offset=200)
+        self.assertEqual(recovered.bars.call_count, 2)
+        fallback.fetch_bars.assert_not_called()
+        self.assertIs(source._quotes, recovered)
+
+    def test_index_transport_failure_reselects_and_retries_same_request(self):
+        broken, recovered = quotes(), quotes()
+        broken.index.side_effect = ResponseHeaderRecvFails("connection closed before header")
+        source = TDXBlockSource()
+        with patch("scripts.data.tdx_block_data.connect_tdx", side_effect=[broken, recovered]) as connect:
+            self.assertIs(source.fetch_index_bars("000300", 300), recovered.index.return_value)
+            self.assertEqual(connect.call_count, 2)
+        broken.client.disconnect.assert_called_once()
+        recovered.index.assert_called_once_with(symbol="000300", frequency=9, offset=300)
+
+    def test_second_transport_failure_falls_back_and_does_not_keep_dead_connection(self):
+        first, second, recovered = quotes(), quotes(), quotes()
+        first.bars.side_effect = TimeoutError("read timeout")
+        second.bars.side_effect = BrokenPipeError("socket closed")
+        source = TDXBlockSource()
+        fallback = Mock()
+        fallback.fetch_bars.return_value = (daily_frame(), None)
+        service = MarketDataService({"data": {}})
+        with patch("scripts.data.tdx_block_data.connect_tdx", side_effect=[first, second, recovered]) as connect:
+            rows = service.fetch_stock_bars(source, fallback, "603766", "603766", 200, "2026-10-23")
+            self.assertEqual(rows[-1][8], "miaoxiang")
+            self.assertEqual(connect.call_count, 2)
+            self.assertIsNone(source._quotes)
+            rows = service.fetch_stock_bars(source, fallback, "600838", "600838", 200, "2026-10-23")
+            self.assertEqual(rows[-1][8], "tdx")
+            self.assertEqual(connect.call_count, 3)
+        first.client.disconnect.assert_called_once()
+        second.client.disconnect.assert_called_once()
+        fallback.fetch_bars.assert_called_once()
+
+    def test_reselection_failure_does_not_retry_selection_or_retain_dead_connection(self):
+        broken = quotes()
+        broken.bars.side_effect = ConnectionResetError("peer reset")
+        source = TDXBlockSource()
+        with patch("scripts.data.tdx_block_data.connect_tdx", side_effect=[broken, RuntimeError("pool exhausted")]) as connect:
+            with self.assertRaisesRegex(RuntimeError, "pool exhausted"):
+                source.fetch_stock_bars("603766", 200)
+            self.assertEqual(connect.call_count, 2)
+        self.assertIsNone(source._quotes)
+        broken.client.disconnect.assert_called_once()
+
+    def test_parse_errors_and_empty_or_stale_bars_do_not_reconnect(self):
+        wrapped = TdxFunctionCallError("calling function error")
+        wrapped.original_exception = ValueError("malformed bars")
+        for result in (ValueError("bad parameter"), wrapped, pd.DataFrame(),
+                       daily_frame().assign(datetime="2026-10-22 15:00")):
+            with self.subTest(result=type(result).__name__):
+                selected = quotes()
+                if isinstance(result, Exception):
+                    selected.bars.side_effect = result
+                else:
+                    selected.bars.return_value = result
+                source = TDXBlockSource()
+                fallback = Mock()
+                fallback.fetch_bars.return_value = (daily_frame(), None)
+                service = MarketDataService({"data": {}})
+                with patch("scripts.data.tdx_block_data.connect_tdx", return_value=selected) as connect:
+                    rows = service.fetch_stock_bars(source, fallback, "603766", "603766", 200, "2026-10-23")
+                    self.assertEqual(rows[-1][8], "miaoxiang")
+                    connect.assert_called_once_with("market", 10)
+                selected.client.disconnect.assert_not_called()
+                fallback.fetch_bars.assert_called_once()
+
+    def test_standalone_stock_adapter_recovers_transport_before_returning_bars(self):
+        broken, recovered = quotes(), quotes()
+        broken.bars.side_effect = ConnectionResetError("peer reset")
+        source = TDXSource()
+        with patch.object(tdx_client, "connect_tdx", side_effect=[broken, recovered]) as connect:
+            frame, error = source.fetch_bars("603766", "test")
+            self.assertIsNone(error)
+            self.assertEqual(frame.iloc[-1]["date"], "2026-10-23")
+            self.assertEqual(connect.call_count, 2)
+        broken.client.disconnect.assert_called_once()
+        recovered.bars.assert_called_once_with(symbol="603766", frequency=9, offset=200)
+        self.assertIs(source._client, recovered)
 
     def test_both_adapters_share_selector_with_separate_capabilities(self):
         selected = quotes()

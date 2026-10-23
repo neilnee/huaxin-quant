@@ -71,13 +71,12 @@ class CorporateActionTests(unittest.TestCase):
 
     def test_tdx_source_uses_cached_server_adapter_when_live_probe_is_empty(self):
         expected = object()
-        with patch("scripts.data.tdx_block_data.probe_servers", return_value=[]), patch(
-            "scripts.data.market_data.TDXSource._get_client", return_value=expected
-        ):
+        with patch("scripts.data.tdx_block_data.connect_tdx", return_value=expected) as connect:
             source = TDXBlockSource()
 
             self.assertIs(source._client(), expected)
             self.assertIs(source._client(), expected)
+            connect.assert_called_once_with("market", 10)
 
     def test_tdx_normalization_excludes_future_and_non_action_rows(self):
         frame = pd.DataFrame([

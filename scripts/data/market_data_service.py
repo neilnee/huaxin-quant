@@ -361,7 +361,7 @@ class MarketDataService:
             bars = self.ingest_bars(conn, source, codes, target, history, run_id, run_type)
             total, valid, ratio = self.coverage(conn, target)
             status = "READY" if not max_codes and ratio >= self.data_config["minimum_coverage_ratio"] else "PARTIAL"
-            detail = {"profile": profile, "blocks": blocks, "bars": bars, "universe": {"total": total, "valid": valid, "coverage": ratio}, "sample_mode": bool(max_codes), "database": str(DB_PATH)}
+            detail = {"profile": profile, "blocks": blocks, "bars": bars, "universe": {"total": total, "valid": valid, "coverage": ratio}, "sample_mode": bool(max_codes), "database": str(DB_PATH), "transport": source.connection_info()}
             conn.execute("UPDATE run_log SET status=?,coverage_ratio=?,detail_json=?,finished_at=? WHERE run_id=?", (status, ratio, json.dumps(detail, ensure_ascii=False), datetime.now().isoformat(timespec="seconds"), run_id))
             conn.commit()
             return {"run_id": run_id, "as_of_trade_date": target, "status": status, **detail}

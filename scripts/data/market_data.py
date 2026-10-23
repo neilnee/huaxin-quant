@@ -2,7 +2,7 @@
 数据源抽象层 — 日线数据获取的统一入口
 
 当前实现:
-  - TDXSource: 通达信 mootdx（主数据源）
+  - TDXSource: 通达信新版握手 / 原 mootdx 兼容（主数据源）
   - MiaoxiangSource: 东方财富妙想 API（备用数据源）
 
 设计原则:
@@ -302,13 +302,9 @@ class MiaoxiangSource(DataSource):
 # ===================== 通达信数据源（mootdx，主） =====================
 
 class TDXSource(DataSource):
-    """通达信数据源，基于 mootdx 库连接公共行情服务器。
+    """通达信日线入口，共享新版握手优先、原客户端兼容的选择器。
 
-    作为日线主数据源，免费、无额度限制。
-    每次初始化时用 sync=False 轻量探测（与 CLI 行为一致），
-    取延迟最低的服务器直连。不同于 factory(bestip=True)，
-    后者用 sync=True 探测后立即建连，会被服务器限流。
-    依赖: pip install 'mootdx[all]'
+    数据仍通过现有mootdx方法标准化；不改变价格、量额或复权口径。
     """
 
     display_name = "tdx"
@@ -340,49 +336,14 @@ class TDXSource(DataSource):
             pass
 
     def _get_client(self):
-        """获取或创建 mootdx 客户端。
-
-        1. sync=False 轻量探测（和 CLI 一致）→ 直连最快服务器
-        2. 探测失败 → 回退到缓存文件中的上次可用服务器
-        """
+        """Share modern/legacy protocol selection with the canonical data layer."""
         if self._client is not None:
             return self._client
 
-        from mootdx.server import server as probe_servers
-        from mootdx.quotes import Quotes
+        from scripts.data.tdx_client import connect_tdx
 
-        candidates = []  # [(ip, port), ...]
-
-        # 尝试实时探测
-        try:
-            results = probe_servers(index='HQ', limit=5, sync=False)
-            if results:
-                self._save_cached_servers(results)
-                candidates = results[:5]
-        except Exception:
-            pass
-
-        # 探测失败，回退到缓存
-        if not candidates:
-            candidates = self._load_cached_servers()
-
-        if not candidates:
-            raise RuntimeError("通达信服务器探测失败且无缓存可用")
-
-        # 逐个尝试，取第一个成功的
-        errors = []
-        for ip, port in candidates:
-            try:
-                client = Quotes.factory(market='std', server=(ip, port), timeout=10)
-                raw = client.bars(symbol='000001', frequency=9, offset=1)
-                if raw is not None and not raw.empty:
-                    self._client = client
-                    return client
-            except Exception as exc:
-                errors.append(f"{ip}:{port} {exc}")
-                continue
-
-        raise RuntimeError(f"通达信连接失败: {'; '.join(errors[:3])}")
+        self._client = connect_tdx("stock")
+        return self._client
 
     def fetch_bars(self, code: str, name: str) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
         """通过 mootdx 获取日线数据。

@@ -8,9 +8,9 @@ import zipfile
 from dataclasses import dataclass
 from typing import Iterable
 
-from mootdx.quotes import Quotes
-from mootdx.server import server as probe_servers
 from tdxpy.reader.block_reader import BlockReader, BlockReader_TYPE_FLAT
+
+from scripts.data.tdx_client import connect_tdx, connection_info
 
 
 DEFAULT_CHUNK_SIZE = 0x7530
@@ -58,70 +58,30 @@ class TDXBlockSource:
         self.chunk_size = chunk_size
         self._quotes = None
         self._action_quotes = None
+        self._file_quotes = None
+        self._security_quotes = None
 
-    def _client(self):
-        if self._quotes is not None:
-            return self._quotes
-        try:
-            servers = probe_servers(index="HQ", limit=5, sync=False)
-        except Exception:
-            servers = []
-        if not servers:
-            from scripts.data.market_data import TDXSource
-
-            try:
-                self._quotes = TDXSource()._get_client()
-                return self._quotes
-            except Exception as exc:
-                raise RuntimeError(f"通达信 HQ 服务器探测失败: {exc}") from exc
-        errors = []
-        for ip, port in servers:
-            try:
-                quotes = Quotes.factory(market="std", server=(ip, port), timeout=self.timeout)
-                probe = quotes.index(symbol="000001", frequency=9, offset=1)
-                if probe is not None and not probe.empty:
-                    self._quotes = quotes
-                    return quotes
-            except Exception as exc:
-                errors.append(f"{ip}:{port} {exc}")
-        from scripts.data.market_data import TDXSource
-
-        try:
-            self._quotes = TDXSource()._get_client()
-            return self._quotes
-        except Exception as exc:
-            errors.append(str(exc))
-        raise RuntimeError(f"通达信 HQ 服务器连接失败: {'; '.join(errors[:3])}")
+    def _client(self, capability="market"):
+        attribute = {"market": "_quotes", "files": "_file_quotes", "securities": "_security_quotes"}[capability]
+        if getattr(self, attribute) is None:
+            setattr(self, attribute, connect_tdx(capability, self.timeout))
+        return getattr(self, attribute)
 
     def _corporate_action_client(self):
         """Select an HQ server by its XDXR capability, independently of index bars."""
         if self._action_quotes is not None:
             return self._action_quotes
-        from scripts.data.market_data import TDXSource
+        self._action_quotes = connect_tdx("xdxr", self.timeout)
+        return self._action_quotes
 
-        try:
-            servers = probe_servers(index="HQ", limit=5, sync=False)
-        except Exception:
-            servers = []
-        if not servers:
-            # mootdx consumes its process-global host list during async probing.
-            # A later capability probe in the same daily run must use the
-            # persisted candidates from the first successful probe.
-            servers = TDXSource._load_cached_servers()
-        errors = []
-        for ip, port in servers:
-            try:
-                quotes = Quotes.factory(market="std", server=(ip, port), timeout=self.timeout)
-                probe = quotes.xdxr(symbol="000001")
-                if probe is not None and not probe.empty:
-                    self._action_quotes = quotes
-                    return quotes
-            except Exception as exc:
-                errors.append(f"{ip}:{port} {exc}")
-        raise RuntimeError(f"通达信 XDXR 服务器连接失败: {'; '.join(errors[:3])}")
+    def connection_info(self):
+        return {name: connection_info(client) for name, client in {
+            "market": self._quotes, "files": self._file_quotes,
+            "securities": self._security_quotes, "xdxr": self._action_quotes,
+        }.items() if client is not None}
 
     def fetch_block_file(self, filename: str) -> BlockFile:
-        quotes = self._client()
+        quotes = self._client("files")
         meta = quotes.client.get_block_info_meta(filename)
         if not meta or not meta.get("size"):
             raise RuntimeError(f"未获得板块文件元信息: {filename}")
@@ -146,7 +106,7 @@ class TDXBlockSource:
 
     def fetch_report_file(self, filename: str) -> bytes:
         """Download a report/config file until the server returns an empty chunk."""
-        payload = self._client().client.get_report_file_by_size(filename)
+        payload = self._client("files").client.get_report_file_by_size(filename)
         data = bytes(payload)
         if not data:
             raise RuntimeError(f"通达信配置文件为空: {filename}")
@@ -193,5 +153,5 @@ class TDXBlockSource:
         return self._corporate_action_client().xdxr(symbol=code)
 
     def fetch_security_lists(self):
-        quotes = self._client()
+        quotes = self._client("securities")
         return {0: quotes.stocks(market=0), 1: quotes.stocks(market=1)}

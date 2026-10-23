@@ -65,11 +65,11 @@ class DailyMainlineTests(unittest.TestCase):
                 return pd.DataFrame([{"category": 1}])
 
         fake = FakeQuotes()
-        with patch("scripts.data.tdx_block_data.probe_servers", return_value=[("127.0.0.1", 7709)]), \
-             patch("scripts.data.tdx_block_data.Quotes.factory", return_value=fake):
+        with patch("scripts.data.tdx_block_data.connect_tdx", return_value=fake) as connect:
             source = TDXBlockSource()
             self.assertIs(source._corporate_action_client(), fake)
             self.assertEqual(len(source.fetch_corporate_actions("000017")), 1)
+            connect.assert_called_once_with("xdxr", 10)
 
     def test_tdx_xdxr_probe_falls_back_to_cached_servers(self):
         class FakeQuotes:
@@ -77,12 +77,10 @@ class DailyMainlineTests(unittest.TestCase):
                 return pd.DataFrame([{"category": 1}])
 
         fake = FakeQuotes()
-        with patch("scripts.data.tdx_block_data.probe_servers", side_effect=RuntimeError("already consumed")), \
-             patch("scripts.data.market_data.TDXSource._load_cached_servers", return_value=[("127.0.0.2", 7709)]), \
-             patch("scripts.data.tdx_block_data.Quotes.factory", return_value=fake) as factory:
+        with patch("scripts.data.tdx_block_data.connect_tdx", return_value=fake) as factory:
             source = TDXBlockSource()
             self.assertIs(source._corporate_action_client(), fake)
-            factory.assert_called_once_with(market="std", server=("127.0.0.2", 7709), timeout=10)
+            factory.assert_called_once_with("xdxr", 10)
 
     def test_market_liquidity_overlay_is_separate_from_market_state(self):
         self.assertEqual(classify_market_liquidity(1.15, 65, 58)["overlay_label"], "放量扩散")

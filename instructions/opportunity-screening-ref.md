@@ -2,6 +2,29 @@
 
 本参考配合[人工机会初筛](opportunity-screening.md)使用，仅规定人工量价候选比较口径，不参与自动结构评分或买点计算。基本面、估值与事件由独立环节研究，本环节不新增查询或将其核验设为量价入选前提；已有备注交接，不宣称相关问题已解决。
 
+## 量化预筛与复核包
+
+版本`manual_preselection_v1`，入口`scripts/research_screening.py`；只读共享的同日策略库与Pool、强度文件，不拉行情、不重跑模型、不写策略库、持仓或滚动研究表。
+
+```bash
+.venv/bin/python scripts/research_screening.py prepare --date 261026 --output cache/research/2026-10-27/preselection_261026
+.venv/bin/python scripts/research_screening.py check-review --selection cache/research/2026-10-27/preselection_261026/preselection.json --review cache/research/2026-10-27/preselection_261026/review.json
+```
+
+每次指定新输出目录，既有包不覆盖。`--followups`可指定对应时点的跟踪表或历史快照，`--deferred-codes`与`--extra-codes`接受逗号分隔代码，来源独立记录；默认沿当前跟踪表和其中最近暂缓集合。跟踪表行情截至日不得晚于分析日，实际研究日期和源文件保留，不冒称历史当时已知。历史重放应显式提供当时输入。
+
+| 组 | 规则 |
+|---|---|
+| 量化入口 | 原结构分、实际买点、次日计划、成熟结构四入口及原排除规则，取并集 |
+| 低分分项补充 | 仅原跟踪/暂缓/明确补充的池内对象，且未命中原五入口；同日总分有限且<65，`model2_include/structure_valid=true`、`VCP/PRE_BREAKOUT`，完整评分明细中的推进状态`COMPLETE`且贡献>0，优质序列或末端承接`hit=true`且分值>0 |
+| RPS补漏 | 完整Pool中RPS5/20各前10，模型状态不前置过滤，不递补 |
+
+总分只读`structure_score`，子项只读同份`structure_score_details`，不将6分再加到总分。优质序列对应`contraction_quality`，末端对应`terminal_micro`；缺失与未命中分开记录。已突破旧组的总分、冻结突破分和当前新平台语境分开。三组集合与重复、候选全量、未入选维护队列、排除及缺口均审计。
+
+输出`preselection.json`、`facts.csv`及`review.json`模板。预筛包包含同日文档ID/哈希、配置与输入指纹、评分分项、推进及结构起止、候选/确认状态、加分命中与未过条件、原实际买点和Plan潜在等级、风险及原跟踪备注。每个预筛对象仅表示需看图，不自动成为重点；持仓移交复盘，数据异常和硬风险标待核/受限。RPS的缺评分、无结构与硬风险不混写。
+
+`review.json`只填人工项：`wave_start`、`price_volume`、`support_supply`、`decision`、`reason`、`comparison_reason`，以及可选的重点最终顺位`priority_rank`。`decision`使用重点研究/条件观察/突破后跟踪/待核；待核项给缺口和原因，不能将整轮标为完成。其余决策需完整填写推进起点及两项复核。不填顺位时沿分数顺序；需要调整时所有重点从1连续填写。若重点提前于更高分的重点或未选对象，必须填写具体比较理由。检查器核对包指纹、完整覆盖、重复/未知代码、事实字段不可改写、日期范围、必填项和未解释倒序；它不自动证明文字判断正确。全部通过后才可将该轮看图复核标为完成，不自动更新跟踪表。
+
 ## 有效性与入口字段
 
 - 结构分及成熟结构入口同时要求`model2_include=true`、`structure_valid=true`、`structure_type=VCP`、`post_breakout_state=PRE_BREAKOUT`。阶段标签取同日Quant对应值。

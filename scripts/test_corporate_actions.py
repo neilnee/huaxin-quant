@@ -1,9 +1,10 @@
 """Regression tests for point-in-time corporate-action adjustment."""
 
 import sqlite3
+import json
 import socket
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pandas as pd
 
@@ -14,7 +15,10 @@ from scripts.data.corporate_actions import (
     load_actions,
     normalize_tdx_actions,
     reclassify_verifications,
+    retry_conflicting_verifications,
+    save_verification,
     sync_tdx_actions,
+    verification_status,
 )
 from scripts.data.market_data_store import create_schema
 from scripts.data.tdx_block_data import TDXBlockSource
@@ -50,6 +54,72 @@ class FakeTDXSource:
 
 
 class CorporateActionTests(unittest.TestCase):
+    def conflict_fixture(self):
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        create_schema(conn)
+        action = dividend_action()
+        save_verification(conn, "603132", action, {
+            "status": "CONFLICT", "sample_count": 2,
+            "max_factor_diff_pct": 2.0, "max_raw_close_diff_pct": 0.0,
+            "detail": {"samples": ["original evidence"]},
+        }, run_date="2026-08-21")
+        return conn, action
+
+    def test_conflict_recovers_next_trading_day_without_action_change(self):
+        conn, action = self.conflict_fixture()
+        verifier = Mock()
+        verifier.verify.return_value = {
+            "status": "VERIFIED", "sample_count": 3,
+            "max_factor_diff_pct": 0.01, "max_raw_close_diff_pct": 0.0,
+        }
+        for run_date in ("2026-08-20", "2026-08-21"):
+            retry_conflicting_verifications(conn, "603132", [action], raw_frame(), run_date, verifier, {})
+        verifier.verify.assert_not_called()
+        retry_conflicting_verifications(conn, "603132", [action], raw_frame(), "2026-08-24", verifier, {})
+        self.assertEqual(verification_status(conn, "603132", [action]), "VERIFIED")
+        retry_conflicting_verifications(conn, "603132", [action], raw_frame(), "2026-08-25", verifier, {})
+        self.assertEqual(verifier.verify.call_count, 1)
+
+    def test_conflict_timeout_preserves_evidence_and_retries_next_date(self):
+        conn, action = self.conflict_fixture()
+        verifier = Mock()
+        verifier.verify.side_effect = TimeoutError("provider delayed")
+        for run_date in ("2026-08-24", "2026-08-24", "2026-08-25"):
+            retry_conflicting_verifications(conn, "603132", [action], raw_frame(), run_date, verifier, {})
+        self.assertEqual(verifier.verify.call_count, 2)
+        self.assertEqual(verification_status(conn, "603132", [action]), "CONFLICT")
+        row = conn.execute("SELECT max_factor_diff_pct,detail_json FROM adjustment_verifications").fetchone()
+        self.assertEqual(row[0], 2.0)
+        detail = json.loads(row[1])
+        self.assertEqual(detail["samples"], ["original evidence"])
+        self.assertEqual(detail["conflict_retry_run_date"], "2026-08-25")
+        self.assertIn("provider delayed", detail["conflict_retry_error"])
+
+    def test_persistent_conflicts_all_rechecked_once_per_date(self):
+        conn, action = self.conflict_fixture()
+        other = dividend_action("2026-08-20")
+        result = {"status": "CONFLICT", "sample_count": 2,
+                  "max_factor_diff_pct": 2.0, "max_raw_close_diff_pct": 0.0}
+        save_verification(conn, "603132", other, result, run_date="2026-08-21")
+        verifier = Mock()
+        verifier.verify.return_value = result
+        for run_date in ("2026-08-24", "2026-08-24", "2026-08-25"):
+            retry_conflicting_verifications(conn, "603132", [action, other], raw_frame(), run_date, verifier, {})
+        self.assertEqual(verifier.verify.call_count, 4)
+        self.assertEqual(verification_status(conn, "603132", [action, other]), "CONFLICT")
+
+    def test_legacy_conflict_uses_verification_date_and_skips_unused_events(self):
+        conn, action = self.conflict_fixture()
+        conn.execute("UPDATE adjustment_verifications SET detail_json='{}',verified_at='2026-08-21T16:00:00'")
+        verifier = Mock()
+        verifier.verify.return_value = {"status": "VERIFIED", "sample_count": 3}
+        retry_conflicting_verifications(conn, "603132", [action], raw_frame(), "2026-08-21", verifier, {})
+        retry_conflicting_verifications(conn, "603132", [], raw_frame(), "2026-08-24", verifier, {})
+        verifier.verify.assert_not_called()
+        retry_conflicting_verifications(conn, "603132", [action], raw_frame(), "2026-08-24", verifier, {})
+        verifier.verify.assert_called_once()
+
     def test_baostock_login_timeout_is_bounded_and_not_retried(self):
         verifier = BaoStockVerifier()
         original_timeout = socket.getdefaulttimeout()

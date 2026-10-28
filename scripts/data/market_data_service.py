@@ -14,6 +14,7 @@ from scripts.data.corporate_actions import (
     apply_point_in_time_qfq,
     load_actions,
     reclassify_verifications,
+    retry_conflicting_verifications,
     save_verification,
     sync_tdx_actions,
     verification_status,
@@ -292,7 +293,10 @@ class MarketDataService:
                                     "max_factor_diff_pct": None, "max_raw_close_diff_pct": None,
                                     "detail": {"error": str(exc)},
                                 }
-                            save_verification(conn, code, candidate, verified)
+                            save_verification(conn, code, candidate, verified, run_date=as_of)
+                        retry_conflicting_verifications(
+                            conn, code, applied, raw_frame, as_of, verifier, cfg,
+                        )
                         adjustment_status = verification_status(conn, code, applied)
                         metadata = {
                             "price_mode": price_mode,

@@ -298,7 +298,13 @@ class BaoStockVerifier:
         }
 
 
-def save_verification(conn: sqlite3.Connection, code: str, action: dict, result: dict) -> None:
+def save_verification(
+    conn: sqlite3.Connection, code: str, action: dict, result: dict,
+    run_date: str | None = None,
+) -> None:
+    detail = dict(result.get("detail", {}))
+    if run_date:
+        detail["run_date"] = run_date
     conn.execute(
         """INSERT OR REPLACE INTO adjustment_verifications(
                code,ex_date,primary_source,verification_source,status,sample_count,
@@ -308,11 +314,56 @@ def save_verification(conn: sqlite3.Connection, code: str, action: dict, result:
             code, action["date"], PRIMARY_SOURCE, VERIFICATION_SOURCE,
             result["status"], int(result.get("sample_count", 0)),
             result.get("max_factor_diff_pct"), result.get("max_raw_close_diff_pct"),
-            json.dumps(result.get("detail", {}), ensure_ascii=False),
+            json.dumps(detail, ensure_ascii=False),
             datetime.now().isoformat(timespec="seconds"),
         ),
     )
     conn.commit()
+
+
+def retry_conflicting_verifications(
+    conn: sqlite3.Connection, code: str, applied: list[dict],
+    raw_frame: pd.DataFrame, as_of: str, verifier: BaoStockVerifier,
+    config: dict,
+) -> None:
+    """Recheck stale conflicts once per trading date, retaining the gate on errors."""
+    actions = {item["date"]: item for item in applied}
+    rows = conn.execute(
+        """SELECT ex_date,detail_json,verified_at FROM adjustment_verifications
+           WHERE code=? AND primary_source=? AND verification_source=? AND status='CONFLICT'""",
+        (code, PRIMARY_SOURCE, VERIFICATION_SOURCE),
+    ).fetchall()
+    for ex_date, detail_json, verified_at in rows:
+        if ex_date not in actions:
+            continue
+        detail = json.loads(detail_json)
+        last_run = max(
+            detail.get("run_date") or verified_at[:10],
+            detail.get("conflict_retry_run_date") or "",
+        )
+        if as_of <= last_run:
+            continue
+        try:
+            result = verifier.verify(
+                code, actions[ex_date], raw_frame, as_of,
+                float(config.get("max_factor_diff_pct", 1.0)),
+                float(config.get("max_raw_close_diff_pct", 0.15)),
+                int(config.get("verification_sample_days", 3)),
+            )
+            if result["status"] not in {"VERIFIED", "CONFLICT"}:
+                raise RuntimeError("冲突重验未返回有效核验结果")
+        except Exception as exc:
+            # A provider outage must not erase an established conflict.
+            detail.update({"conflict_retry_run_date": as_of, "conflict_retry_error": str(exc)})
+            conn.execute(
+                """UPDATE adjustment_verifications SET detail_json=?
+                   WHERE code=? AND ex_date=? AND primary_source=? AND verification_source=?""",
+                (json.dumps(detail, ensure_ascii=False), code, ex_date,
+                 PRIMARY_SOURCE, VERIFICATION_SOURCE),
+            )
+            conn.commit()
+            continue
+        save_verification(conn, code, actions[ex_date], result, run_date=as_of)
 
 
 def reclassify_verifications(

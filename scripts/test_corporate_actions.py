@@ -3,6 +3,8 @@
 import sqlite3
 import json
 import socket
+import tempfile
+from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
 
@@ -10,7 +12,10 @@ import pandas as pd
 
 from scripts.data.corporate_actions import (
     BaoStockVerifier,
+    EastmoneyVerifier,
+    FALLBACK_SOURCE,
     apply_point_in_time_qfq,
+    action_hash,
     event_factor,
     load_actions,
     normalize_tdx_actions,
@@ -18,9 +23,11 @@ from scripts.data.corporate_actions import (
     retry_conflicting_verifications,
     save_verification,
     sync_tdx_actions,
+    supplement_verifications,
     verification_status,
 )
 from scripts.data.market_data_store import create_schema
+from scripts.data.market_data_service import MarketDataService
 from scripts.data.tdx_block_data import TDXBlockSource
 
 
@@ -54,6 +61,138 @@ class FakeTDXSource:
 
 
 class CorporateActionTests(unittest.TestCase):
+    def test_data_service_restores_frame_and_exposes_third_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            db_path = Path(temp) / "market.sqlite"
+            conn = sqlite3.connect(db_path)
+            create_schema(conn)
+            action = dividend_action()
+            frame = raw_frame().rename(columns={"date": "trade_date"})
+            frame["code"] = "603132"
+            frame["source"] = "tdx"
+            frame["fetched_at"] = "2026-08-21T16:00:00"
+            frame.to_sql("daily_bars", conn, if_exists="append", index=False)
+            conn.execute("INSERT INTO corporate_actions VALUES(?,?,?,?,?,?,?,?,?,?)", (
+                "603132", action["date"], 3.3, 0, 0, 0, "tdx_xdxr", action_hash(action), "before", "before"))
+            save_verification(conn, "603132", action, {
+                "status": "CONFLICT", "sample_count": 2,
+                "max_factor_diff_pct": 2, "max_raw_close_diff_pct": 0,
+            }, run_date="2026-08-21")
+            conn.close()
+            with patch("scripts.data.market_data_service.connect_db", side_effect=lambda: sqlite3.connect(db_path)), \
+                 patch("scripts.data.market_data_service.sync_tdx_actions", return_value={"status": "CACHED", "changed": []}), \
+                 patch("scripts.data.market_data_service.BaoStockVerifier") as primary, \
+                 patch("scripts.data.market_data_service.EastmoneyVerifier") as fallback:
+                fallback.return_value.verify.return_value = {
+                    "status": "VERIFIED", "sample_count": 2,
+                    "max_factor_diff_pct": 0.01, "max_raw_close_diff_pct": 0,
+                }
+                frames, states = MarketDataService({"data": {}}).get_daily_bars(
+                    [("603132", "金徽酒")], "2026-08-21", 3, price_mode="point_in_time_qfq")
+                primary.return_value.verify.assert_not_called()
+                fallback.return_value.verify.assert_called_once()
+                self.assertIn("603132", frames)
+                self.assertEqual(states["603132"]["adjustment_status"], "VERIFIED")
+                self.assertEqual(states["603132"]["adjustment_verification_sources"], [FALLBACK_SOURCE])
+                self.assertAlmostEqual(frames["603132"].iloc[-2]["close"], 18.27)
+                fallback.return_value.close.assert_called_once()
+
+    def test_disabled_fallback_and_historical_primary_do_not_fetch(self):
+        conn, action = self.conflict_fixture()
+        verifier = Mock()
+        supplement_verifications(conn, "603132", [action], raw_frame(), "2026-08-24", verifier,
+                                 {"fallback_verification_source": None})
+        supplement_verifications(conn, "603132", [action], raw_frame(), "2026-08-20", verifier, {})
+        verifier.verify.assert_not_called()
+
+    def test_eastmoney_normalized_comparison(self):
+        verifier = EastmoneyVerifier()
+        self.addCleanup(verifier.close)
+        with patch.object(verifier, "_query", side_effect=[
+            {"2026-08-20": 18.60, "2026-08-21": 18.94},
+            {"2026-08-20": 18.27, "2026-08-21": 18.94},
+        ]):
+            result = verifier.verify("603132", dividend_action(), raw_frame(), "2026-08-21", 1, 0.15)
+        self.assertEqual(result["status"], "VERIFIED")
+        self.assertIn("eastmoney.com", result["detail"]["endpoint"])
+
+    def test_third_source_only_fetches_recorded_primary_failures(self):
+        conn, action = self.conflict_fixture()
+        verifier = Mock()
+        verifier.verify.return_value = {
+            "status": "VERIFIED", "sample_count": 3,
+            "max_factor_diff_pct": 0.02, "max_raw_close_diff_pct": 0.0,
+        }
+        supplement_verifications(conn, "603132", [action], raw_frame(), "2026-08-24", verifier, {})
+        self.assertEqual(verification_status(conn, "603132", [action]), "VERIFIED")
+        self.assertEqual(conn.execute("SELECT status FROM adjustment_verifications WHERE verification_source='baostock_qfq'").fetchone()[0], "CONFLICT")
+        for run_date in ("2026-08-24", "2026-08-25"):
+            supplement_verifications(conn, "603132", [action], raw_frame(), run_date, verifier, {})
+        self.assertEqual(verifier.verify.call_count, 1)
+        self.assertEqual(verification_status(conn, "603132", [action], "2026-08-21"), "CONFLICT")
+        supplement_verifications(conn, "000001", [action], raw_frame(), "2026-08-24", verifier, {})
+        conn.execute("UPDATE adjustment_verifications SET status='VERIFIED' WHERE verification_source='baostock_qfq'")
+        supplement_verifications(conn, "603132", [action], raw_frame(), "2026-08-26", verifier, {})
+        self.assertEqual(verifier.verify.call_count, 1)
+
+    def test_third_source_errors_are_cached_and_keep_conflict_gate(self):
+        conn, action = self.conflict_fixture()
+        verifier = Mock()
+        verifier.verify.side_effect = TimeoutError("third source timeout")
+        for run_date in ("2026-08-24", "2026-08-24", "2026-08-25"):
+            supplement_verifications(conn, "603132", [action], raw_frame(), run_date, verifier, {})
+        self.assertEqual(verifier.verify.call_count, 2)
+        self.assertEqual(verification_status(conn, "603132", [action]), "CONFLICT")
+
+    def test_pending_primary_can_be_verified_or_blocked_by_third_source(self):
+        for fallback_status in ("VERIFIED", "CONFLICT"):
+            with self.subTest(fallback_status=fallback_status):
+                conn, action = self.conflict_fixture()
+                conn.execute("UPDATE adjustment_verifications SET status='PENDING',sample_count=0")
+                verifier = Mock()
+                verifier.verify.return_value = {"status": fallback_status, "sample_count": 3,
+                                                "max_factor_diff_pct": 0.1 if fallback_status == "VERIFIED" else 2.0}
+                supplement_verifications(conn, "603132", [action], raw_frame(), "2026-08-24", verifier, {})
+                self.assertEqual(verification_status(conn, "603132", [action]), fallback_status)
+                if fallback_status == "CONFLICT":
+                    verifier.verify.side_effect = TimeoutError("offline")
+                    supplement_verifications(conn, "603132", [action], raw_frame(), "2026-08-25", verifier, {})
+                    self.assertEqual(verification_status(conn, "603132", [action]), "CONFLICT")
+
+    def test_changed_action_invalidates_third_source_success(self):
+        conn, action = self.conflict_fixture()
+        verifier = Mock()
+        verifier.verify.return_value = {"status": "VERIFIED", "sample_count": 3}
+        supplement_verifications(conn, "603132", [action], raw_frame(), "2026-08-24", verifier, {})
+        changed = {**action, "cash_dividend_per_10": 4.0}
+        self.assertEqual(verification_status(conn, "603132", [changed]), "CONFLICT")
+        supplement_verifications(conn, "603132", [changed], raw_frame(), "2026-08-24", verifier, {})
+        self.assertEqual(verifier.verify.call_count, 2)
+
+    def test_eastmoney_adapter_checks_security_prices_and_sample_coverage(self):
+        verifier = EastmoneyVerifier()
+        self.addCleanup(verifier.close)
+        payload = {"rc": 0, "data": {"code": "603132", "klines": ["2026-08-20,18,18.6,19,17,10"]}}
+        response = Mock()
+        response.json.return_value = payload
+        verifier.session = Mock()
+        verifier.session.get.return_value = response
+        self.assertEqual(verifier._query(None, "603132", "2026-08-20", "2026-08-21", "3"), {"2026-08-20": 18.6})
+        self.assertEqual(verifier.session.get.call_args.kwargs["timeout"], 10)
+        payload["data"]["code"] = "000001"
+        with self.assertRaisesRegex(RuntimeError, "证券不符"):
+            verifier._query(None, "603132", "2026-08-20", "2026-08-21", "3")
+        payload["data"]["code"] = "603132"
+        payload["data"]["klines"] = ["2026-08-20,18,nan,19,17,10"]
+        with self.assertRaisesRegex(RuntimeError, "价格无效"):
+            verifier._query(None, "603132", "2026-08-20", "2026-08-21", "3")
+        verifier._query = Mock(side_effect=[
+            {"2026-08-19": 18.64, "2026-08-21": 18.94},
+            {"2026-08-19": 18.31, "2026-08-21": 18.94},
+        ])
+        with self.assertRaisesRegex(RuntimeError, "本地应有"):
+            verifier.verify("603132", dividend_action(), raw_frame(), "2026-08-21", 1, 0.15)
+
     def conflict_fixture(self):
         conn = sqlite3.connect(":memory:")
         self.addCleanup(conn.close)

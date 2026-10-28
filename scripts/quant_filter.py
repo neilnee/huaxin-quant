@@ -4057,6 +4057,7 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True, p
         result.update({
             "price_mode": source.get("price_mode", PRICE_ADJUSTMENT_CFG["mode"]),
             "adjustment_status": source.get("adjustment_status", "PENDING"),
+            "adjustment_verification_sources": source.get("adjustment_verification_sources", []),
             "factor_version": source.get("factor_version", PRICE_ADJUSTMENT_CFG["factor_version"]),
             "applied_action_count": int(source.get("applied_action_count", 0)),
             "latest_corporate_action_date": source.get("latest_corporate_action_date"),

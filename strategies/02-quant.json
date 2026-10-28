@@ -9,6 +9,7 @@
     "mode": "point_in_time_qfq",
     "primary_source": "tdx_xdxr",
     "verification_source": "baostock_qfq",
+    "fallback_verification_source": "eastmoney_qfq",
     "factor_version": "qfq_v1",
     "verification_sample_days": 3,
     "max_factor_diff_pct": 1.0,

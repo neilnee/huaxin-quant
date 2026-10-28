@@ -12,10 +12,12 @@ from contextlib import redirect_stdout
 from datetime import date, datetime, timedelta
 
 import pandas as pd
+import requests
 
 
 PRIMARY_SOURCE = "tdx_xdxr"
 VERIFICATION_SOURCE = "baostock_qfq"
+FALLBACK_SOURCE = "eastmoney_qfq"
 PRICE_COLUMNS = ("open", "high", "low", "close")
 
 
@@ -189,6 +191,8 @@ def apply_point_in_time_qfq(frame: pd.DataFrame, actions: list[dict], as_of: str
 class BaoStockVerifier:
     """Compare local event factors with BaoStock using only 2-3 nearby sessions."""
 
+    provider_name = "BaoStock"
+
     def __init__(self):
         self.client = None
         self.login_error = None
@@ -266,7 +270,7 @@ class BaoStockVerifier:
         before = [value for value in common if value < ex_date]
         on_or_after = [value for value in common if value >= ex_date]
         if not before or not on_or_after:
-            raise RuntimeError("BaoStock 核验窗口缺少除权日前后交易日")
+            raise RuntimeError(f"{self.provider_name} 核验窗口缺少除权日前后交易日")
         reference = on_or_after[0]
         samples = [before[-1], reference]
         if len(on_or_after) > 1 and sample_days >= 3:
@@ -298,11 +302,68 @@ class BaoStockVerifier:
         }
 
 
+class EastmoneyVerifier(BaoStockVerifier):
+    """On-demand third source; reuse the same normalized event comparison."""
+
+    URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+    provider_name = "东方财富"
+
+    def __init__(self):
+        self.session = requests.Session()
+
+    def _login(self):
+        return self
+
+    def close(self):
+        self.session.close()
+
+    def _query(self, client, code, start, end, adjustflag):
+        market = "1" if code.startswith("6") else "0"
+        response = self.session.get(self.URL, params={
+            "secid": f"{market}.{code}", "klt": "101",
+            "fqt": "0" if adjustflag == "3" else "1",
+            "beg": start.replace("-", ""), "end": end.replace("-", ""),
+            "lmt": "100", "fields1": "f1,f2,f3,f4,f5,f6",
+            "fields2": "f51,f52,f53,f54,f55,f56",
+        }, timeout=10)
+        response.raise_for_status()
+        payload = response.json()
+        data = payload.get("data") or {}
+        if payload.get("rc") != 0 or data.get("code") != code or not data.get("klines"):
+            raise RuntimeError("东方财富核验返回空数据或证券不符")
+        rows = {}
+        for line in data["klines"]:
+            fields = line.split(",")
+            trade_date = date.fromisoformat(fields[0]).isoformat()
+            close = float(fields[2])
+            if not math.isfinite(close) or close <= 0 or trade_date in rows:
+                raise RuntimeError("东方财富核验价格无效或日期重复")
+            if start <= trade_date <= end:
+                rows[trade_date] = close
+        return rows
+
+    def verify(self, code, action, raw_frame, as_of, max_factor_diff_pct,
+               max_raw_close_diff_pct, sample_days=3):
+        result = super().verify(code, action, raw_frame, as_of, max_factor_diff_pct,
+                                max_raw_close_diff_pct, sample_days)
+        dates = sorted(str(value) for value in raw_frame["date"] if str(value) <= as_of)
+        before = [value for value in dates if value < action["date"]]
+        after = [value for value in dates if value >= action["date"]]
+        expected = ([before[-1]] if before else []) + after[:2 if sample_days >= 3 else 1]
+        actual = [item["date"] for item in result["detail"]["samples"]]
+        if actual != expected or len(expected) < 2:
+            raise RuntimeError("东方财富核验缺少本地应有的事件样本")
+        result["detail"]["endpoint"] = self.URL
+        return result
+
+
 def save_verification(
     conn: sqlite3.Connection, code: str, action: dict, result: dict,
     run_date: str | None = None,
+    verification_source: str = VERIFICATION_SOURCE,
 ) -> None:
     detail = dict(result.get("detail", {}))
+    detail["action_hash"] = action_hash(action)
     if run_date:
         detail["run_date"] = run_date
     conn.execute(
@@ -311,7 +372,7 @@ def save_verification(
                max_factor_diff_pct,max_raw_close_diff_pct,detail_json,verified_at
            ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
         (
-            code, action["date"], PRIMARY_SOURCE, VERIFICATION_SOURCE,
+            code, action["date"], PRIMARY_SOURCE, verification_source,
             result["status"], int(result.get("sample_count", 0)),
             result.get("max_factor_diff_pct"), result.get("max_raw_close_diff_pct"),
             json.dumps(detail, ensure_ascii=False),
@@ -385,17 +446,77 @@ def reclassify_verifications(
     conn.commit()
 
 
-def verification_status(conn: sqlite3.Connection, code: str, applied: list[dict]) -> str:
-    if not applied:
-        return "NO_ACTION"
-    statuses = []
+def supplement_verifications(conn, code, applied, raw_frame, as_of, verifier, config):
+    """Fetch a third-source opinion only for recorded primary verification failures."""
+    if config.get("fallback_verification_source", FALLBACK_SOURCE) != FALLBACK_SOURCE:
+        return
     for action in applied:
-        row = conn.execute(
-            """SELECT status FROM adjustment_verifications
-                WHERE code=? AND ex_date=? AND primary_source=? AND verification_source=?""",
+        primary = conn.execute(
+            """SELECT status,detail_json,verified_at FROM adjustment_verifications WHERE code=? AND ex_date=?
+               AND primary_source=? AND verification_source=?""",
             (code, action["date"], PRIMARY_SOURCE, VERIFICATION_SOURCE),
         ).fetchone()
-        statuses.append(row[0] if row else "PENDING")
+        if not primary or primary[0] not in {"CONFLICT", "PENDING"}:
+            continue
+        if (json.loads(primary[1]).get("run_date") or primary[2][:10]) > as_of:
+            continue
+        cached = conn.execute(
+            """SELECT status,detail_json FROM adjustment_verifications WHERE code=? AND ex_date=?
+               AND primary_source=? AND verification_source=?""",
+            (code, action["date"], PRIMARY_SOURCE, FALLBACK_SOURCE),
+        ).fetchone()
+        if cached:
+            detail = json.loads(cached[1])
+            if detail.get("action_hash") == action_hash(action):
+                if cached[0] == "VERIFIED" or detail.get("run_date", "") >= as_of:
+                    continue
+        try:
+            result = verifier.verify(
+                code, action, raw_frame, as_of,
+                float(config.get("max_factor_diff_pct", 1.0)),
+                float(config.get("max_raw_close_diff_pct", 0.15)),
+                int(config.get("verification_sample_days", 3)),
+            )
+        except Exception as exc:
+            result = {"status": "PENDING", "sample_count": 0, "detail": {"error": str(exc)}}
+            # Retain an established third-source conflict if the next request fails.
+            if cached and cached[0] == "CONFLICT" and json.loads(cached[1]).get("action_hash") == action_hash(action):
+                detail = json.loads(cached[1])
+                detail.update({"run_date": as_of, "retry_error": str(exc)})
+                conn.execute(
+                    """UPDATE adjustment_verifications SET detail_json=? WHERE code=? AND ex_date=?
+                       AND primary_source=? AND verification_source=?""",
+                    (json.dumps(detail, ensure_ascii=False), code, action["date"], PRIMARY_SOURCE, FALLBACK_SOURCE),
+                )
+                conn.commit()
+                continue
+        save_verification(conn, code, action, result, run_date=as_of, verification_source=FALLBACK_SOURCE)
+
+
+def effective_verifications(conn, code, applied, as_of=None):
+    effective = []
+    for action in applied:
+        rows = conn.execute(
+            """SELECT verification_source,status,detail_json FROM adjustment_verifications
+               WHERE code=? AND ex_date=? AND primary_source=?""",
+            (code, action["date"], PRIMARY_SOURCE),
+        ).fetchall()
+        primary = next((row for row in rows if row[0] == VERIFICATION_SOURCE), None)
+        fallback = next((row for row in rows if row[0] == FALLBACK_SOURCE
+                         and json.loads(row[2]).get("action_hash") == action_hash(action)
+                         and (not as_of or json.loads(row[2]).get("run_date", "") <= as_of)), None)
+        selected = primary
+        if (not primary or primary[1] != "VERIFIED") and fallback and fallback[1] in {"VERIFIED", "CONFLICT"}:
+            if fallback[1] == "VERIFIED" or not primary or primary[1] != "CONFLICT":
+                selected = fallback
+        effective.append((selected[1], selected[0]) if selected else ("PENDING", "unverified"))
+    return effective
+
+
+def verification_status(conn: sqlite3.Connection, code: str, applied: list[dict], as_of=None) -> str:
+    if not applied:
+        return "NO_ACTION"
+    statuses = [status for status, _ in effective_verifications(conn, code, applied, as_of)]
     if "CONFLICT" in statuses:
         return "CONFLICT"
     if all(value == "VERIFIED" for value in statuses):

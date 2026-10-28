@@ -11,12 +11,15 @@ import pandas as pd
 from scripts.data.market_data_store import BLOCK_DIR, DB_PATH, connect_db, create_schema
 from scripts.data.corporate_actions import (
     BaoStockVerifier,
+    EastmoneyVerifier,
     apply_point_in_time_qfq,
+    effective_verifications,
     load_actions,
     reclassify_verifications,
     retry_conflicting_verifications,
     save_verification,
     sync_tdx_actions,
+    supplement_verifications,
     verification_status,
 )
 from scripts.data.tdx_block_data import TDXBlockSource
@@ -243,6 +246,7 @@ class MarketDataService:
                 cfg = adjustment_config or {}
                 source = TDXBlockSource()
                 verifier = BaoStockVerifier()
+                fallback_verifier = EastmoneyVerifier()
                 try:
                     for code in list(frames):
                         sync = sync_tdx_actions(conn, source, code, as_of, force=force_refresh)
@@ -297,10 +301,16 @@ class MarketDataService:
                         retry_conflicting_verifications(
                             conn, code, applied, raw_frame, as_of, verifier, cfg,
                         )
-                        adjustment_status = verification_status(conn, code, applied)
+                        supplement_verifications(
+                            conn, code, applied, raw_frame, as_of, fallback_verifier, cfg,
+                        )
+                        adjustment_status = verification_status(conn, code, applied, as_of)
                         metadata = {
                             "price_mode": price_mode,
                             "adjustment_status": adjustment_status,
+                            "adjustment_verification_sources": sorted({
+                                source for _, source in effective_verifications(conn, code, applied, as_of)
+                            }),
                             "factor_version": str(cfg.get("factor_version", "qfq_v1")),
                             "applied_action_count": len(applied),
                             "latest_corporate_action_date": applied[-1]["date"] if applied else None,
@@ -310,13 +320,14 @@ class MarketDataService:
                             frames.pop(code, None)
                             status[code].update({
                                 "source": "adjustment_conflict",
-                                "error": "通达信公司行为与 BaoStock 抽样核验冲突",
+                                "error": "通达信公司行为复权核验冲突（详见各源核验记录）",
                                 "retryable": False,
                             })
                         else:
                             frames[code] = adjusted
                 finally:
                     verifier.close()
+                    fallback_verifier.close()
             else:
                 for code in status:
                     status[code].update({

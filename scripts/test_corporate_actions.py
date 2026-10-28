@@ -80,7 +80,7 @@ class CorporateActionTests(unittest.TestCase):
             }, run_date="2026-08-21")
             conn.close()
             with patch("scripts.data.market_data_service.connect_db", side_effect=lambda: sqlite3.connect(db_path)), \
-                 patch("scripts.data.market_data_service.sync_tdx_actions", return_value={"status": "CACHED", "changed": []}), \
+                 patch("scripts.data.market_data_service.sync_tdx_actions", return_value={"status": "CACHED", "changed": []}) as sync, \
                  patch("scripts.data.market_data_service.BaoStockVerifier") as primary, \
                  patch("scripts.data.market_data_service.EastmoneyVerifier") as fallback:
                 fallback.return_value.verify.return_value = {
@@ -96,6 +96,40 @@ class CorporateActionTests(unittest.TestCase):
                 self.assertEqual(states["603132"]["adjustment_verification_sources"], [FALLBACK_SOURCE])
                 self.assertAlmostEqual(frames["603132"].iloc[-2]["close"], 18.27)
                 fallback.return_value.close.assert_called_once()
+                conn = sqlite3.connect(db_path)
+                next_bar = frame.iloc[[-1]].copy()
+                next_bar["trade_date"] = "2026-08-24"
+                next_bar.to_sql("daily_bars", conn, if_exists="append", index=False)
+                conn.close()
+                sync.return_value = {"status": "SUCCESS", "changed": []}
+                for primary_status in ("CONFLICT", "PENDING"):
+                    with self.subTest(primary_status=primary_status):
+                        conn = sqlite3.connect(db_path)
+                        conn.execute(
+                            """UPDATE adjustment_verifications SET status=?,sample_count=0
+                               WHERE verification_source='baostock_qfq'""", (primary_status,))
+                        conn.commit()
+                        conn.close()
+                        frames, states = MarketDataService({"data": {}}).get_daily_bars(
+                            [("603132", "金徽酒")], "2026-08-24", 3, price_mode="point_in_time_qfq")
+                        self.assertIn("603132", frames)
+                        self.assertEqual(states["603132"]["adjustment_status"], "VERIFIED")
+                        primary.return_value.verify.assert_not_called()
+                        self.assertEqual(fallback.return_value.verify.call_count, 1)
+
+    def test_changed_event_or_future_fallback_does_not_skip_conflict_retry(self):
+        for changed_event in (False, True):
+            with self.subTest(changed_event=changed_event):
+                conn, action = self.conflict_fixture()
+                save_verification(conn, "603132", action, {
+                    "status": "VERIFIED", "sample_count": 3,
+                }, run_date="2026-08-21" if changed_event else "2026-08-25",
+                    verification_source=FALLBACK_SOURCE)
+                current = {**action, "cash_dividend_per_10": 4.0} if changed_event else action
+                primary = Mock()
+                primary.verify.return_value = {"status": "VERIFIED", "sample_count": 3}
+                retry_conflicting_verifications(conn, "603132", [current], raw_frame(), "2026-08-24", primary, {})
+                primary.verify.assert_called_once()
 
     def test_disabled_fallback_and_historical_primary_do_not_fetch(self):
         conn, action = self.conflict_fixture()

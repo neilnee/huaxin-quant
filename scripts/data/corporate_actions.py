@@ -382,6 +382,20 @@ def save_verification(
     conn.commit()
 
 
+def fallback_verification_passed(conn, code, action, as_of):
+    """Reuse a passed third-source opinion only for the same event and run-date boundary."""
+    row = conn.execute(
+        """SELECT status,detail_json FROM adjustment_verifications WHERE code=? AND ex_date=?
+           AND primary_source=? AND verification_source=?""",
+        (code, action["date"], PRIMARY_SOURCE, FALLBACK_SOURCE),
+    ).fetchone()
+    if not row or row[0] != "VERIFIED":
+        return False
+    detail = json.loads(row[1])
+    run_date = detail.get("run_date")
+    return bool(run_date and run_date <= as_of and detail.get("action_hash") == action_hash(action))
+
+
 def retry_conflicting_verifications(
     conn: sqlite3.Connection, code: str, applied: list[dict],
     raw_frame: pd.DataFrame, as_of: str, verifier: BaoStockVerifier,
@@ -396,6 +410,8 @@ def retry_conflicting_verifications(
     ).fetchall()
     for ex_date, detail_json, verified_at in rows:
         if ex_date not in actions:
+            continue
+        if fallback_verification_passed(conn, code, actions[ex_date], as_of):
             continue
         detail = json.loads(detail_json)
         last_run = max(

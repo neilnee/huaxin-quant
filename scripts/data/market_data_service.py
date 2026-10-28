@@ -14,6 +14,7 @@ from scripts.data.corporate_actions import (
     EastmoneyVerifier,
     apply_point_in_time_qfq,
     effective_verifications,
+    fallback_verification_passed,
     load_actions,
     reclassify_verifications,
     retry_conflicting_verifications,
@@ -281,6 +282,7 @@ class MarketDataService:
                             pending = [
                                 item for item in actions
                                 if item["date"] in applied_dates and item["date"] in pending_dates
+                                and not fallback_verification_passed(conn, code, item, as_of)
                             ]
                         if pending:
                             candidate = max(pending, key=lambda item: item["date"])

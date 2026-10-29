@@ -12,6 +12,14 @@ Huaxin Quant 是多模型流水线的股票花期发现与跟踪系统。本文�
 
 所有 Git 命令显式使用 `git -C <source-repo> ...`。禁止在没有 `.git` 的本地运行实例直接执行普通 `git status/diff/add/commit`。
 
+推送到 GitHub 按以下固定顺序执行：
+
+1. 在当前开发分支完成修改、验证和提交，并记录原分支名。
+2. 切换到主干，合并开发分支。
+3. 在合并后的主干提交上创建版本 Tag。
+4. 将主干和本次版本 Tag 推送到 GitHub。
+5. 推送完成后切回原开发分支。
+
 ### 2. 脚本始终走本地 symlink 路径调用
 
 从本地运行实例调用 `scripts/...`，例如 `.venv/bin/python scripts/daily.py`，使 `PROJECT_ROOT` 指向运行实例。不要用云盘真实路径调用脚本，否则会读写错误的数据目录。

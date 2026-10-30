@@ -74,6 +74,7 @@ dashboard/data/<YYYYMM>/signals_context_<YYMMDD>.js
 - 确定性状态、评分和指标分别标记为 `deterministic_rule` 或 `calculated_metric`。
 - `content_index` 的数量必须与实际数组一致。
 - `data_quality` 必须保留源模块状态、错误和降级信息。
+- Quant 的 `adjustment_warnings`（采用双外部一致因子或未解决复权冲突）须进入数据质量提示；保留原始事件及两源因子供追溯，不改变任何信号或计划。
 - VCP 状态计数必须携带 `count_basis`、`mutually_exclusive` 和 `total`。Bloom 来源计数的口径是
   合并历史跟踪状态与当日 Quant 结果后的完整生命周期快照，不得与当日 `input_total`、
   `result_total` 或页面 `display_total` 直接比较。页面状态计数必须由实际输出的

@@ -423,6 +423,8 @@ def build_data_quality(contexts: dict, llm_validation: dict) -> dict:
     quant_stats = (vcp.get("summary") or {}).get("quant_stats") or {}
     if int(quant_stats.get("pull_fail") or 0) > 0:
         warnings.append({"module": "vcp", "detail": {"quant_pull_fail": quant_stats["pull_fail"]}})
+    for detail in quant_stats.get("adjustment_warnings") or []:
+        warnings.append({"module": "quant_adjustment", "detail": detail})
     if llm_validation.get("status") == "WARNING":
         warnings.append({
             "module": "market_llm_validation",

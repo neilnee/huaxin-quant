@@ -134,6 +134,22 @@ def run_quant(date_yy, pool_path, progress_path):
     return run_stage(cmd)
 
 
+def load_quant_adjustment_warnings(date_yy):
+    path = Path(PROJECT_ROOT) / "cache" / "quant_runs" / f"quant_{date_yy}.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    expected = datetime.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
+    if (payload.get("meta") or {}).get("run_date") != expected:
+        raise ValueError("Quant复权提示日期不一致")
+    return (payload.get("stats") or {}).get("adjustment_warnings", [])
+
+
+def print_quant_adjustment_warnings(warnings):
+    if warnings:
+        print(f"[daily] 复权提示（{len(warnings)}项）：")
+        for item in warnings:
+            print(f"  ⚠ {item['code']} {item['name']} {item['ex_date']}: {item['reason']}")
+
+
 def run_bloom(date_yy, progress_path):
     return run_stage(
         [sys.executable, "scripts/bloom.py", "--date", date_yy,
@@ -421,10 +437,12 @@ def main():
     pool_path = Path(PROJECT_ROOT) / "pool" / f"pool_{date_yy}.csv"
 
     errors = []
+    quant_warnings = []
 
     def stop_after(stage):
         tracker.mark_failed(errors[-1] if errors else f"{stage} 失败")
         print(f"[daily] {stage} 失败，流水线中止。共 {len(errors)} 个错误")
+        print_quant_adjustment_warnings(quant_warnings)
         sys.exit(1)
 
     # ── Step 1: Shared market data update ──
@@ -461,7 +479,14 @@ def main():
         errors.append(f"quant: exit {result.returncode}")
         tracker.step_done("quant", error=f"exit {result.returncode}")
     else:
+        try:
+            quant_warnings = load_quant_adjustment_warnings(date_yy)
+        except (OSError, ValueError) as exc:
+            errors.append(f"quant: invalid adjustment warnings: {exc}")
+            tracker.step_done("quant", error=str(exc))
+            stop_after("Quant")
         tracker.step_done("quant")
+        tracker.step_update("quant", warnings=quant_warnings)
         print(f"[daily] ✓ quant done")
 
     if any("quant" in e for e in errors):
@@ -591,6 +616,7 @@ def main():
             tracker.step_done("zixuan")
             print(f"[daily] ✓ zixuan done")
 
+    print_quant_adjustment_warnings(quant_warnings)
     if errors:
         tracker.mark_failed(errors[-1])
         print(f"[daily] 流水线中止，共 {len(errors)} 个错误")

@@ -1,5 +1,15 @@
 # 共享行情数据修复参考
 
+## 双外部源一致因子裁决
+
+仅用于 point_in_time_qfq 的价格变换。事件因子为除权前样本 `(qfq/raw)` 相对于除权后参考日 `(qfq/raw)` 的比值；两外部源的绝对前复权价格不直接比较。比较偏差为 `abs(baostock_factor / eastmoney_factor - 1) * 100`，配置 `max_external_factor_diff_pct=0.01`，单位为百分比。满足条件时固定采用 BaoStock 因子，不平均或拼接两源。
+
+两个核验记录必须均为 `CONFLICT`，且证券、除权日、公司行为哈希相同，核验日期不晚于运行日；每源都须有相同的除权前最近有效交易日、除权后参考日以及本地已有的后一交易日样本。样本因子必须为有限正数，原始价格偏差须符合原0.15%门槛；记录中的本地预期因子须与当前原始行情重新计算结果一致。两源均须因因子偏差超过原1%门槛而冲突，除权后样本的归一化因子须为1。缺字段、样本不完整或不匹配时不推定外部一致。
+
+裁决从现有 adjustment_verifications 样本确定性生成，复用缓存；裁决命中时停止重复请求两核验源。原始两源状态与证据不覆盖。事件参数、原始行情或证据变化后重新裁决，历史运行不能使用未来核验记录。价格复权从原始帧按事件因子重算，不在已调整价格上重复乘因子。
+
+数据服务输出 `adjustment_factor_overrides`（事件日期、本地因子、两源因子、两源偏差、采用因子及来源、核验日期）和 `adjustment_warnings`。有效核验来源包含 `external_consensus_qfq`，并保留两个实际来源名称；总体状态继续按事件完整性为 VERIFIED/PARTIAL/PENDING/CONFLICT。Quant stats 保留采用外部一致因子的股票数及全部提示，包括因冲突未产生结果的股票；daily 将提示保存到 Quant 进度并在流程终态打印。兼容旧记录时不把缺失字段当作通过。
+
 ## 新版握手适配器
 
 项目`scripts/data/tdx_client.py`独立实现新版连接初始化和tdxlevel握手，复用tdxpy的请求、接收解压与原有解析器，并提供现有mootdx方法契约；不全局替换或修改第三方类。参考[tdxdata协议说明](https://github.com/ShanNing-YU/a-share-tdxdata/blob/main/docs/protocol.md)，握手消息及兼容行为以项目离线测试和本机同服对照为准，不从第三方描述推定全部服务的统一切换日期。

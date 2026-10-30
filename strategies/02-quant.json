@@ -10,10 +10,11 @@
     "primary_source": "tdx_xdxr",
     "verification_source": "baostock_qfq",
     "fallback_verification_source": "eastmoney_qfq",
-    "factor_version": "qfq_v1",
+    "factor_version": "qfq_v2_external_consensus",
     "verification_sample_days": 3,
     "max_factor_diff_pct": 1.0,
-    "max_raw_close_diff_pct": 0.15
+    "max_raw_close_diff_pct": 0.15,
+    "max_external_factor_diff_pct": 0.01
   },
   "vcp": {
     "lookback_days": 120,

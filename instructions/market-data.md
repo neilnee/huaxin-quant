@@ -56,4 +56,6 @@ cache/market_data/blocks/<YYMMDD>/
 
 Quant 的公司行为状态和核验门槛见 [02-quant.md](02-quant.md)。RS 统一、停牌窗口与跨消费者一致性是 [R3](../docs/IMPROVEMENT_ROADMAP.md) 待实现项，本次文档修订不改变价格口径。
 
+Quant 本地因子与 BaoStock、东方财富均冲突时，可按模型二指令的双源一致裁决采用已核验的外部事件因子；两个外部因子也不一致时保留冲突并拦截。裁决复用已有核验样本，不覆盖公司行为实派参数或原始日线，元数据和最终运行提示须说明采用或拦截原因。
+
 expected_trade_date 当前仅处理 15:00 分界及周末回退，不是完整交易所节假日日历。指定历史日期也不能证明后来补入的证券/板块快照当时可用；保留 snapshot_date、来源与 history_basis，严格点时验证单独处理。

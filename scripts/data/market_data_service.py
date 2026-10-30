@@ -14,6 +14,7 @@ from scripts.data.corporate_actions import (
     EastmoneyVerifier,
     apply_point_in_time_qfq,
     effective_verifications,
+    external_factor_consensus,
     fallback_verification_passed,
     load_actions,
     reclassify_verifications,
@@ -282,7 +283,7 @@ class MarketDataService:
                             pending = [
                                 item for item in actions
                                 if item["date"] in applied_dates and item["date"] in pending_dates
-                                and not fallback_verification_passed(conn, code, item, as_of)
+                                and not fallback_verification_passed(conn, code, item, as_of, cfg, raw_frame)
                             ]
                         if pending:
                             candidate = max(pending, key=lambda item: item["date"])
@@ -306,14 +307,32 @@ class MarketDataService:
                         supplement_verifications(
                             conn, code, applied, raw_frame, as_of, fallback_verifier, cfg,
                         )
-                        adjustment_status = verification_status(conn, code, applied, as_of)
+                        overrides = [
+                            resolution for action in applied
+                            if (resolution := external_factor_consensus(conn, code, action, as_of, raw_frame, cfg))
+                        ]
+                        if overrides:
+                            adjusted, applied = apply_point_in_time_qfq(
+                                raw_frame, actions, as_of,
+                                {item["ex_date"]: item["adopted_factor"] for item in overrides},
+                            )
+                        effective = effective_verifications(conn, code, applied, as_of, raw_frame, cfg)
+                        adjustment_status = verification_status(conn, code, applied, as_of, raw_frame, cfg)
+                        warnings = [{"kind": "external_consensus", **item} for item in overrides]
+                        warnings.extend({
+                            "kind": "unresolved_conflict", "ex_date": action["date"],
+                            "reason": "复权冲突未解决，未满足外部因子一致裁决条件，已拦截该股票",
+                        } for action, (state, _) in zip(applied, effective) if state == "CONFLICT")
+                        verification_sources = {source for _, source in effective}
+                        if overrides:
+                            verification_sources.update({"baostock_qfq", "eastmoney_qfq"})
                         metadata = {
                             "price_mode": price_mode,
                             "adjustment_status": adjustment_status,
-                            "adjustment_verification_sources": sorted({
-                                source for _, source in effective_verifications(conn, code, applied, as_of)
-                            }),
-                            "factor_version": str(cfg.get("factor_version", "qfq_v1")),
+                            "adjustment_verification_sources": sorted(verification_sources),
+                            "adjustment_factor_overrides": overrides,
+                            "adjustment_warnings": warnings,
+                            "factor_version": str(cfg.get("factor_version", "qfq_v2_external_consensus")),
                             "applied_action_count": len(applied),
                             "latest_corporate_action_date": applied[-1]["date"] if applied else None,
                         }

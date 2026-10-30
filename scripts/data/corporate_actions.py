@@ -18,6 +18,7 @@ import requests
 PRIMARY_SOURCE = "tdx_xdxr"
 VERIFICATION_SOURCE = "baostock_qfq"
 FALLBACK_SOURCE = "eastmoney_qfq"
+CONSENSUS_SOURCE = "external_consensus_qfq"
 PRICE_COLUMNS = ("open", "high", "low", "close")
 
 
@@ -165,7 +166,10 @@ def event_factor(previous_close: float, action: dict) -> float:
     return numerator / denominator
 
 
-def apply_point_in_time_qfq(frame: pd.DataFrame, actions: list[dict], as_of: str) -> tuple[pd.DataFrame, list[dict]]:
+def apply_point_in_time_qfq(
+    frame: pd.DataFrame, actions: list[dict], as_of: str,
+    factor_overrides: dict[str, float] | None = None,
+) -> tuple[pd.DataFrame, list[dict]]:
     """Adjust OHLC in memory; the caller's raw frame is never modified."""
     adjusted = frame.copy()
     adjusted["date"] = pd.to_datetime(adjusted["date"], errors="coerce").dt.strftime("%Y-%m-%d")
@@ -181,6 +185,10 @@ def apply_point_in_time_qfq(frame: pd.DataFrame, actions: list[dict], as_of: str
             continue
         previous_date = max(prior_dates)
         factor = event_factor(raw_close[previous_date], action)
+        if factor_overrides and ex_date in factor_overrides:
+            factor = float(factor_overrides[ex_date])
+            if not math.isfinite(factor) or factor <= 0:
+                raise ValueError(f"invalid external factor: {ex_date} {factor}")
         adjusted.loc[affected, list(PRICE_COLUMNS)] = (
             adjusted.loc[affected, list(PRICE_COLUMNS)].astype(float) * factor
         )
@@ -291,6 +299,7 @@ class BaoStockVerifier:
                 "date": trade_date, "normalized_factor": normalized,
                 "expected_factor": target, "factor_diff_pct": factor_diff,
                 "raw_close_diff_pct": raw_diff,
+                "raw_close": raw[trade_date], "local_raw_close": local[trade_date],
             })
         max_factor = max(factor_diffs)
         max_raw = max(raw_diffs)
@@ -382,18 +391,112 @@ def save_verification(
     conn.commit()
 
 
-def fallback_verification_passed(conn, code, action, as_of):
-    """Reuse a passed third-source opinion only for the same event and run-date boundary."""
+def external_factor_consensus(conn, code, action, as_of, raw_frame=None, config=None):
+    """Resolve two complete factor-only conflicts without replacing their evidence."""
+    cfg = config or {}
+    factor_limit = float(cfg.get("max_factor_diff_pct", 1.0))
+    raw_limit = float(cfg.get("max_raw_close_diff_pct", 0.15))
+    consensus_limit = float(cfg.get("max_external_factor_diff_pct", 0.01))
+    if not all(math.isfinite(x) and x >= 0 for x in (factor_limit, raw_limit, consensus_limit)):
+        raise ValueError("invalid adjustment verification tolerance")
+    rows = conn.execute(
+        """SELECT verification_source,status,sample_count,max_factor_diff_pct,
+                  max_raw_close_diff_pct,detail_json,verified_at
+             FROM adjustment_verifications WHERE code=? AND ex_date=? AND primary_source=?
+               AND verification_source IN (?,?)""",
+        (code, action["date"], PRIMARY_SOURCE, VERIFICATION_SOURCE, FALLBACK_SOURCE),
+    ).fetchall()
+    if len(rows) != 2:
+        return None
+    local = None
+    expected_dates = None
+    if raw_frame is not None:
+        local = {str(r.date): float(r.close) for r in raw_frame[["date", "close"]].itertuples(index=False)}
+        before = sorted(d for d in local if d < action["date"])
+        after = sorted(d for d in local if action["date"] <= d <= as_of)
+        if not before or not after:
+            return None
+        expected_dates = [before[-1], *after[:2 if int(cfg.get("verification_sample_days", 3)) >= 3 else 1]]
+    evidence = {}
+    try:
+        for source, status, count, factor_diff, raw_diff, detail_json, verified_at in rows:
+            if status != "CONFLICT" or count < 2:
+                return None
+            detail = json.loads(detail_json)
+            run_date = detail.get("run_date") or verified_at[:10]
+            if not run_date or (as_of and run_date > as_of) or detail.get("action_hash") != action_hash(action):
+                return None
+            if not math.isfinite(float(factor_diff)) or float(factor_diff) <= factor_limit:
+                return None
+            if not math.isfinite(float(raw_diff)) or not 0 <= float(raw_diff) <= raw_limit:
+                return None
+            samples = detail.get("samples", [])
+            if len(samples) != count or count not in (2, 3):
+                return None
+            dates = [sample["date"] for sample in samples]
+            if dates != sorted(set(dates)) or (expected_dates is not None and dates != expected_dates):
+                return None
+            if not dates[0] < action["date"] <= dates[1] or (as_of and dates[-1] > as_of):
+                return None
+            if detail.get("reference_date") != dates[1]:
+                return None
+            for index, sample in enumerate(samples):
+                factor = float(sample["normalized_factor"])
+                expected = float(sample["expected_factor"])
+                raw_error = float(sample["raw_close_diff_pct"])
+                if not all(math.isfinite(x) for x in (factor, expected, raw_error)) or factor <= 0 or expected <= 0:
+                    return None
+                if not 0 <= raw_error <= raw_limit:
+                    return None
+                if local is not None:
+                    target = event_factor(local[dates[0]], action) if index == 0 else 1.0
+                    if not math.isclose(expected, target, rel_tol=1e-10, abs_tol=1e-12):
+                        return None
+                    if "local_raw_close" in sample and not math.isclose(
+                        float(sample["local_raw_close"]), local[dates[index]], rel_tol=1e-10,
+                    ):
+                        return None
+                if index and (not math.isclose(expected, 1.0, abs_tol=1e-12)
+                              or abs(factor - 1.0) * 100 > consensus_limit):
+                    return None
+            factor = float(samples[0]["normalized_factor"])
+            expected = float(samples[0]["expected_factor"])
+            if abs(factor / expected - 1.0) * 100 <= factor_limit:
+                return None
+            evidence[source] = {"factor": factor, "local_factor": expected, "dates": dates, "run_date": run_date}
+    except (ValueError, TypeError, KeyError, OverflowError, ZeroDivisionError):
+        return None
+    primary, fallback = evidence[VERIFICATION_SOURCE], evidence[FALLBACK_SOURCE]
+    if primary["dates"] != fallback["dates"] or not math.isclose(
+        primary["local_factor"], fallback["local_factor"], rel_tol=1e-10, abs_tol=1e-12,
+    ):
+        return None
+    difference = abs(primary["factor"] / fallback["factor"] - 1.0) * 100
+    if difference > consensus_limit:
+        return None
+    return {
+        "ex_date": action["date"], "local_factor": primary["local_factor"],
+        "baostock_factor": primary["factor"], "eastmoney_factor": fallback["factor"],
+        "external_factor_diff_pct": difference, "adopted_factor": primary["factor"],
+        "adopted_source": VERIFICATION_SOURCE, "verification_source": CONSENSUS_SOURCE,
+        "verification_run_dates": {s: d["run_date"] for s, d in evidence.items()},
+        "reason": "本地因子与两外部源冲突，两外部事件因子一致，采用外部因子",
+    }
+
+
+def fallback_verification_passed(conn, code, action, as_of, config=None, raw_frame=None):
+    """Reuse a fallback pass or external consensus for the same point-in-time event."""
     row = conn.execute(
         """SELECT status,detail_json FROM adjustment_verifications WHERE code=? AND ex_date=?
            AND primary_source=? AND verification_source=?""",
         (code, action["date"], PRIMARY_SOURCE, FALLBACK_SOURCE),
     ).fetchone()
-    if not row or row[0] != "VERIFIED":
-        return False
-    detail = json.loads(row[1])
-    run_date = detail.get("run_date")
-    return bool(run_date and run_date <= as_of and detail.get("action_hash") == action_hash(action))
+    if row and row[0] == "VERIFIED":
+        detail = json.loads(row[1])
+        run_date = detail.get("run_date")
+        if run_date and run_date <= as_of and detail.get("action_hash") == action_hash(action):
+            return True
+    return external_factor_consensus(conn, code, action, as_of, raw_frame, config) is not None
 
 
 def retry_conflicting_verifications(
@@ -411,7 +514,7 @@ def retry_conflicting_verifications(
     for ex_date, detail_json, verified_at in rows:
         if ex_date not in actions:
             continue
-        if fallback_verification_passed(conn, code, actions[ex_date], as_of):
+        if fallback_verification_passed(conn, code, actions[ex_date], as_of, config, raw_frame):
             continue
         detail = json.loads(detail_json)
         last_run = max(
@@ -467,6 +570,8 @@ def supplement_verifications(conn, code, applied, raw_frame, as_of, verifier, co
     if config.get("fallback_verification_source", FALLBACK_SOURCE) != FALLBACK_SOURCE:
         return
     for action in applied:
+        if external_factor_consensus(conn, code, action, as_of, raw_frame, config):
+            continue
         primary = conn.execute(
             """SELECT status,detail_json,verified_at FROM adjustment_verifications WHERE code=? AND ex_date=?
                AND primary_source=? AND verification_source=?""",
@@ -509,9 +614,12 @@ def supplement_verifications(conn, code, applied, raw_frame, as_of, verifier, co
         save_verification(conn, code, action, result, run_date=as_of, verification_source=FALLBACK_SOURCE)
 
 
-def effective_verifications(conn, code, applied, as_of=None):
+def effective_verifications(conn, code, applied, as_of=None, raw_frame=None, config=None):
     effective = []
     for action in applied:
+        if external_factor_consensus(conn, code, action, as_of, raw_frame, config):
+            effective.append(("VERIFIED", CONSENSUS_SOURCE))
+            continue
         rows = conn.execute(
             """SELECT verification_source,status,detail_json FROM adjustment_verifications
                WHERE code=? AND ex_date=? AND primary_source=?""",
@@ -529,10 +637,11 @@ def effective_verifications(conn, code, applied, as_of=None):
     return effective
 
 
-def verification_status(conn: sqlite3.Connection, code: str, applied: list[dict], as_of=None) -> str:
+def verification_status(conn: sqlite3.Connection, code: str, applied: list[dict], as_of=None,
+                        raw_frame=None, config=None) -> str:
     if not applied:
         return "NO_ACTION"
-    statuses = [status for status, _ in effective_verifications(conn, code, applied, as_of)]
+    statuses = [status for status, _ in effective_verifications(conn, code, applied, as_of, raw_frame, config)]
     if "CONFLICT" in statuses:
         return "CONFLICT"
     if all(value == "VERIFIED" for value in statuses):

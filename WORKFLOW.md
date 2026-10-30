@@ -75,6 +75,8 @@ monitor 每 2 秒刷新一次，机器进度写入 `.tmp/daily_progress_<YYMMDD>
 
 资金观测的 `partial` 会记录明细并允许继续，当前总控不会仅因此标记 `degraded`。Quant 的个股处理失败或复权未完全核验也不直接触发总控降级；阅读 `cache/quant_runs/quant_<YYMMDD>.json` 的 stats、结果及数据状态，不能以总状态 `done` 代替个股覆盖核验。产物核验检查必需文件、索引和特定元数据，并非对每个包、每只股票的完整语义校验。
 
+Quant 复权遇到本地与两外部源均冲突、但两外部事件因子一致且样本完整时，按模型二指令采用外部因子继续计算；两外部也不一致时继续拦截个股。采用外部因子与未解决冲突均保存在 Quant stats、进度文件和最终运行提示中；这些提示本身不改变总控终态，不新增公告查询或重跑工作流。
+
 ```bash
 python3 scripts/monitor.py --date 260709         # 指定日期
 python3 scripts/monitor.py --interval 1          # 调整轮询间隔（秒）

@@ -4002,6 +4002,8 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True, p
         "adjustment_partial": 0,
         "adjustment_pending": 0,
         "adjustment_conflict": 0,
+        "adjustment_external_consensus": 0,
+        "adjustment_warnings": [],
     }
     service = MarketDataService(MARKET_DATA_CONFIG)
     frames, data_status = service.get_daily_bars(
@@ -4023,6 +4025,12 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True, p
 
         print(f"[{i+1}/{len(codes)}] {code} {name} ...", end=" ", flush=True)
         df, source = frames.get(code), data_status.get(code, {"source": "missing", "error": "数据库未返回数据", "retryable": False})
+        if source.get("adjustment_factor_overrides"):
+            stats["adjustment_external_consensus"] += 1
+        stats["adjustment_warnings"].extend(
+            {"code": code, "name": name, **warning}
+            for warning in source.get("adjustment_warnings", [])
+        )
         adjustment_status = str(source.get("adjustment_status") or "PENDING").lower()
         stats_key = f"adjustment_{adjustment_status}"
         if stats_key in stats:
@@ -4058,6 +4066,7 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True, p
             "price_mode": source.get("price_mode", PRICE_ADJUSTMENT_CFG["mode"]),
             "adjustment_status": source.get("adjustment_status", "PENDING"),
             "adjustment_verification_sources": source.get("adjustment_verification_sources", []),
+            "adjustment_factor_overrides": source.get("adjustment_factor_overrides", []),
             "factor_version": source.get("factor_version", PRICE_ADJUSTMENT_CFG["factor_version"]),
             "applied_action_count": int(source.get("applied_action_count", 0)),
             "latest_corporate_action_date": source.get("latest_corporate_action_date"),
@@ -4076,7 +4085,10 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True, p
         retry_results, retry_stats = process_codes(retry_queue, today_yy, run_date, use_cache=False, allow_retry=False, progress_file=progress_file)
         results.extend(retry_results)
         for key, val in retry_stats.items():
-            stats[key] += val
+            if isinstance(val, list):
+                stats[key].extend(val)
+            else:
+                stats[key] += val
 
     return results, stats
 
@@ -4171,6 +4183,9 @@ def main():
     else:
         print("\n无 model2_include 标的，CSV 未写入。可用 --include-reject 输出完整结果。")
     write_json(payload, json_path)
+
+    for warning in stats.get("adjustment_warnings", []):
+        print(f"[复权提示] {warning['code']} {warning['name']} {warning['ex_date']}: {warning['reason']}")
 
     if mode == "单股" and results:
         print_single_summary(results[0])

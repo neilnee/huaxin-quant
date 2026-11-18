@@ -11,7 +11,7 @@ import sqlite3
 import sys
 from collections import defaultdict
 from contextlib import closing
-from math import isfinite
+from math import isfinite, prod
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -20,8 +20,13 @@ from scripts.research_rps import select_pool_rps
 from scripts.shared import PROJECT_ROOT, expected_trade_date, normalize_date_arg
 
 
-VERSION = 'manual_preselection_v1'
+VERSION = 'manual_preselection_v2'
 SCORE_MIN = 65
+SECTOR_SESSIONS = 3
+SECTOR_RANK_LIMIT = 0.25
+SECTOR_MA20_MIN = 50
+SECTOR_MAX_PER_INDUSTRY = 2
+SECTOR_MAX_TOTAL = 6
 BUY_SIGNALS = {'PULLBACK_BUY', 'BREAKOUT_BUY', 'RETEST_BUY'}
 BLOCKED_BLOOM = {'RISK_BLOCKED', 'DATA_ISSUE', 'INVALID', 'EXIT'}
 DECISIONS = {'重点研究', '条件观察', '突破/强势后跟踪', '待核'}
@@ -73,6 +78,11 @@ def prebreak(q):
     return (q.get('model2_include') is True and q.get('structure_valid') is True
             and q.get('structure_type') == 'VCP'
             and q.get('post_breakout_state') == 'PRE_BREAKOUT')
+
+
+def has_qualified_impulse(q):
+    impulse = (q.get('structure_score_details') or {}).get('impulse') or {}
+    return impulse.get('status') == 'COMPLETE' and (number(impulse.get('contribution')) or 0) > 0
 
 
 def hard_risk(q, b, risk_rules):
@@ -143,9 +153,72 @@ def _fact_row(code, q, b, plans, origins, groups, exclusion, held, risk_rules):
     }
 
 
+def select_sector_supplement(sector_history, pool, strengths, quant, existing, excluded, order):
+    dates = sector_history['trade_dates']
+    audit = {'status': 'UNAVAILABLE', 'trade_dates': dates, 'reason': sector_history['reason'],
+             'industry_data_gaps': {}, 'industries': []}
+    if audit['reason']:
+        return set(), audit
+
+    by_industry = defaultdict(list)
+    for row in sector_history['rows']:
+        by_industry[row['block_name']].append(row)
+    qualifying = []
+    for name, history in sorted(by_industry.items()):
+        days = {row['trade_date']: row for row in history}
+        gaps = [day for day in dates if day not in days or days[day]['data_status'] != 'READY'
+                or days[day]['history_basis'] != 'point_in_time'
+                or any(number(days[day][key]) is None for key in (
+                    'rank_pct_5', 'above_ma20_ratio', 'relative_strength_1', 'median_return_1'))]
+        if gaps:
+            audit['industry_data_gaps'][name] = gaps
+            continue
+        history = [days[date] for date in dates]
+        ranks = [row['rank_pct_5'] for row in history]
+        breadth = [row['above_ma20_ratio'] for row in history]
+        compounded = (prod(1 + row['median_return_1'] / 100 for row in history) - 1) * 100
+        if (ranks[0] >= ranks[1] >= ranks[2] and ranks[0] > ranks[2]
+                and ranks[2] <= SECTOR_RANK_LIMIT
+                and breadth[0] <= breadth[1] <= breadth[2] and breadth[0] < breadth[2]
+                and breadth[2] >= SECTOR_MA20_MIN and compounded > 0
+                and sum(row['relative_strength_1'] > 0 for row in history) >= 2):
+            qualifying.append((ranks[2], name, history, round(compounded, 6)))
+
+    audit['status'] = 'PARTIAL' if audit['industry_data_gaps'] else 'READY'
+    members = defaultdict(list)
+    for code in pool:
+        members[strengths.get(code, {}).get('sw_l2_name')].append(code)
+    audit['pool_codes_missing_industry'] = sorted(members.get(None, []) + members.get('', []))
+    selected = set()
+    for _, name, history, compounded in sorted(qualifying):
+        eligible, exclusions = [], {}
+        for code in sorted(members.get(name, [])):
+            q = quant.get(code) or {}
+            reason = excluded(code)
+            if reason is None and not prebreak(q):
+                reason = '缺当前有效突破前VCP'
+            if reason is None and not has_qualified_impulse(q):
+                reason = '缺有效推进贡献'
+            if reason:
+                exclusions[code] = reason
+            else:
+                eligible.append(code)
+        eligible.sort(key=order)
+        unmatched = [code for code in eligible if code not in existing]
+        added = unmatched[:min(SECTOR_MAX_PER_INDUSTRY, SECTOR_MAX_TOTAL - len(selected))]
+        selected.update(added)
+        audit['industries'].append({
+            'name': name, 'history': history, 'three_session_return': compounded,
+            'eligible_codes': eligible, 'exclusions': exclusions,
+            'overlap_codes': [code for code in eligible if code in existing],
+            'added_codes': added,
+        })
+    return selected, audit
+
+
 def build_preselection(pool_codes, strengths, quant, bloom, plans, *, analysis_date,
                        followups=None, deferred_codes=(), extra_codes=(), held_codes=(),
-                       risk_rules=None, provenance=None):
+                       risk_rules=None, provenance=None, sector_history=None):
     pool, held = set(pool_codes), set(held_codes)
     followups, risk_rules = followups or {}, risk_rules or {}
     deferred, extra = set(deferred_codes), set(extra_codes)
@@ -171,22 +244,27 @@ def build_preselection(pool_codes, strengths, quant, bloom, plans, *, analysis_d
     for code in supplements - formal:
         q = quant.get(code) or {}
         details = q.get('structure_score_details') or {}
-        impulse = details.get('impulse') or {}
         score = number(q.get('structure_score'))
         positive_bonus = any((details.get(key) or {}).get('hit') is True
                              and (number((details.get(key) or {}).get('score')) or 0) > 0
                              for key in ('contraction_quality', 'terminal_micro'))
         if (excluded(code) is None and prebreak(q) and score is not None and score < SCORE_MIN
-                and impulse.get('status') == 'COMPLETE'
-                and (number(impulse.get('contribution')) or 0) > 0 and positive_bonus):
+                and has_qualified_impulse(q) and positive_bonus):
             component.add(code)
     sources['分项补充'] = component
-    selected = formal | component
-    universe = selected | supplements
+    original = formal | component
 
     def order(code):
         score = number((quant.get(code) or {}).get('structure_score'))
         return (score is None, -score if score is not None else 0, code)
+
+    sector, sector_audit = select_sector_supplement(
+        sector_history or {'trade_dates': [], 'reason': '未提供板块历史'},
+        pool, strengths, quant, original, excluded, order)
+    sources['板块延续补充'] = sector
+    selected = original | sector
+    universe = selected | supplements
+    sector_order = [code for industry in sector_audit['industries'] for code in industry['added_codes']]
 
     records = []
     for code in sorted(universe, key=order):
@@ -194,28 +272,32 @@ def build_preselection(pool_codes, strengths, quant, bloom, plans, *, analysis_d
         origins += [name for name, codes in [('跨日跟进', set(followups)),
                     ('暂缓复核', deferred), ('明确补充', extra)] if code in codes]
         groups = [name for name, codes in [('quantitative', quantitative),
-                  ('component_supplement', component), ('rps', rps_codes)] if code in codes]
+                  ('component_supplement', component), ('rps', rps_codes),
+                  ('sector_supplement', sector)] if code in codes]
         row = _fact_row(code, quant.get(code) or {}, bloom.get(code) or {}, plans.get(code) or [],
                         origins, groups, excluded(code), held, risk_rules)
         row['selected_for_chart'] = code in selected
+        row['sector_name'] = strengths.get(code, {}).get('sw_l2_name') or None
         row['prior_followup'] = followups.get(code)
         records.append(row)
-    chart_codes = [r['code'] for r in records if r['selected_for_chart'] and r['route'] != 'HOLDING_REVIEW']
+    chart_codes = [r['code'] for r in records
+                   if r['code'] in original and r['route'] != 'HOLDING_REVIEW'] + sector_order
     return {
         'version': VERSION, 'analysis_date': analysis_date,
         'purpose': '量化预筛的看图对象，不是研究重点、买点或交易授权',
         'provenance': provenance or {},
         'groups': {'quantitative': sorted(quantitative), 'component_supplement': sorted(component),
-                   'rps': sorted(rps_codes)},
+                   'rps': sorted(rps_codes), 'sector_supplement': sorted(sector)},
         'source_codes': {k: sorted(v) for k, v in sources.items()},
         'source_exclusions': {name: {c: excluded(c) for c in sorted(codes) if excluded(c)}
                               for name, codes in raw.items()},
         'counts': {'pool': len(pool), 'quantitative': len(quantitative), 'rps': len(rps_codes),
                    'quantitative_rps_overlap': len(quantitative & rps_codes),
-                   'component_supplement': len(component), 'selected': len(selected),
+                   'component_supplement': len(component), 'sector_supplement': len(sector),
+                   'selected': len(selected),
                    'chart_review': len(chart_codes), 'maintenance': len(universe - selected),
                    'universe': len(universe)},
-        'rps': rps, 'pool_missing_quant': sorted(pool - set(quant)),
+        'rps': rps, 'sector_supplement': sector_audit, 'pool_missing_quant': sorted(pool - set(quant)),
         'chart_review_codes': chart_codes,
         'holding_review_codes': sorted(selected & held),
         'maintenance_codes': sorted(universe - selected, key=order),
@@ -321,6 +403,39 @@ def _trim_quant(q):
     return result
 
 
+def load_sector_history(root, date):
+    market_db = root / 'cache/market_data/market_data.sqlite'
+    state_db = root / 'cache/market_regime/market_regime.sqlite'
+    result = {'trade_dates': [], 'rows': [], 'reason': None}
+    missing = [str(path.relative_to(root)) for path in (market_db, state_db) if not path.is_file()]
+    if missing:
+        result['reason'] = '缺本地板块窗口输入: ' + ', '.join(missing)
+        return result
+    try:
+        with closing(sqlite3.connect(market_db.resolve().as_uri() + '?mode=ro', uri=True)) as conn:
+            dates = [row[0] for row in conn.execute(
+                """SELECT trade_date FROM daily_bars WHERE code='IDX:000001' AND trade_date<=?
+                   ORDER BY trade_date DESC LIMIT ?""", (date, SECTOR_SESSIONS))][::-1]
+        result['trade_dates'] = dates
+        if len(dates) != SECTOR_SESSIONS or dates[-1] != date:
+            result['reason'] = '上证综指日线缺分析日或不足三个交易日'
+            return result
+        with closing(sqlite3.connect(state_db.resolve().as_uri() + '?mode=ro', uri=True)) as conn:
+            conn.row_factory = sqlite3.Row
+            result['rows'] = [dict(row) for row in conn.execute(
+                """SELECT trade_date,block_name,member_count,rank_5,rank_pct_5,rank_20,
+                          above_ma20_ratio,advance_ratio,relative_strength_1,median_return_1,
+                          sector_phase,volume_activity,data_status,history_basis
+                   FROM sector_daily_metrics WHERE block_kind='industry_sw_l2'
+                   AND trade_date BETWEEN ? AND ? ORDER BY block_name,trade_date""",
+                (dates[0], dates[-1])) if row['trade_date'] in dates]
+        if not result['rows']:
+            result['reason'] = '窗口缺申万二级行业记录'
+    except sqlite3.Error as exc:
+        result['reason'] = f'板块窗口读取失败: {exc}'
+    return result
+
+
 def load_inputs(root, date, followups_path=None, deferred_codes=None, extra_codes=()):
     suffix = date.replace('-', '')[2:]
     pool_path = root / f'pool/pool_{suffix}.csv'
@@ -380,12 +495,15 @@ def load_inputs(root, date, followups_path=None, deferred_codes=None, extra_code
         plans = defaultdict(list)
         for code, payload in conn.execute('select code,payload_json from signal_plans where document_id=?', (ids['signal_plan'],)):
             plans[code].append(json.loads(payload))
+    sector_history = load_sector_history(root, date)
     return {
         'pool_codes': pool, 'strengths': {r['code']: r for r in strength_rows},
         'quant': values['quant'], 'bloom': values['bloom'], 'plans': dict(plans),
         'analysis_date': date, 'followups': followups, 'deferred_codes': deferred,
         'extra_codes': extra_codes, 'held_codes': held, 'risk_rules': risk,
+        'sector_history': sector_history,
         'provenance': {'documents': documents, 'followups_updated_on': followups_data.get('updated_on'),
+                       'sector_history_sha256': fingerprint(sector_history),
                        'input_hashes': {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in files}},
     }
 
@@ -399,7 +517,7 @@ def write_package(selection, output):
         with (output / name).open('x', encoding='utf-8') as f:
             json.dump(value, f, ensure_ascii=False, indent=2, allow_nan=False)
             f.write('\n')
-    fields = ('code', 'name', 'selected_for_chart', 'sources', 'groups', 'route',
+    fields = ('code', 'name', 'selected_for_chart', 'sources', 'groups', 'route', 'sector_name',
               'structure_score', 'score_context', 'structure_stage', 'post_breakout_state',
               'score_components', 'impulse', 'contraction_quality', 'terminal_micro',
               'setup_signal', 'setup_quality', 'plans', 'score_gaps', 'regular_exclusion')

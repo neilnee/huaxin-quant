@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 
 from scripts.research_screening import (
-    build_preselection, check_review, fingerprint, load_inputs, review_template, write_package,
+    build_preselection, check_review, fingerprint, load_inputs, load_sector_history,
+    review_template, write_package,
 )
 
 
@@ -40,6 +41,21 @@ def completed_review(selected, decision='条件观察'):
                    support_supply='上沿有供应，承接需继续验证', decision=decision,
                    reason='当前参与位置尚未确认')
     return review
+
+
+def sector_window():
+    return {'trade_dates': ['2026-10-22', '2026-10-23', '2026-10-26'],
+            'rows': [], 'reason': None}
+
+
+def add_sector(window, name, *, ranks=(0.8, 0.6, 0.08), breadth=(40, 40, 70)):
+    window['rows'].extend(
+        {'trade_date': day, 'block_name': name, 'rank_pct_5': rank,
+         'above_ma20_ratio': coverage, 'relative_strength_1': relative,
+         'median_return_1': change, 'data_status': 'READY', 'history_basis': 'point_in_time'}
+        for day, rank, coverage, relative, change in zip(
+            window['trade_dates'], ranks, breadth, (0.3, 1.9, 4.4), (-1.3, 0, 2.3))
+    )
 
 
 class ResearchScreeningTests(unittest.TestCase):
@@ -123,6 +139,56 @@ class ResearchScreeningTests(unittest.TestCase):
         self.assertEqual(result['records'][0]['route'], 'RESTRICTED_REVIEW')
         review = completed_review(result, '重点研究')
         self.assertFalse(check_review(result, review)['complete'])
+
+    def test_sector_supplement_keeps_original_order_and_requires_current_structure(self):
+        history = sector_window()
+        add_sector(history, '白色家电')
+        add_sector(history, '云服务', ranks=(0.8, 0.9, 0.08), breadth=(40, 30, 70))
+        records = {f'{i:06d}': quant(f'{i:06d}', score)
+                   for i, score in enumerate((70, 64, 63, 62, 61, 60, 59, 58, 57, 65), 1)}
+        records['000002']['structure_score_details']['impulse']['contribution'] = 0
+        records['000003']['post_breakout_state'] = 'POST_BREAKOUT_HOT'
+        records['000006']['adjustment_status'] = 'CONFLICT'
+        names = {c: {'sw_l2_name': '云服务' if c == '000009' else '白色家电'} for c in records}
+        result = selection(records, strengths=names, pool_codes=set(records) - {'000010'},
+                           held_codes={'000007'}, sector_history=history)
+        self.assertEqual(result['chart_review_codes'], ['000001', '000004', '000005'])
+        self.assertEqual(result['groups']['sector_supplement'], ['000004', '000005'])
+        industry, = result['sector_supplement']['industries']
+        self.assertEqual(industry['name'], '白色家电')
+        self.assertEqual(industry['eligible_codes'], ['000001', '000004', '000005', '000008'])
+        self.assertEqual(industry['overlap_codes'], ['000001'])
+        self.assertEqual(industry['exclusions']['000006'], '复权冲突')
+        self.assertEqual(industry['exclusions']['000007'], '持仓')
+        self.assertTrue(check_review(result, completed_review(result))['complete'])
+
+    def test_sector_supplement_needs_point_in_time_history_and_respects_total_limit(self):
+        history = sector_window()
+        for name, rank in zip(('第一', '第二', '第三', '第四', '缺口', '回填'),
+                              (0.05, 0.10, 0.16, 0.20, 0.03, 0.02)):
+            add_sector(history, name, ranks=(0.8, 0.6, rank))
+        history['rows'] = [row for row in history['rows'] if not (
+            row['block_name'] == '缺口' and row['trade_date'] == '2026-10-23')]
+        history['rows'][-1]['history_basis'] = 'current_snapshot_backfill'
+        records = {f'{i:06d}': quant(f'{i:06d}', 40 + i) for i in range(1, 13)}
+        names = {c: {'sw_l2_name': ('第一', '第二', '第三', '第四', '缺口', '回填')[i // 2]}
+                 for i, c in enumerate(records)}
+        result = selection(records, strengths=names, sector_history=history)
+        self.assertEqual(result['chart_review_codes'],
+                         ['000002', '000001', '000004', '000003', '000006', '000005'])
+        audit = result['sector_supplement']
+        self.assertEqual(audit['status'], 'PARTIAL')
+        self.assertEqual(audit['industry_data_gaps'],
+                         {'缺口': ['2026-10-23'], '回填': ['2026-10-26']})
+        self.assertEqual(audit['industries'][-1]['eligible_codes'], ['000008', '000007'])
+        self.assertEqual(audit['industries'][-1]['added_codes'], [])
+
+    def test_unavailable_sector_window_keeps_base_screen(self):
+        with tempfile.TemporaryDirectory() as folder:
+            history = load_sector_history(Path(folder), '2026-10-26')
+        result = selection({'000001': quant('000001')}, sector_history=history)
+        self.assertEqual(result['sector_supplement']['status'], 'UNAVAILABLE')
+        self.assertEqual(result['chart_review_codes'], ['000001'])
 
     def test_selection_is_independent_of_mapping_order_and_has_no_mutations(self):
         records = {'000002': quant('000002', 75), '000001': quant('000001', 75)}

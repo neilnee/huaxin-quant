@@ -73,7 +73,7 @@ monitor 每 2 秒刷新一次，机器进度写入 `.tmp/daily_progress_<YYMMDD>
 
 进度终态分为：`done`（通过总控门禁）、`degraded`（核心产物完成但有阶段明确标记降级）和 `failed`（阻断失败）。自选同步关闭时记为 `skipped`；当前 `--skip-pool` 分支仍将 Pool 步骤记为 `done`，应结合命令确认是否真正执行。
 
-资金观测的 `partial` 会记录明细并允许继续，当前总控不会仅因此标记 `degraded`。Quant 的个股处理失败或复权未完全核验也不直接触发总控降级；阅读 `cache/quant_runs/quant_<YYMMDD>.json` 的 stats、结果及数据状态，不能以总状态 `done` 代替个股覆盖核验。产物核验检查必需文件、索引和特定元数据，并非对每个包、每只股票的完整语义校验。
+资金观测的 `partial` 会记录明细并允许继续，当前总控不会仅因此标记 `degraded`。Quant 的个股处理失败或复权未完全核验也不直接触发总控降级；读取策略库中当日 Quant 的 stats、结果及数据状态，也可按需导出 JSON。总控核验包含当日入库记录、必需文件、索引和特定元数据；逐股覆盖以 Quant 状态为准。
 
 Quant 复权遇到本地与两外部源均冲突、但两外部事件因子一致且样本完整时，按模型二指令采用外部因子继续计算；两外部也不一致时继续拦截个股。采用外部因子与未解决冲突均保存在 Quant stats、进度文件和最终运行提示中；这些提示本身不改变总控终态，不新增公告查询或重跑工作流。
 
@@ -246,7 +246,7 @@ python3 scripts/run_valuation.py --code 300442 --no-publish
 | 策略库 | `cache/strategy/strategy_data.sqlite` | Pool 候选跟踪、Quant、Plan、Bloom、兑现事件与生命周期的权威存储 |
 | 模型一 | `pool/pool_<YYMMDD>.csv` | 核心质量与 RS 扩展合并候选池 |
 | 模型二 | `quant/quant_<YYMMDD>.csv` | 按需导出的精选标的表，使用 `strategy_publish.py quant --date <YYMMDD> --csv-only` |
-| 模型二 | `cache/quant_runs/quant_<YYMMDD>.json` | 策略库的兼容全量结果及统计；Bloom / Plan 优先读数据库，文件作回退 |
+| 模型二 | `cache/quant_runs/quant_<YYMMDD>.json` | 策略库全量结果的按需导出，使用 `strategy_publish.py quant --date <YYMMDD>` |
 | Bloom | `bloom/bloom_<YYMMDD>.md` | Bloom 日报 |
 | Bloom | `bloom/state/bloom_state.csv` | 跨日状态表 |
 | Bloom | `bloom/state/bloom_events.jsonl` | 事件流水 |

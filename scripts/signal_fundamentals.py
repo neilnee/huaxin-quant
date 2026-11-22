@@ -18,9 +18,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from scripts.shared import PROJECT_ROOT
 from scripts.strategy_config import load_strategy_config
+from scripts.data.strategy_data_store import connect as connect_strategy_db, require_quant_document
 
 ROOT = Path(PROJECT_ROOT)
-RUNS = ROOT / "cache" / "quant_runs"
 PLANS = ROOT / "signal_plan"
 POOLS = ROOT / "pool"
 CACHE_DIR = ROOT / "cache" / "signal_fundamentals"
@@ -228,7 +228,8 @@ def pool_statuses(date_value: str) -> dict[str, str]:
 
 def signal_candidates(date_value: str) -> dict[str, str]:
     stamp = date_yy(date_value)
-    quant = read_json(RUNS / f"quant_{stamp}.json", {})
+    with connect_strategy_db() as conn:
+        quant = require_quant_document(conn, date_value)
     plans = read_json(PLANS / f"signal_plan_{stamp}.json", {})
     result = {}
     for item in quant.get("results", []):

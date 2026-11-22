@@ -1,9 +1,6 @@
 {
   "strategy_version": "model4_signal_plan_v9",
-  "description": "Signal Plan parameters. This model-4 signal layer consumes Model 2 quant JSON and emits next-session concrete price/volume setup plans.",
-  "inputs": {
-    "quant_run_dir": "cache/quant_runs"
-  },
+  "description": "Signal Plan parameters. This model-4 signal layer reads Model 2 Quant snapshots from SQLite and emits next-session price/volume setup plans.",
   "outputs": {
     "plan_dir": "signal_plan"
   },

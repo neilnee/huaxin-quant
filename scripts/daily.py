@@ -34,7 +34,12 @@ from scripts.shared import PROJECT_ROOT, default_pipeline_date
 from scripts.progress_utils import ProgressTracker
 from scripts.io_utils import FileLock, LockBusyError
 from scripts.daily_ai_report import SCHEMA_VERSION as AI_REPORT_SCHEMA_VERSION
-from scripts.data.strategy_data_store import connect as connect_strategy_db, pool_tracking_pending_count
+from scripts.data.strategy_data_store import (
+    connect as connect_strategy_db,
+    document_dates,
+    pool_tracking_pending_count,
+    require_quant_document,
+)
 
 PROGRESS_DIR = Path(PROJECT_ROOT) / ".tmp"
 DAILY_LOCK_PATH = PROGRESS_DIR / "locks" / "daily.lock"
@@ -135,11 +140,9 @@ def run_quant(date_yy, pool_path, progress_path):
 
 
 def load_quant_adjustment_warnings(date_yy):
-    path = Path(PROJECT_ROOT) / "cache" / "quant_runs" / f"quant_{date_yy}.json"
-    payload = json.loads(path.read_text(encoding="utf-8"))
     expected = datetime.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
-    if (payload.get("meta") or {}).get("run_date") != expected:
-        raise ValueError("Quant复权提示日期不一致")
+    with connect_strategy_db() as conn:
+        payload = require_quant_document(conn, expected)
     return (payload.get("stats") or {}).get("adjustment_warnings", [])
 
 
@@ -267,7 +270,6 @@ def verify_pipeline_outputs(date_yy):
     month_dir = root / "dashboard" / "data" / f"20{date_yy[:4]}"
     required = [
         root / "pool" / f"pool_{date_yy}.csv",
-        root / "cache" / "quant_runs" / f"quant_{date_yy}.json",
         root / "bloom" / "state" / f"bloom_input_{date_yy}.json",
         root / "signal_plan" / f"signal_plan_{date_yy}.json",
         root / "capital" / f"capital_observer_{date_yy}.json",
@@ -283,6 +285,8 @@ def verify_pipeline_outputs(date_yy):
     missing = [str(path.relative_to(root)) for path in required if not path.exists()]
     expected_date = datetime.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
     with connect_strategy_db() as strategy_conn:
+        if expected_date not in document_dates(strategy_conn, "quant"):
+            missing.append(f"策略库缺少 Quant 日快照:{expected_date}")
         pending_tracking = pool_tracking_pending_count(strategy_conn, expected_date)
     if pending_tracking:
         missing.append(f"Pool候选生命周期待收口:{pending_tracking}")

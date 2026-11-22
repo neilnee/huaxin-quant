@@ -8,6 +8,8 @@
 
 策略数据库是上述核心数据的权威来源。每日模块必须先完成数据库事务，再从已提交的数据生成兼容 JSON、CSV、Markdown 和 Dashboard 数据包；下游计算优先读数据库。文件继续保留，用于人工阅读、页面发布和外部兼容，不作为可变状态的唯一账本。
 
+全量 Quant 只以策略库作为运行输入。每日总控、看板、信号财务补查、Bloom、Signal Plan、兑现核对、回测与旧 Tracker 均按日期读取 `current_documents` 的 Quant 修订；历史日期列表同样来自策略库。缺失的旧文件只通过显式迁移导入。切换前将 2026-08-03、08-10、08-17、08-24、08-28 的当前指针恢复到与原发布 JSON 哈希一致的修订，临时 v29 回放修订仍留在库中。
+
 同一模块、交易日和内容哈希重复写入必须幂等；同日结果发生变化时保留文档修订，并由 `current_documents` 指向当前版本。结构化表保存查询字段，`payload_json` 保存完整原始契约，禁止迁移时重新计算历史策略结果。
 
 Pool 在 Quant 前写入当日 `PENDING` 跟踪快照，只读取严格早于当日的最近快照。Bloom 落库后以当日 Quant/Bloom 结果把同一快照更新为 `FINAL`：有效结构接管生命周期，结构失败或到期转入20交易日重建观察。该表是候选是否继续进入次日 Pool 的权威状态；同日重跑必须得到相同结果。
@@ -22,6 +24,8 @@ python3 scripts/migrate_strategy_data.py
 
 迁移读取现有 Quant、Signal Plan、Bloom 状态输入与事件文件，并按既有 Plan 兑现规则重建实际买点事件。脚本可重复执行，记录数量不得因重复迁移而增长。
 
+兑现重建使用迁移目标数据库中的 Quant 与 Signal Plan；`--database` 或 `--dry-run` 指定的独立数据库同样适用。
+
 ## 文件重建
 
 兼容文件缺失或需要校验时，从数据库重建指定日期：
@@ -32,7 +36,7 @@ python3 scripts/strategy_publish.py all --date <YYMMDD>
 
 可单独发布 `quant`、`signal-plan` 或 `bloom`。发布器不得重新运行筛选或信号规则。
 
-Quant 默认重建 JSON。只需指定日期的精选 CSV 时，使用 `python3 scripts/strategy_publish.py quant --date <YYMMDD> --csv-only`。
+`strategy_publish.py quant --date <YYMMDD>` 从已提交结果按需导出 JSON。只需指定日期的精选 CSV 时，追加 `--csv-only`。
 
 ## 生命周期观察
 

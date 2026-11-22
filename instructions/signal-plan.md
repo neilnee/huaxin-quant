@@ -16,7 +16,7 @@ Signal Plan 只做次日量价计划，不重新识别 VCP，不替代模型二�
 
 Signal Plan 负责：
 
-- 消费模型二结构化 JSON。
+- 读取策略库中的模型二全量快照。
 - 消费模型二 `setup_plan_inputs` 中的结构事实；RETEST 次日执行价区由 Signal Plan 按 NEW / FOLLOW 配置计算，不把模型二的结构回踩容忍下沿直接当作次日买入下沿。
 - 选择允许形成模型二买点的有效 VCP，或当日已触发买点的标的。
 - 计算下一交易日可能触发的买点计划。
@@ -107,10 +107,10 @@ market/sector_heat_<YYMMDD>.csv
 
 ## 二、输入
 
-Signal Plan 优先读取策略库中同日 Quant 文档；以下 JSON 是兼容输入。策略库的事务、修订与文件回退边界见 [strategy-data.md](strategy-data.md)：
+Signal Plan 按日期读取策略库中的同日 Quant 文档。策略库的事务与修订边界见 [strategy-data.md](strategy-data.md)。
 
 ```text
-cache/quant_runs/quant_<YYMMDD>.json
+cache/strategy/strategy_data.sqlite
 ```
 
 核心消费字段：

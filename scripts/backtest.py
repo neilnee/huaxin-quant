@@ -11,6 +11,7 @@ import re
 import sqlite3
 import statistics
 import sys
+from contextlib import closing, nullcontext
 from datetime import datetime
 from pathlib import Path
 
@@ -21,7 +22,7 @@ from scripts.strategy_config import load_strategy_config
 from scripts.dashboard_index import update_dashboard_module
 from scripts.capital_observer import CONFIG as CAPITAL_CONFIG, classify_stock_capital
 from scripts.data.capital_data_store import DB_PATH as CAPITAL_DB
-from scripts.plan_realization import plan_hit_grade, realized_plan_event, structure_anchor
+from scripts.plan_realization import plan_hit_grade, quant_rows_by_code, realized_plan_event, structure_anchor
 from scripts.data.strategy_data_store import (
     connect as connect_strategy_db,
     load_buy_point_events,
@@ -35,8 +36,6 @@ from scripts.data.strategy_data_store import (
 
 
 ROOT = Path(PROJECT_ROOT)
-QUANT_DIR = ROOT / "cache" / "quant_runs"
-PLAN_DIR = ROOT / "signal_plan"
 MARKET_CONTEXT_DIR = ROOT / "market" / "data"
 MARKET_REPORT_DIR = ROOT / "market"
 MARKET_DB = ROOT / "cache" / "market_data" / "market_data.sqlite"
@@ -103,32 +102,14 @@ def safe_float(value) -> float | None:
         return None
 
 
-def quant_rows(date_value: str) -> tuple[dict, dict[str, dict]]:
-    trade_date = iso_date(date_value)
-    payload = None
-    if Path(QUANT_DIR).resolve() == (ROOT / "cache" / "quant_runs").resolve():
-        with connect_strategy_db() as strategy_conn:
-            payload = load_strategy_document(strategy_conn, "quant", trade_date)
-    if payload is not None:
-        rows = {
-            str(row.get("code") or "").zfill(6): row
-            for row in payload.get("results", [])
-            if str(row.get("code") or "").strip("0")
-        }
-        return payload, rows
-    path = QUANT_DIR / f"quant_{date_value}.json"
-    if not path.exists():
-        return {}, {}
-    payload = load_json(path)
-    rows = {
-        str(row.get("code") or "").zfill(6): row
-        for row in payload.get("results", [])
-        if str(row.get("code") or "").strip("0")
-    }
-    return payload, rows
+def quant_rows(date_value: str, *, strategy_conn: sqlite3.Connection | None = None) -> tuple[dict, dict[str, dict]]:
+    connection = closing(connect_strategy_db()) if strategy_conn is None else nullcontext(strategy_conn)
+    with connection as conn:
+        payload = load_strategy_document(conn, "quant", iso_date(date_value)) or {}
+    return payload, quant_rows_by_code(payload)
 
 
-def discover_events(report_date_yy: str, calendar: list[str]) -> list[dict]:
+def discover_events(report_date_yy: str, calendar: list[str], *, strategy_conn: sqlite3.Connection) -> list[dict]:
     """Return first realized next-session entry for each structure/family/action."""
     report_date = iso_date(report_date_yy)
     valid_dates = [value for value in calendar if value <= report_date]
@@ -136,18 +117,11 @@ def discover_events(report_date_yy: str, calendar: list[str]) -> list[dict]:
     events: list[dict] = []
     for index, plan_date in enumerate(valid_dates[:-1]):
         entry_date = valid_dates[index + 1]
-        plan_stamp = date_yy(plan_date)
-        plan_path = PLAN_DIR / f"signal_plan_{plan_stamp}.json"
-        plan_payload = None
-        if Path(PLAN_DIR).resolve() == (ROOT / "signal_plan").resolve():
-            with connect_strategy_db() as strategy_conn:
-                plan_payload = load_strategy_document(strategy_conn, "signal_plan", plan_date)
-        if plan_payload is None and not plan_path.exists():
-            continue
+        plan_payload = load_strategy_document(strategy_conn, "signal_plan", plan_date)
         if plan_payload is None:
-            plan_payload = load_json(plan_path)
-        source_payload, source_rows = quant_rows(plan_stamp)
-        entry_payload, entry_rows = quant_rows(date_yy(entry_date))
+            continue
+        _, source_rows = quant_rows(date_yy(plan_date), strategy_conn=strategy_conn)
+        entry_payload, entry_rows = quant_rows(date_yy(entry_date), strategy_conn=strategy_conn)
         if not entry_rows:
             continue
         strategy_version = entry_payload.get("meta", {}).get("strategy_version", "")
@@ -971,8 +945,8 @@ def build_context(report_date_yy: str) -> dict:
         calendar = trading_calendar(conn, iso_date(report_date_yy))
     finally:
         conn.close()
-    discovered = discover_events(report_date_yy, calendar)
     with connect_strategy_db() as strategy_conn:
+        discovered = discover_events(report_date_yy, calendar, strategy_conn=strategy_conn)
         save_buy_point_events(strategy_conn, discovered)
         persisted = load_buy_point_events(strategy_conn, iso_date(report_date_yy))
         structure_selections = load_vcp_selection_events(

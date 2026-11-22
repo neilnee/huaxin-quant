@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 import pandas as pd
 
 from scripts import daily, daily_ai_report, quant_filter
+from scripts.data.strategy_data_store import connect as connect_strategy, save_quant
 from scripts.data.corporate_actions import (
     CONSENSUS_SOURCE, FALLBACK_SOURCE, VERIFICATION_SOURCE, action_hash,
     apply_point_in_time_qfq, event_factor, external_factor_consensus,
@@ -194,20 +195,16 @@ class ExternalFactorConsensusTests(unittest.TestCase):
 
     def test_daily_loads_same_day_warnings_and_prints_final_notice(self):
         warning = {"code": "300501", "name": "海顺新材", "ex_date": "2026-04-28", "reason": "采用外部因子"}
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            folder = root / "cache" / "quant_runs"
-            folder.mkdir(parents=True)
-            path = folder / "quant_261030.json"
+        with connect_strategy(":memory:") as conn:
             payload = {"meta": {"run_date": "2026-10-30"}, "stats": {"adjustment_warnings": [warning]}}
-            path.write_text(json.dumps(payload), encoding="utf-8")
-            with patch.object(daily, "PROJECT_ROOT", str(root)), patch("builtins.print") as output:
+            save_quant(conn, payload)
+            with patch.object(daily, "connect_strategy_db", return_value=conn), patch("builtins.print") as output:
                 warnings = daily.load_quant_adjustment_warnings("261030")
                 daily.print_quant_adjustment_warnings(warnings)
             self.assertIn("300501 海顺新材 2026-04-28: 采用外部因子", output.call_args_list[-1].args[0])
             payload["meta"]["run_date"] = "2026-10-29"
-            path.write_text(json.dumps(payload), encoding="utf-8")
-            with patch.object(daily, "PROJECT_ROOT", str(root)), self.assertRaisesRegex(ValueError, "日期不一致"):
+            conn.execute("UPDATE strategy_documents SET payload_json=?", (json.dumps(payload),))
+            with patch.object(daily, "connect_strategy_db", return_value=conn), self.assertRaisesRegex(ValueError, "日期不一致"):
                 daily.load_quant_adjustment_warnings("261030")
 
     def test_ai_packet_preserves_resolved_adjustment_notice(self):

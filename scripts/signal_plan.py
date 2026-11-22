@@ -2,7 +2,7 @@
 """
 Signal Plan: next-session concrete setup plans for valid Model 2 VCP structures.
 
-This model-4 signal layer consumes cache/quant_runs/quant_<YYMMDD>.json and
+This model-4 signal layer reads Quant from the strategy database and
 writes signal_plan/signal_plan_<YYMMDD>.json plus Markdown. It does not update
 Bloom state, position ledgers, or Model 2 decisions.
 """
@@ -25,6 +25,7 @@ from scripts.data.strategy_data_store import (
     connect as connect_strategy_db,
     document_dates as strategy_document_dates,
     load_document as load_strategy_document,
+    require_quant_document,
     save_signal_plan,
 )
 
@@ -33,7 +34,6 @@ STRATEGY_FILE = "04-signal-plan.json"
 CONFIG, STRATEGY_PATH = load_strategy_config(STRATEGY_FILE)
 STRATEGY_VERSION = CONFIG["strategy_version"]
 
-QUANT_RUNS_DIR = Path(PROJECT_ROOT) / CONFIG["inputs"]["quant_run_dir"]
 PLAN_DIR = Path(PROJECT_ROOT) / CONFIG["outputs"]["plan_dir"]
 
 
@@ -46,21 +46,6 @@ def normalize_date_arg(value):
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
         return datetime.strptime(raw, "%Y-%m-%d").strftime("%y%m%d")
     raise ValueError("date must be YYMMDD or YYYY-MM-DD")
-
-
-def latest_quant_run():
-    files = sorted(QUANT_RUNS_DIR.glob("quant_*.json"))
-    return files[-1] if files else None
-
-
-def quant_run_for_date(date_yy):
-    path = QUANT_RUNS_DIR / f"quant_{date_yy}.json"
-    return path if path.exists() else None
-
-
-def load_json(path):
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
 
 
 def safe_float(value, default=None):
@@ -770,7 +755,7 @@ def build_signal_plan(payload, date_yy, progress_file=None):
             "schema": "huaxin_signal_plan_v1",
             "date": run_date,
             "date_yy": date_yy,
-            "quant_run": str(QUANT_RUNS_DIR / f"quant_{date_yy}.json"),
+            "quant_run": f"strategy_data.sqlite:quant:{run_date}",
             "strategy_version": STRATEGY_VERSION,
             "strategy_file": STRATEGY_PATH,
         },
@@ -1146,33 +1131,16 @@ def main():
 
     try:
         date_yy = normalize_date_arg(args.date)
-    except ValueError as exc:
+        with connect_strategy_db() as strategy_conn:
+            dates = strategy_document_dates(strategy_conn, "quant")
+            if not dates:
+                raise FileNotFoundError("策略库中没有 Quant 日快照")
+            trade_date = datetime.strptime(date_yy, "%y%m%d").date().isoformat() if date_yy else dates[-1]
+            payload = require_quant_document(strategy_conn, trade_date)
+        date_yy = trade_date.replace("-", "")[2:]
+    except (FileNotFoundError, ValueError) as exc:
         print(f"错误: {exc}")
         sys.exit(1)
-
-    with connect_strategy_db() as strategy_conn:
-        database_dates = strategy_document_dates(strategy_conn, "quant")
-    database_stamps = {value.replace("-", "")[2:] for value in database_dates}
-    if date_yy and date_yy in database_stamps:
-        quant_path = QUANT_RUNS_DIR / f"quant_{date_yy}.json"
-    elif not date_yy and database_dates:
-        date_yy = database_dates[-1].replace("-", "")[2:]
-        quant_path = QUANT_RUNS_DIR / f"quant_{date_yy}.json"
-    else:
-        quant_path = quant_run_for_date(date_yy) if date_yy else latest_quant_run()
-    if not quant_path:
-        print("错误: 未找到模型二 quant run JSON")
-        sys.exit(1)
-    match = re.fullmatch(r"quant_(\d{6})\.json", quant_path.name)
-    if not match:
-        print(f"错误: 不支持的 quant run 文件名: {quant_path}")
-        sys.exit(1)
-    date_yy = match.group(1)
-
-    with connect_strategy_db() as strategy_conn:
-        payload = load_strategy_document(strategy_conn, "quant", datetime.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d"))
-    if payload is None:
-        payload = load_json(quant_path)
     plan = build_signal_plan(payload, date_yy, progress_file=args.progress_file)
     if not args.no_llm:
         plan = attach_llm_notes(plan, progress_file=args.progress_file)
@@ -1185,7 +1153,7 @@ def main():
     print("=" * 70)
     print("Model 4 Signal Plan")
     print("=" * 70)
-    print(f"quant run: {quant_path}")
+    print(f"Quant 策略库日期: {trade_date}")
     print(f"json: {json_path}")
     print(f"markdown: {md_path}")
     print(f"summary: {plan['summary']}")

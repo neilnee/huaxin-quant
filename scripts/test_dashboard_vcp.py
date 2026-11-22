@@ -9,9 +9,16 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts import dashboard_vcp
+from scripts.data.strategy_data_store import connect, save_quant
 
 
 class DashboardVcpIndustryContextTests(unittest.TestCase):
+    def quant_db(self, date, results=()):
+        conn = connect(":memory:")
+        self.addCleanup(conn.close)
+        save_quant(conn, {"meta": {"run_date": date}, "results": list(results)})
+        return conn
+
     def test_list_orders_only_by_displayed_score_without_status_priority(self):
         rows = [
             {"code": "000001", "bloom_status": "TRIGGERED", "structure_score": 60},
@@ -27,7 +34,7 @@ class DashboardVcpIndustryContextTests(unittest.TestCase):
             bloom = {"summary": {"date": "2026-10-08"}, "sections": {"active": rows, "post_breakout": post}}
             (root / "bloom_input_261008.json").write_text(json.dumps(bloom), encoding="utf-8")
             with patch.object(dashboard_vcp, "BLOOM_INPUT_DIR", root), patch.object(
-                dashboard_vcp, "QUANT_RUN_DIR", root
+                dashboard_vcp, "connect_strategy_db", return_value=self.quant_db("2026-10-08")
             ), patch.object(dashboard_vcp, "realized_events_for_date", return_value=[]), patch.object(
                 dashboard_vcp, "load_industry_context", return_value={}
             ), patch.object(dashboard_vcp, "load_pool_sources", return_value={}):
@@ -121,8 +128,8 @@ class DashboardVcpIndustryContextTests(unittest.TestCase):
     def test_plan_hit_does_not_add_a_vcp_display_candidate(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            bloom_dir = root / "bloom"; quant_dir = root / "quant"
-            bloom_dir.mkdir(); quant_dir.mkdir()
+            bloom_dir = root / "bloom"
+            bloom_dir.mkdir()
             bloom = {
                 "summary": {"date": "2026-08-10", "status_dist": {"COOLDOWN": 1}},
                 "sections": {
@@ -138,13 +145,12 @@ class DashboardVcpIndustryContextTests(unittest.TestCase):
                 "setup_signal": "NONE", "structure_score": 62,
             }]}
             (bloom_dir / "bloom_input_260810.json").write_text(json.dumps(bloom, ensure_ascii=False), encoding="utf-8")
-            (quant_dir / "quant_260810.json").write_text(json.dumps(quant, ensure_ascii=False), encoding="utf-8")
             event = {
                 "code": "603882", "setup_type": "BREAKOUT_BUY", "entry_grade": "REGULAR",
                 "plan_date": "2026-08-07",
             }
             with patch.object(dashboard_vcp, "BLOOM_INPUT_DIR", bloom_dir), patch.object(
-                dashboard_vcp, "QUANT_RUN_DIR", quant_dir
+                dashboard_vcp, "connect_strategy_db", return_value=self.quant_db("2026-08-10", quant["results"])
             ), patch.object(dashboard_vcp, "realized_events_for_date", return_value=[event]), patch.object(
                 dashboard_vcp, "load_industry_context", return_value={}
             ):
@@ -157,8 +163,8 @@ class DashboardVcpIndustryContextTests(unittest.TestCase):
     def test_native_trigger_can_be_annotated_with_previous_plan_hit(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            bloom_dir = root / "bloom"; quant_dir = root / "quant"
-            bloom_dir.mkdir(); quant_dir.mkdir()
+            bloom_dir = root / "bloom"
+            bloom_dir.mkdir()
             row = {
                 "code": "603882", "name": "金域医学", "bloom_status": "TRIGGERED",
                 "model2_setup_signal": "BREAKOUT_BUY", "structure_score": "62",
@@ -172,10 +178,9 @@ class DashboardVcpIndustryContextTests(unittest.TestCase):
                 "setup_signal": "BREAKOUT_BUY", "structure_score": 62,
             }]}
             (bloom_dir / "bloom_input_260810.json").write_text(json.dumps(bloom, ensure_ascii=False), encoding="utf-8")
-            (quant_dir / "quant_260810.json").write_text(json.dumps(quant, ensure_ascii=False), encoding="utf-8")
             event = {"code": "603882", "setup_type": "BREAKOUT_BUY", "plan_date": "2026-08-07"}
             with patch.object(dashboard_vcp, "BLOOM_INPUT_DIR", bloom_dir), patch.object(
-                dashboard_vcp, "QUANT_RUN_DIR", quant_dir
+                dashboard_vcp, "connect_strategy_db", return_value=self.quant_db("2026-08-10", quant["results"])
             ), patch.object(dashboard_vcp, "realized_events_for_date", return_value=[event]), patch.object(
                 dashboard_vcp, "load_industry_context", return_value={}
             ):
@@ -189,8 +194,8 @@ class DashboardVcpIndustryContextTests(unittest.TestCase):
     def test_post_breakout_section_is_published_as_separate_tracking_scope(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            bloom_dir = root / "bloom"; quant_dir = root / "quant"
-            bloom_dir.mkdir(); quant_dir.mkdir()
+            bloom_dir = root / "bloom"
+            bloom_dir.mkdir()
             row = {
                 "code": "600547", "name": "山东黄金", "bloom_status": "COOLDOWN",
                 "post_breakout_state": "POST_BREAKOUT_HOT", "structure_breakout_date": "2026-07-30",
@@ -207,9 +212,8 @@ class DashboardVcpIndustryContextTests(unittest.TestCase):
                 "structure_breakout_level": 27.33, "structure_score": 62,
             }]}
             (bloom_dir / "bloom_input_260820.json").write_text(json.dumps(bloom, ensure_ascii=False), encoding="utf-8")
-            (quant_dir / "quant_260820.json").write_text(json.dumps(quant, ensure_ascii=False), encoding="utf-8")
             with patch.object(dashboard_vcp, "BLOOM_INPUT_DIR", bloom_dir), patch.object(
-                dashboard_vcp, "QUANT_RUN_DIR", quant_dir
+                dashboard_vcp, "connect_strategy_db", return_value=self.quant_db("2026-08-20", quant["results"])
             ), patch.object(dashboard_vcp, "realized_events_for_date", return_value=[]), patch.object(
                 dashboard_vcp, "load_industry_context", return_value={}
             ):
@@ -224,8 +228,8 @@ class DashboardVcpIndustryContextTests(unittest.TestCase):
     def test_pre_breakout_focus_reuses_bloom_watching_section(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            bloom_dir = root / "bloom"; quant_dir = root / "quant"
-            bloom_dir.mkdir(); quant_dir.mkdir()
+            bloom_dir = root / "bloom"
+            bloom_dir.mkdir()
             focus = {
                 "code": "600000", "name": "浦发银行", "bloom_status": "FORMING",
                 "model2_stage": "VCP_FORMING", "structure_score": "60",
@@ -242,7 +246,7 @@ class DashboardVcpIndustryContextTests(unittest.TestCase):
                 json.dumps(bloom, ensure_ascii=False), encoding="utf-8"
             )
             with patch.object(dashboard_vcp, "BLOOM_INPUT_DIR", bloom_dir), patch.object(
-                dashboard_vcp, "QUANT_RUN_DIR", quant_dir
+                dashboard_vcp, "connect_strategy_db", return_value=self.quant_db("2026-08-21")
             ), patch.object(dashboard_vcp, "realized_events_for_date", return_value=[]), patch.object(
                 dashboard_vcp, "load_industry_context", return_value={}
             ), patch.object(dashboard_vcp, "load_pool_sources", return_value={}):

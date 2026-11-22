@@ -252,6 +252,15 @@ def load_document(conn: sqlite3.Connection, module: str, trade_date: str) -> dic
     return json.loads(row[0]) if row else None
 
 
+def require_quant_document(conn: sqlite3.Connection, trade_date: str) -> dict:
+    payload = load_document(conn, "quant", trade_date)
+    if payload is None:
+        raise FileNotFoundError(f"策略库缺少 Quant 日快照: {trade_date}")
+    if (payload.get("meta") or {}).get("run_date") != trade_date:
+        raise ValueError(f"策略库 Quant 日期不一致: {trade_date}")
+    return payload
+
+
 def document_dates(conn: sqlite3.Connection, module: str) -> list[str]:
     return [row[0] for row in conn.execute(
         "SELECT trade_date FROM current_documents WHERE module=? ORDER BY trade_date", (module,)

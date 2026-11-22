@@ -5,7 +5,7 @@
 - **核心目标**: 在模型一基本面候选池中，寻找 VCP 蓄力结构和可交易触发，输出可复现、可回测、可供模型三/四复用的结构化量价结果。
 - **核心哲学**: 基本面先过滤烂公司，模型二只判断资金行为和价格位置。脚本负责确定性计算，LLM 只做可选解释，不参与结构阶段或交易触发判定。
 - **输入**: `pool/pool_<YYMMDD>.csv`，或命令行指定 `--code/--codes`
-- **输出**: 策略数据库中的 Quant 全量快照，以及由该快照发布的 `cache/quant_runs/quant_<YYMMDD>.json`。CSV 按需导出。
+- **输出**: 全量运行提交 Quant 快照到策略数据库，JSON 和 CSV 按需导出。单股、多股与测试默认保留各自的 JSON。
 - **配套脚本**: `scripts/quant_filter.py`
 - **策略配置**: `strategies/02-quant.json`
 
@@ -23,7 +23,7 @@
 → 计算技术指标
 → 确定性识别 VCP 结构阶段、交易触发和结构风险事实
 → 计算 structure_score 与 structure_risk_score
-→ 全量模式提交策略库，发布 JSON
+→ 全量模式提交策略库，单股、多股和测试模式写 JSON
 → 可选调用 LLM 解释 Top N 或指定个股
 ```
 
@@ -39,7 +39,7 @@ python3 scripts/quant_filter.py --code 300604 --with-llm
 python3 scripts/quant_filter.py --code 300604 --json
 ```
 
-`--date` 用于回测或复盘指定交易日，支持 `YYMMDD` 与 `YYYY-MM-DD` 两种格式；未指定时按共享数据层的预期最近交易日运行。脚本会据此读取 `pool/pool_<YYMMDD>.csv`、统一日线库，并写出同日期的 `cache/quant_runs/` 文件。
+`--date` 用于回测或复盘指定交易日，支持 `YYMMDD` 与 `YYYY-MM-DD` 两种格式；未指定时按共享数据层的预期最近交易日运行。脚本据此读取日期对应的 Pool 和统一日线库。
 
 按代码或测试名单运行时，显式 `--name` 优先，随后使用估值索引、策略库中截至运行日的最新 Quant 名称、截至运行日的 Pool 名称，最后使用股票代码。全量运行使用当日或显式指定的 Pool 名单及名称。
 
@@ -1268,20 +1268,22 @@ setup_plan_inputs.retest:
 
 这些字段只是把模型二现有买点逻辑的中间事实暴露给模型四；新增或修改这些字段不得改变模型二的 `structure_stage`、`setup_signal`、`setup_score`、`action_hint`。
 
-各模式默认发布 JSON。执行计算时，用 `--quant <路径>` 显式导出 CSV，或用 `--include-reject` 将全部已处理标的导出到相应模式的默认 CSV 路径。默认精选 CSV 只包含 `model2_include` 为真的标的。仅导出历史精选 CSV 时使用 `scripts/strategy_publish.py quant --date <YYMMDD> --csv-only`。
+全量模式使用 `--output-json <路径>` 显式导出 JSON。执行计算时，用 `--quant <路径>` 显式导出 CSV，或用 `--include-reject` 将全部已处理标的导出到相应模式的默认 CSV 路径。默认精选 CSV 只包含 `model2_include` 为真的标的。按日期从策略库导出使用 `scripts/strategy_publish.py quant --date <YYMMDD>`，追加 `--csv-only` 可导出精选 CSV。
 
 输出文件命名规则：
 
 | 运行模式 | 按需导出的 CSV 默认路径 | JSON |
 |----------|-----|------|
-| 全量 | `quant/quant_<YYMMDD>.csv` | `cache/quant_runs/quant_<YYMMDD>.json` |
+| 全量 | `quant/quant_<YYMMDD>.csv` | 显式指定路径或从策略库导出 |
 | 测试 | `quant/quant_<YYMMDD>_test.csv` | `cache/quant_runs/quant_<YYMMDD>_test.json` |
 | 单股 | `quant/single_<code>_<YYMMDD>.csv` | `cache/quant_runs/<code>_<YYMMDD>.json` |
 | 多股 | `quant/multi_<YYMMDD>.csv` | `cache/quant_runs/multi_<YYMMDD>.json` |
 
 只有全量模式允许覆盖 `cache/quant_runs/quant_<YYMMDD>.json`。测试、单股、多股模式不得覆盖全量 JSON，避免 Bloom 消费到测试结果。
 
-全量模式必须先把完整 `results` 写入 `cache/strategy/strategy_data.sqlite`，再从已提交的数据发布 JSON。显式请求的 CSV 同样使用已提交结果。未请求 CSV 时，`meta.csv_path` 为空。存储与迁移规则见 `instructions/strategy-data.md`。
+全量模式必须先把完整 `results` 写入 `cache/strategy/strategy_data.sqlite`，再按显式请求导出 JSON、CSV 或输出到终端。未请求 CSV 时，`meta.csv_path` 为空。存储与迁移规则见 `instructions/strategy-data.md`。
+
+`--output-json` 在全量模式只改变导出行为，研究回放需用独立运行实例和策略库。
 
 单股模式必须打印终端摘要，并同样写入 JSON。
 
@@ -1324,7 +1326,7 @@ LLM 输入是脚本生成的结构化结果；输出必须为 JSON：
 
 ```text
 主流程继续
-JSON 和显式请求的 CSV 照常输出
+全量照常提交策略库，各模式照常输出已请求的文件
 llm_status = failed
 ```
 

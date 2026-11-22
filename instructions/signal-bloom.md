@@ -32,13 +32,13 @@ Bloom 不负责：
 
 ## 二、输入
 
-权威来源核对（2026-09-08）：优先读取 cache/strategy/strategy_data.sqlite 的同日 Quant 与已有 Bloom 状态；下列 JSON/CSV/JSONL 是兼容发布与迁移回退，不再是唯一账本。先提交数据库后发布文件，见 [strategy-data.md](strategy-data.md)。
+从 `cache/strategy/strategy_data.sqlite` 读取同日 Quant 与已有 Bloom 状态。Bloom 的兼容文件在提交数据库后发布，见 [strategy-data.md](strategy-data.md)。
 
 
-Bloom 以模型二 JSON 为权威输入：
+Bloom 以策略库中的模型二日快照为权威输入：
 
 ```text
-cache/quant_runs/quant_<YYMMDD>.json
+cache/strategy/strategy_data.sqlite
 ```
 
 核心消费字段：
@@ -330,7 +330,7 @@ dashboard/data/<YYYYMM>/vcp_context_<YYMMDD>.js
 
 Bloom 日快照和事件账本必须先写入 `cache/strategy/strategy_data.sqlite`，再从数据库发布 `bloom_input`、当前状态 CSV、事件 JSONL 和报告。Bloom 读取历史状态时以数据库为权威来源；同日首次写入前快照继续保留，专用于重复运行的昨日状态基准。该变更只调整持久化，不改变生命周期判定，详细契约见 `instructions/strategy-data.md`。
 
-`dashboard_vcp.py` 仅读取当日 `bloom_input` 与同日模型二 JSON，按月发布 VCP 结构页所需的独立数据包；`--all` 可重建全部已有 Bloom 日期。它不得改写 Bloom 状态、模型二输出或触发交易动作。
+`dashboard_vcp.py` 使用当日 `bloom_input` 与策略库中的同日模型二快照，按月发布 VCP 结构页；`--all` 可重建已有 Bloom 日期。它不得改写 Bloom 状态、模型二输出或触发交易动作。
 
 `dashboard_signals.py` 在每日工作流中必须以 `--fetch-capital` 启动，并按当日触发股与 Signal Plan 股票代码去重补查个股主力和融资资金。该补查使用独立于完整资金观测的请求预算；发布数据包必须记录 `capital_fetch_enabled`、实际请求数和错误列表，每条信号必须保留 `capital_support`，数据缺失时明确降级而不得省略。每日完整性核验必须确认同日信号数据包确实启用了资金补查。
 

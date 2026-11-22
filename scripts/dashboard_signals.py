@@ -10,11 +10,12 @@ from scripts.strategy_config import load_strategy_config
 from scripts.capital_observer import classify_stock_capital
 from scripts.data.capital_data_service import CapitalDataService
 from scripts.data.capital_data_sources import MiaoxiangCapitalSource, RequestBudget
-from scripts.plan_realization import realized_events_for_date
+from scripts.plan_realization import date_yy, iso_date, realized_events_for_date
+from scripts.data.strategy_data_store import connect as connect_strategy_db, document_dates, require_quant_document
 from scripts.dashboard_index import update_dashboard_module
 from scripts.io_utils import atomic_write_text
 
-ROOT=Path(PROJECT_ROOT); RUNS=ROOT/"cache"/"quant_runs"; PLAN_RUNS=ROOT/"signal_plan"; POOL_DIR=ROOT/"pool"; SIGNAL_FIN_DIR=ROOT/"cache"/"signal_fundamentals"; MARKET_DB=ROOT/"cache"/"market_data"/"market_data.sqlite"; MARKET_DIR=ROOT/"market"; MARKET_CONTEXT_DIR=MARKET_DIR/"data"; OUT=ROOT/"dashboard"/"data"; START="260506"
+ROOT=Path(PROJECT_ROOT); PLAN_RUNS=ROOT/"signal_plan"; POOL_DIR=ROOT/"pool"; SIGNAL_FIN_DIR=ROOT/"cache"/"signal_fundamentals"; MARKET_DB=ROOT/"cache"/"market_data"/"market_data.sqlite"; MARKET_DIR=ROOT/"market"; MARKET_CONTEXT_DIR=MARKET_DIR/"data"; OUT=ROOT/"dashboard"/"data"; START="260506"
 PLAN_CONFIG,_=load_strategy_config("04-signal-plan.json"); POSITION_CFG=PLAN_CONFIG["position_guidance"]
 FIELDS=("code","name","structure_stage","setup_signal","action_hint","suggested_position","setup_pattern_score","setup_score","setup_quality","setup_structure_score","setup_structure_anchor_date","setup_structure_base","setup_action_score","setup_current_action_score","setup_breakout_action_score","setup_score_components","setup_reasons","setup_misses","setup_risk_flags","structure_score","structure_risk_score","structure_risk_flags","prior_breakout_bonus_score","prior_breakout_bonus_reasons","prior_breakout_context_tag","close","MA20","MA60","pivot_price","structure_pivot","support_price","invalid_price","breakout_level","last_contraction_low","pivot_distance","distance_ma20","volume","vol_ma5","vol_ma20","volume_dry_up","vol_ratio","volume_pattern","chg_5","chg_20","setup_plan_inputs","reason")
 MARKET_ADVICE={
@@ -217,16 +218,16 @@ def quant_allows_published_plan(quant):
  if quant.get("structure_type") not in (None,"","VCP"): return False
  return quant.get("structure_stage") not in {"TREND_WATCH","TREND_REBUILD","STRUCTURE_INVALID","NONE","DATA_ISSUE"}
 def build(date,fetch_capital=False,max_mx_requests=None):
- path=RUNS/f"quant_{date}.json"
- if not path.exists(): raise FileNotFoundError(path.name)
- raw=json.loads(path.read_text(encoding="utf-8")); rows=[]; quant_by_code={str(item.get("code","")).zfill(6):item for item in raw.get("results",[])}
+ with connect_strategy_db() as conn:
+  raw=require_quant_document(conn,iso_date(date))
+  realized=realized_events_for_date(conn,date,PLAN_RUNS,MARKET_DB,raw)
+ rows=[]; quant_by_code={str(item.get("code","")).zfill(6):item for item in raw.get("results",[])}
  for item in raw.get("results",[]):
   plans=item.get("setup_plan_inputs") or {}
   triggered=item.get("setup_signal") not in (None,"","NONE")
   base={key:item.get(key) for key in FIELDS}
   if triggered:
    row=dict(base); row["signal_kind"]="TRIGGERED"; row["signal_source"]="MODEL2"; row["plan_inputs"]=plans.get(item.get("setup_signal","").replace("_BUY","").lower(),{}); rows.append(row)
- realized=realized_events_for_date(date,PLAN_RUNS,RUNS,MARKET_DB)
  triggered_by_key={(str(row.get("code","")).zfill(6),row.get("setup_signal")):row for row in rows}
  plan_hits=0
  for event in realized:
@@ -247,7 +248,7 @@ def build(date,fetch_capital=False,max_mx_requests=None):
   if notice.get("financial_status")!="CORE_VERIFIED": notice.update(signal_financial_notice(date,code) or {})
   sector=dict(sectors.get(code,default_sector_notice())); row.update(notice); row.update(sector); row["capital_support"]=capital.get(code,missing_capital_notice()); row.update(position_guidance(row,market,sector))
  rows.sort(key=lambda r:(r["signal_kind"]!="TRIGGERED", -(r.get("setup_score") or 0), -(r.get("structure_score") or 0), r["code"], r["setup_signal"]))
- return {"meta":{"run_date":raw.get("meta",{}).get("run_date",f"20{date[:2]}-{date[2:4]}-{date[4:]}") ,"source":path.name,"plan_source":plan_path.name if plan_path.exists() else None,"position_strategy_version":POSITION_CFG["strategy_version"],"capital_fetch_enabled":fetch_capital,"capital_requests_used":capital_requests,"capital_errors":capital_errors},"market_notice":market,"summary":{"triggered":sum(r["signal_kind"]=="TRIGGERED" for r in rows),"plan_hits":plan_hits,"planned":sum(r["signal_kind"]=="PLAN" for r in rows),"total":len(rows)},"signals":rows}
+ return {"meta":{"run_date":raw["meta"]["run_date"],"source":"strategy_data.sqlite","plan_source":plan_path.name if plan_path.exists() else None,"position_strategy_version":POSITION_CFG["strategy_version"],"capital_fetch_enabled":fetch_capital,"capital_requests_used":capital_requests,"capital_errors":capital_errors},"market_notice":market,"summary":{"triggered":sum(r["signal_kind"]=="TRIGGERED" for r in rows),"plan_hits":plan_hits,"planned":sum(r["signal_kind"]=="PLAN" for r in rows),"total":len(rows)},"signals":rows}
 def publish(date,fetch_capital=False,max_mx_requests=None):
  data=build(date,fetch_capital,max_mx_requests); folder=OUT/f"20{date[:4]}"; folder.mkdir(parents=True,exist_ok=True); target=folder/f"signals_context_{date}.js"
  target.write_text("window.QUANT_DASHBOARD_SIGNALS_CONTEXTS = window.QUANT_DASHBOARD_SIGNALS_CONTEXTS || {};\n"+f"window.QUANT_DASHBOARD_SIGNALS_CONTEXTS[{json.dumps(date)}] = "+json.dumps(data,ensure_ascii=False)+";\n",encoding="utf-8"); write_dashboard_index(); return target
@@ -275,6 +276,13 @@ def main():
  if a.refresh_position:
   if not a.date or a.all or a.fetch_capital: p.error("--refresh-position requires --date and cannot use --all or --fetch-capital")
   print(json.dumps(refresh_position(stamp(a.date)),ensure_ascii=False)); return
- dates=sorted(x.stem.rsplit("_",1)[-1] for x in RUNS.glob("quant_*.json") if x.stem.rsplit("_",1)[-1]>=START) if a.all else [stamp(a.date) if a.date else sorted(RUNS.glob("quant_*.json"))[-1].stem.rsplit("_",1)[-1]]
+ if a.date and not a.all:
+  dates=[stamp(a.date)]
+ else:
+  with connect_strategy_db() as conn:
+   available=[date_yy(value) for value in document_dates(conn,"quant")]
+  dates=[value for value in available if value>=START] if a.all else available[-1:]
+ if not dates:
+  p.error("策略库中没有可发布的 Quant 日期")
  print(json.dumps({"outputs":[str(publish(d,a.fetch_capital,a.max_mx_requests)) for d in dates]},ensure_ascii=False))
 if __name__=="__main__": main()

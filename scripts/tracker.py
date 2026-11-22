@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.shared import PROJECT_ROOT
 from scripts.strategy_config import load_strategy_config
 from scripts.progress_utils import ProgressTracker
+from scripts.data.strategy_data_store import connect as connect_strategy_db, document_dates, require_quant_document
 from scripts import bloom as _bloom
 from scripts import signal_plan as _plan
 
@@ -220,21 +221,18 @@ def main():
 
     try:
         date_yy = normalize_date_arg(args.date)
-    except ValueError as exc:
+        with connect_strategy_db() as conn:
+            dates = document_dates(conn, "quant")
+            if not dates:
+                raise FileNotFoundError("策略库中没有 Quant 日快照")
+            trade_date = _bloom.date_yy_to_iso(date_yy) if date_yy else dates[-1]
+            payload = require_quant_document(conn, trade_date)
+            previous_date = next((value for value in reversed(dates) if value < trade_date), None)
+            previous_payload = require_quant_document(conn, previous_date) if not args.skip_bloom and previous_date else None
+        date_yy = trade_date.replace("-", "")[2:]
+    except (FileNotFoundError, ValueError) as exc:
         print(f"错误: {exc}")
         sys.exit(1)
-
-    quant_path = _bloom.quant_run_for_date(date_yy) if date_yy else _bloom.latest_quant_run()
-    if not quant_path:
-        print("错误: 未找到模型二 quant run JSON")
-        sys.exit(1)
-    match = re.fullmatch(r"quant_(\d{6})\.json", quant_path.name)
-    if not match:
-        print(f"错误: 不支持的 quant run 文件名: {quant_path}")
-        sys.exit(1)
-    date_yy = match.group(1)
-
-    payload = _bloom.load_json(quant_path)
 
     progress_file = args.progress_file
     ptag = ProgressTracker(progress_file) if progress_file else None
@@ -246,8 +244,6 @@ def main():
             ptag.step_update("bloom", current_stage="信号处理")
 
         _bloom.ensure_dirs()
-        prev_path = _bloom.previous_quant_run(date_yy)
-        previous_payload = _bloom.load_json(prev_path) if prev_path else None
         bloom_data, new_state, events = _bloom.build_bloom(
             payload, previous_payload, date_yy,
             progress_file=progress_file,
@@ -322,7 +318,7 @@ def main():
     print("=" * 70)
     print("Model 4 Tracker")
     print("=" * 70)
-    print(f"quant run:      {quant_path}")
+    print(f"Quant 策略库日期: {trade_date}")
     print(f"tracker report: {tracker_path}")
     print(f"bloom active:   {bloom_data.get('summary', {}).get('active_total', 0)}")
     print(f"plan total:     {plan_data.get('summary', {}).get('plan_total', 0)}")

@@ -13,7 +13,7 @@
 
 每日在 Signal Plan 完成后、Dashboard 发布前执行：
 
-1. 合并模型二当日确认买点与 Signal Plan 股票并按代码去重。
+1. 从策略库读取模型二当日确认买点，与 Signal Plan 股票合并并按代码去重。
 2. 读取同日 `pool/pool_<YYMMDD>.csv`。
 3. `CORE_VERIFIED` 继续使用模型一已有财务字段；只对 `FUNDAMENTAL_UNVERIFIED` 标的补查。
 4. 同一只股票、同一最新可用报告期已有成功缓存时直接复用。

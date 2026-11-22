@@ -5,12 +5,14 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
 
-from scripts import backtest
+from scripts import backtest, plan_realization
+from scripts.data.strategy_data_store import connect as connect_strategy, load_buy_point_events, save_quant, save_signal_plan
 
 
 def quant_payload(run_date, rows):
@@ -101,11 +103,8 @@ class BacktestEventTests(unittest.TestCase):
         self.assertEqual(event["post_breakout_state"], "POST_BREAKOUT_HOT")
 
     def test_first_realized_event_only_and_new_structure_can_reenter(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            quant_dir = root / "quant"; plan_dir = root / "plan"
-            quant_dir.mkdir(); plan_dir.mkdir()
-            dates = ["260701", "260702", "260703", "260706"]
+        with closing(connect_strategy(":memory:")) as strategy:
+            dates = ["2026-07-01", "2026-07-02", "2026-07-03", "2026-07-06"]
             rows = [
                 row(),
                 row(setup="BREAKOUT_BUY", close=11, volume=130),
@@ -115,16 +114,39 @@ class BacktestEventTests(unittest.TestCase):
             for actual in rows:
                 actual["model2_include"] = True
             for date, actual in zip(dates, rows):
-                (quant_dir / f"quant_{date}.json").write_text(json.dumps(quant_payload(f"20{date[:2]}-{date[2:4]}-{date[4:]}", [actual])), encoding="utf-8")
-            for date, anchor in (("260701", "2026-01-01"), ("260702", "2026-01-01"), ("260703", "2026-06-20")):
-                (plan_dir / f"signal_plan_{date}.json").write_text(json.dumps({"plans": [plan(anchor=anchor)]}), encoding="utf-8")
-            calendar = ["2026-07-01", "2026-07-02", "2026-07-03", "2026-07-06"]
-            with patch.object(backtest, "QUANT_DIR", quant_dir), patch.object(backtest, "PLAN_DIR", plan_dir):
-                events = backtest.discover_events("260706", calendar)
+                save_quant(strategy, quant_payload(date, [actual]))
+            for date, anchor in zip(dates, ("2026-01-01", "2026-01-01", "2026-06-20")):
+                save_signal_plan(strategy, {"meta": {"date": date}, "plans": [plan(anchor=anchor)]})
+            with patch.object(backtest, "connect_strategy_db", side_effect=AssertionError("必须沿用传入的策略库")):
+                events = backtest.discover_events("260706", dates, strategy_conn=strategy)
 
         self.assertEqual(len(events), 2)
         self.assertEqual([event["structure_anchor"] for event in events], ["2026-01-01", "2026-06-20"])
         self.assertEqual([event["entry_date_yy"] for event in events], ["260702", "260706"])
+
+    def test_dashboard_realizes_and_persists_previous_plan_from_sqlite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            market = root / "market.sqlite"
+            with closing(sqlite3.connect(market)) as market_conn:
+                market_conn.execute("CREATE TABLE daily_bars(trade_date TEXT)")
+                market_conn.executemany(
+                    "INSERT INTO daily_bars VALUES (?)",
+                    [(date,) for date in ("2026-07-01", "2026-07-02") for _ in range(100)],
+                )
+                market_conn.commit()
+            conn = connect_strategy(":memory:")
+            self.addCleanup(conn.close)
+            save_quant(conn, quant_payload("2026-07-01", [row()]))
+            save_signal_plan(conn, {"meta": {"date": "2026-07-01"}, "plans": [plan()]})
+            actual = row(setup="BREAKOUT_BUY", close=11, volume=130)
+            actual["model2_include"] = True
+            payload = quant_payload("2026-07-02", [actual])
+            with patch.object(plan_realization, "PROJECT_ROOT", str(root)):
+                events = plan_realization.realized_events_for_date(conn, "260702", root / "signal_plan", market, payload)
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["setup_type"], "BREAKOUT_BUY")
+            self.assertEqual(load_buy_point_events(conn), events)
 
     def test_unfinished_horizons_stay_empty(self):
         with tempfile.TemporaryDirectory() as tmp:

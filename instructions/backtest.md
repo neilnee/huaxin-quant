@@ -2,7 +2,7 @@
 
 - **核心目标**：分别检验进入 VCP 页面结构列表的结构轮次，以及前一交易日 Signal Plan 在下一交易日形成的实际买点，在未来 5/10/20 个交易日的价格表现。
 - **边界**：不依赖真实买卖，不模拟仓位、止盈止损、滑点或账户收益；结构回测不把每日重复展示当作新样本，买点回测不把形态成熟日和 Plan 发布日当作收益起点，也不统计未成立计划的触发率。
-- **输入**：策略数据库中的 Signal Plan、Quant 快照与实际买点事件、共享日线库、`cache/market_regime/market_regime.sqlite` 中买点成立日的完整申万二级板块状态，以及计划日之前已保存到 `cache/capital_flow/capital_data.sqlite` 的个股资金事实；旧文件只作为迁移期兼容回退。
+- **输入**：策略数据库中的 Signal Plan、Quant 快照与实际买点事件、共享日线库、`cache/market_regime/market_regime.sqlite` 中买点成立日的完整申万二级板块状态，以及计划日之前已保存到 `cache/capital_flow/capital_data.sqlite` 的个股资金事实。历史 Quant 和 Signal Plan 文件通过显式迁移导入后参与回测。
 - **输出**：`backtest/backtest_<YYMMDD>.json|md` 及 Dashboard 独立回测数据包。
 - **主脚本**：`scripts/backtest.py`。
 - **策略配置**：`strategies/backtest.json`。

@@ -41,6 +41,7 @@ from scripts.data.strategy_data_store import (
     load_bloom_state,
     load_pool_tracking_rows,
     load_document as load_strategy_document,
+    require_quant_document,
     save_bloom,
     save_pool_tracking_rows,
 )
@@ -54,7 +55,6 @@ STRATEGY_VERSION = CONFIG["strategy_version"]
 POOL_CONFIG, _ = load_strategy_config("01-pool.json")
 POOL_TRACKING_CONFIG = POOL_CONFIG.get("expansion_pool", {}).get("tracking", {})
 
-QUANT_RUNS_DIR = Path(PROJECT_ROOT) / CONFIG["inputs"]["quant_run_dir"]
 BLOOM_STATE_PATH = Path(PROJECT_ROOT) / CONFIG["inputs"]["state_path"]
 BLOOM_EVENTS_PATH = Path(PROJECT_ROOT) / CONFIG["inputs"]["events_path"]
 BLOOM_INPUT_DIR = Path(PROJECT_ROOT) / CONFIG["outputs"]["review_input_dir"]
@@ -164,31 +164,6 @@ def normalize_date_arg(value):
 
 def date_yy_to_iso(value):
     return datetime.strptime(value, "%y%m%d").strftime("%Y-%m-%d")
-
-
-def latest_quant_run():
-    files = sorted(QUANT_RUNS_DIR.glob("quant_*.json"))
-    return files[-1] if files else None
-
-
-def quant_run_for_date(date_yy):
-    path = QUANT_RUNS_DIR / f"quant_{date_yy}.json"
-    return path if path.exists() else None
-
-
-def previous_quant_run(date_yy):
-    files = sorted(QUANT_RUNS_DIR.glob("quant_*.json"))
-    candidates = []
-    for path in files:
-        match = re.fullmatch(r"quant_(\d{6})\.json", path.name)
-        if match and match.group(1) < date_yy:
-            candidates.append(path)
-    return candidates[-1] if candidates else None
-
-
-def load_json(path):
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
 
 
 def safe_int(value, default=0):
@@ -1390,7 +1365,7 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False, progres
             "schema": "huaxin_bloom_signal_v1",
             "date": run_date,
             "date_yy": date_yy,
-            "quant_run": str(QUANT_RUNS_DIR / f"quant_{date_yy}.json"),
+            "quant_run": f"strategy_data.sqlite:quant:{run_date}",
             "strategy_version": STRATEGY_VERSION,
             "strategy_file": STRATEGY_PATH,
         },
@@ -1694,43 +1669,20 @@ def main():
         print(f"错误: Bloom 状态正在由另一个进程更新: {exc}")
         sys.exit(1)
 
-    date_yy = normalize_date_arg(args.date)
-    with connect_strategy_db() as strategy_conn:
-        database_dates = strategy_document_dates(strategy_conn, "quant")
-    database_stamps = {value.replace("-", "")[2:] for value in database_dates}
-    if date_yy and date_yy in database_stamps:
-        quant_path = QUANT_RUNS_DIR / f"quant_{date_yy}.json"
-    elif not date_yy and database_dates:
-        date_yy = database_dates[-1].replace("-", "")[2:]
-        quant_path = QUANT_RUNS_DIR / f"quant_{date_yy}.json"
-    else:
-        quant_path = quant_run_for_date(date_yy) if date_yy else latest_quant_run()
-    if not quant_path:
-        print("错误: 未找到模型二 quant run JSON")
-        sys.exit(1)
-    match = re.fullmatch(r"quant_(\d{6})\.json", quant_path.name)
-    if not match:
-        print(f"错误: 不支持的 quant run 文件名: {quant_path}")
-        sys.exit(1)
-    date_yy = match.group(1)
-
-    trade_date = datetime.strptime(date_yy, "%y%m%d").strftime("%Y-%m-%d")
-    with connect_strategy_db() as strategy_conn:
-        payload = load_strategy_document(strategy_conn, "quant", trade_date)
-    if payload is None:
-        payload = load_json(quant_path)
-    previous_database_dates = [value for value in database_dates if value < trade_date]
-    prev_path = (
-        QUANT_RUNS_DIR / f"quant_{previous_database_dates[-1].replace('-', '')[2:]}.json"
-        if previous_database_dates else previous_quant_run(date_yy)
-    )
-    previous_payload = None
-    if prev_path:
-        previous_date = datetime.strptime(prev_path.stem.rsplit("_", 1)[-1], "%y%m%d").strftime("%Y-%m-%d")
+    try:
+        date_yy = normalize_date_arg(args.date)
         with connect_strategy_db() as strategy_conn:
-            previous_payload = load_strategy_document(strategy_conn, "quant", previous_date)
-        if previous_payload is None:
-            previous_payload = load_json(prev_path)
+            dates = strategy_document_dates(strategy_conn, "quant")
+            if not dates:
+                raise FileNotFoundError("策略库中没有 Quant 日快照")
+            trade_date = date_yy_to_iso(date_yy) if date_yy else dates[-1]
+            payload = require_quant_document(strategy_conn, trade_date)
+            previous_date = next((value for value in reversed(dates) if value < trade_date), None)
+            previous_payload = require_quant_document(strategy_conn, previous_date) if previous_date else None
+        date_yy = trade_date.replace("-", "")[2:]
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"错误: {exc}")
+        sys.exit(1)
 
     try:
         bloom, new_state, events = build_bloom(payload, previous_payload, date_yy,
@@ -1792,8 +1744,8 @@ def main():
     print("=" * 70)
     print("Huaxin Bloom Signal")
     print("=" * 70)
-    print(f"quant run: {quant_path}")
-    print(f"previous: {prev_path if prev_path else 'none'}")
+    print(f"Quant 策略库日期: {trade_date}")
+    print(f"上一份 Quant 日期: {previous_date or '无'}")
     print(f"bloom input: {input_path}")
     print(f"bloom report: {report_path}")
     print(f"dashboard data: {dashboard_path if dashboard_path else 'skipped'}")

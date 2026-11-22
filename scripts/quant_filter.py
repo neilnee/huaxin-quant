@@ -4002,7 +4002,7 @@ def build_output_paths(args, today_yy, mode, codes):
     elif mode == "测试":
         json_path = f"{QUANT_RUNS_DIR}/quant_{today_yy}_test.json"
     else:
-        json_path = f"{QUANT_RUNS_DIR}/quant_{today_yy}.json"
+        json_path = None
     return quant_path, json_path
 
 
@@ -4152,7 +4152,9 @@ def main():
 
     print("=" * 70)
     print("模型二：VCP 结构与触发信号精筛")
-    print(f"模式: {mode} | 标的: {len(codes)} 只 | JSON: {json_path}")
+    print(f"模式: {mode} | 标的: {len(codes)} 只")
+    if json_path:
+        print(f"JSON 导出: {json_path}")
     if quant_path:
         print(f"CSV 导出: {quant_path}")
     print("日线: 统一 SQLite 数据库（缺口自动主备源补数）")
@@ -4190,7 +4192,8 @@ def main():
 
     if mode == "全量":
         with connect_strategy_db() as strategy_conn:
-            save_quant(strategy_conn, payload, os.path.relpath(json_path, PROJECT_ROOT))
+            source = os.path.relpath(json_path, PROJECT_ROOT) if json_path else "scripts/quant_filter.py"
+            save_quant(strategy_conn, payload, source)
             payload = load_document(strategy_conn, "quant", run_date)
     print_summary(len(codes), stats["pull_ok"], stats["pull_fail"], stats["data_insufficient"],
                   results, stats["cache_hits"], stats["api_calls"], stats["tdx_calls"])
@@ -4205,7 +4208,8 @@ def main():
             write_csv(csv_results, quant_path)
         else:
             print("\n无 model2_include 标的，CSV 未写入。可用 --include-reject 输出完整结果。")
-    write_json(payload, json_path)
+    if json_path:
+        write_json(payload, json_path)
 
     for warning in stats.get("adjustment_warnings", []):
         print(f"[复权提示] {warning['code']} {warning['name']} {warning['ex_date']}: {warning['reason']}")

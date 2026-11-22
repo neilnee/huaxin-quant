@@ -94,7 +94,7 @@ class StrategyDataStoreTests(unittest.TestCase):
             ])
             self.assertEqual(valuate.read_quant_pool("260811"), [])
 
-    def test_quant_run_writes_csv_only_when_requested(self):
+    def test_quant_run_writes_compatibility_files_only_when_requested(self):
         directory = Path(self.temp.name)
         (directory / "pool_260812.csv").write_text("股票代码,股票名称\n1,测试\n", encoding="utf-8")
         rows = [
@@ -116,14 +116,15 @@ class StrategyDataStoreTests(unittest.TestCase):
             with patch("sys.argv", argv):
                 quant_filter.main()
             write_csv.assert_not_called()
-            saved_payload = json.loads(json_path.read_text(encoding="utf-8"))
+            self.assertFalse(json_path.exists())
+            saved_payload = load_document(self.conn, "quant", "2026-08-12")
             self.assertIsNone(saved_payload["meta"]["csv_path"])
             self.assertEqual(saved_payload["results"], rows)
-            self.assertEqual(load_document(self.conn, "quant", "2026-08-12"), saved_payload)
 
-            with patch("sys.argv", [*argv, "--quant", "selected.csv"]):
+            with patch("sys.argv", [*argv, "--quant", "selected.csv", "--output-json", str(json_path)]):
                 quant_filter.main()
             write_csv.assert_called_once_with([rows[0]], "selected.csv")
+            self.assertEqual(json.loads(json_path.read_text(encoding="utf-8")), load_document(self.conn, "quant", "2026-08-12"))
             write_csv.reset_mock()
 
             with patch("sys.argv", [*argv, "--include-reject"]):

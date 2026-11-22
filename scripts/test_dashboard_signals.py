@@ -10,9 +10,16 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts import dashboard_signals
+from scripts.data.strategy_data_store import connect, save_quant
 
 
 class DashboardSignalsMarketNoticeTests(unittest.TestCase):
+    def quant_db(self, payload):
+        conn = connect(":memory:")
+        self.addCleanup(conn.close)
+        save_quant(conn, payload)
+        return conn
+
     def test_plan_row_keeps_optional_prior_breakout_context(self):
         quant = {
             "code": "603132", "name": "金徽股份", "structure_score": 58,
@@ -31,8 +38,8 @@ class DashboardSignalsMarketNoticeTests(unittest.TestCase):
     def test_stale_plan_is_not_published_after_quant_enters_trend_rebuild(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            runs = root / "runs"; plans = root / "plans"
-            runs.mkdir(); plans.mkdir()
+            plans = root / "plans"
+            plans.mkdir()
             quant = {
                 "meta": {"run_date": "2026-08-21"},
                 "results": [{
@@ -45,9 +52,8 @@ class DashboardSignalsMarketNoticeTests(unittest.TestCase):
                 "code": "003004", "name": "声迅股份", "setup_signal": "BREAKOUT_BUY",
                 "target_quality": "A", "plan_reason": "旧结构突破计划",
             }]}
-            (runs / "quant_260821.json").write_text(json.dumps(quant), encoding="utf-8")
             (plans / "signal_plan_260821.json").write_text(json.dumps(plan), encoding="utf-8")
-            with patch.object(dashboard_signals, "RUNS", runs), patch.object(
+            with patch.object(dashboard_signals, "connect_strategy_db", return_value=self.quant_db(quant)), patch.object(
                 dashboard_signals, "PLAN_RUNS", plans
             ), patch.object(dashboard_signals, "realized_events_for_date", return_value=[]), patch.object(
                 dashboard_signals, "pool_notices", return_value={}
@@ -62,8 +68,8 @@ class DashboardSignalsMarketNoticeTests(unittest.TestCase):
     def test_previous_plan_hit_does_not_create_an_independent_trigger(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            runs = root / "runs"; plans = root / "plans"
-            runs.mkdir(); plans.mkdir()
+            plans = root / "plans"
+            plans.mkdir()
             quant = {
                 "meta": {"run_date": "2026-08-10", "strategy_version": "test-quant"},
                 "results": [{
@@ -74,7 +80,6 @@ class DashboardSignalsMarketNoticeTests(unittest.TestCase):
                     "structure_risk_flags": ["EXTENDED_FROM_MA20"],
                 }],
             }
-            (runs / "quant_260810.json").write_text(json.dumps(quant, ensure_ascii=False), encoding="utf-8")
             event = {
                 "code": "603882", "name": "金域医学", "setup_family": "BREAKOUT",
                 "setup_type": "BREAKOUT_BUY", "entry_action": "NEW", "entry_grade": "REGULAR",
@@ -83,7 +88,7 @@ class DashboardSignalsMarketNoticeTests(unittest.TestCase):
                 "post_breakout_state": "POST_BREAKOUT_HOT", "trigger_price_low": 29.58,
                 "trigger_price_high": 31.63, "volume_min": 75131, "invalid_price": 28.41,
             }
-            with patch.object(dashboard_signals, "RUNS", runs), patch.object(
+            with patch.object(dashboard_signals, "connect_strategy_db", return_value=self.quant_db(quant)), patch.object(
                 dashboard_signals, "PLAN_RUNS", plans
             ), patch.object(dashboard_signals, "realized_events_for_date", return_value=[event]), patch.object(
                 dashboard_signals, "pool_notices", return_value={}
@@ -99,8 +104,8 @@ class DashboardSignalsMarketNoticeTests(unittest.TestCase):
     def test_model2_and_plan_same_trigger_are_deduplicated(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            runs = root / "runs"; plans = root / "plans"
-            runs.mkdir(); plans.mkdir()
+            plans = root / "plans"
+            plans.mkdir()
             quant = {
                 "meta": {"run_date": "2026-08-10", "strategy_version": "test-quant"},
                 "results": [{
@@ -108,12 +113,11 @@ class DashboardSignalsMarketNoticeTests(unittest.TestCase):
                     "setup_quality": "A", "setup_score": 80, "setup_plan_inputs": {},
                 }],
             }
-            (runs / "quant_260810.json").write_text(json.dumps(quant), encoding="utf-8")
             event = {
                 "code": "000001", "setup_type": "BREAKOUT_BUY", "entry_action": "NEW",
                 "entry_grade": "A", "plan_date": "2026-08-07", "plan_target_quality": "A",
             }
-            with patch.object(dashboard_signals, "RUNS", runs), patch.object(
+            with patch.object(dashboard_signals, "connect_strategy_db", return_value=self.quant_db(quant)), patch.object(
                 dashboard_signals, "PLAN_RUNS", plans
             ), patch.object(dashboard_signals, "realized_events_for_date", return_value=[event]), patch.object(
                 dashboard_signals, "pool_notices", return_value={}

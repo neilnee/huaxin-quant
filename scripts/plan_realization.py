@@ -5,16 +5,12 @@ from __future__ import annotations
 
 import json
 import math
-import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from scripts.data.strategy_data_store import (
-    connect as connect_strategy_db,
-    load_document as load_strategy_document,
-    save_buy_point_events,
-)
+from scripts.data.strategy_data_store import load_document as load_strategy_document, save_buy_point_events
+from scripts.shared import PROJECT_ROOT
 
 
 SETUP_FAMILIES = {"PULLBACK", "BREAKOUT", "RETEST"}
@@ -165,24 +161,12 @@ def realized_plan_event(
     return event
 
 
-def load_quant_rows(path: Path) -> tuple[dict, dict[str, dict]]:
-    match = re.fullmatch(r"quant_(\d{6})\.json", path.name)
-    payload = None
-    default_dir = Path(__file__).resolve().parents[1] / "cache" / "quant_runs"
-    if match and path.parent.resolve() == default_dir.resolve():
-        trade_date = datetime.strptime(match.group(1), "%y%m%d").strftime("%Y-%m-%d")
-        with connect_strategy_db() as conn:
-            payload = load_strategy_document(conn, "quant", trade_date)
-    if payload is None:
-        if not path.exists():
-            return {}, {}
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    rows = {
+def quant_rows_by_code(payload: dict) -> dict[str, dict]:
+    return {
         str(row.get("code") or "").zfill(6): row
         for row in payload.get("results", [])
         if str(row.get("code") or "").strip("0")
     }
-    return payload, rows
 
 
 def previous_trading_date(date_value: str, market_db: Path) -> str | None:
@@ -204,22 +188,22 @@ def previous_trading_date(date_value: str, market_db: Path) -> str | None:
     return str(rows[1][0])
 
 
-def realized_events_for_date(date_value: str, plan_dir: Path, quant_dir: Path, market_db: Path) -> list[dict]:
+def realized_events_for_date(conn, date_value: str, plan_dir: Path, market_db: Path, entry_payload: dict) -> list[dict]:
     """Resolve only the previous valid session's Plans against date_value facts."""
     entry_date = iso_date(date_value)
     plan_date = previous_trading_date(date_value, market_db)
     if plan_date is None:
         return []
     plan_path = plan_dir / f"signal_plan_{date_yy(plan_date)}.json"
-    default_plan_dir = Path(__file__).resolve().parents[1] / "signal_plan"
+    default_plan_dir = Path(PROJECT_ROOT) / "signal_plan"
     plan_payload = None
     if plan_dir.resolve() == default_plan_dir.resolve():
-        with connect_strategy_db() as conn:
-            plan_payload = load_strategy_document(conn, "signal_plan", plan_date)
+        plan_payload = load_strategy_document(conn, "signal_plan", plan_date)
     if plan_payload is None and not plan_path.exists():
         return []
-    source_payload, source_rows = load_quant_rows(quant_dir / f"quant_{date_yy(plan_date)}.json")
-    entry_payload, entry_rows = load_quant_rows(quant_dir / f"quant_{date_value}.json")
+    source_payload = load_strategy_document(conn, "quant", plan_date) or {}
+    source_rows = quant_rows_by_code(source_payload)
+    entry_rows = quant_rows_by_code(entry_payload)
     if not entry_rows:
         return []
     if plan_payload is None:
@@ -240,6 +224,5 @@ def realized_events_for_date(date_value: str, plan_dir: Path, quant_dir: Path, m
             continue
         seen.add(key)
         events.append(event)
-    with connect_strategy_db() as conn:
-        save_buy_point_events(conn, events)
+    save_buy_point_events(conn, events)
     return events

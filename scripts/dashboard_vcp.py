@@ -15,13 +15,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(os.path.abspath(__file__)).parents[1]))
 from scripts.shared import PROJECT_ROOT
-from scripts.plan_realization import realized_events_for_date
+from scripts.plan_realization import iso_date, realized_events_for_date
 from scripts.dashboard_index import update_dashboard_module
+from scripts.data.strategy_data_store import connect as connect_strategy_db, require_quant_document
 
 
 ROOT = Path(PROJECT_ROOT)
 BLOOM_INPUT_DIR = ROOT / "bloom" / "state"
-QUANT_RUN_DIR = ROOT / "cache" / "quant_runs"
 POOL_DIR = ROOT / "pool"
 MARKET_DATA_DB = ROOT / "cache" / "market_data" / "market_data.sqlite"
 MARKET_REGIME_DB = ROOT / "cache" / "market_regime" / "market_regime.sqlite"
@@ -259,8 +259,10 @@ def build_context(date_yy: str) -> dict:
     if not bloom_path.exists():
         raise FileNotFoundError(f"未找到 {bloom_path.name}")
     bloom = load_json(bloom_path)
-    quant_path = QUANT_RUN_DIR / f"quant_{date_yy}.json"
-    quant_results = load_json(quant_path).get("results", []) if quant_path.exists() else []
+    with connect_strategy_db() as conn:
+        quant = require_quant_document(conn, iso_date(date_yy))
+        realized = realized_events_for_date(conn, date_yy, SIGNAL_PLAN_DIR, MARKET_DATA_DB, quant)
+    quant_results = quant.get("results", [])
     quant_by_code = {str(row.get("code", "")).zfill(6): row for row in quant_results}
     sections = bloom.get("sections", {})
     active = sections.get("active", [])
@@ -273,7 +275,6 @@ def build_context(date_yy: str) -> dict:
     }
     display_rows = [(row, "PRE_BREAKOUT") for row in active]
     display_rows.extend((row, "POST_BREAKOUT") for row in post_breakout)
-    realized = realized_events_for_date(date_yy, SIGNAL_PLAN_DIR, QUANT_RUN_DIR, MARKET_DATA_DB)
     realized_by_key = {
         (str(event.get("code", "")).zfill(6), event.get("setup_type")): event
         for event in realized
@@ -313,7 +314,7 @@ def build_context(date_yy: str) -> dict:
     summary["trend_rebuild_total"] = sum(row.get("model2_stage") == "TREND_REBUILD" for row in candidates)
     return {
         "meta": {"run_date": bloom.get("summary", {}).get("date"), "source": bloom_path.name,
-                 "quant_source": quant_path.name if quant_path.exists() else None},
+                 "quant_source": "strategy_data.sqlite"},
         "summary": summary,
         "candidates": candidates,
     }

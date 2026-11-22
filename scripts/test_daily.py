@@ -7,17 +7,25 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts import daily, monitor
+from scripts.data.strategy_data_store import connect, save_quant
 from scripts.progress_utils import ProgressTracker
 
 
 class DailyCapitalWorkflowTests(unittest.TestCase):
     DATE = "260810"
 
+    def setUp(self):
+        self.strategy = connect(":memory:")
+        self.addCleanup(self.strategy.close)
+        save_quant(self.strategy, {"meta": {"run_date": "2026-08-10"}, "results": []})
+        patcher = patch.object(daily, "connect_strategy_db", return_value=self.strategy)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _build_complete_outputs(self, root: Path, signal_fetch_enabled: bool = True) -> None:
         month = root / "dashboard" / "data" / "202608"
         required = [
             root / "pool" / "pool_260810.csv",
-            root / "cache" / "quant_runs" / "quant_260810.json",
             root / "bloom" / "state" / "bloom_input_260810.json",
             root / "signal_plan" / "signal_plan_260810.json",
             root / "capital" / "capital_observer_260810.json",
@@ -124,6 +132,14 @@ class DailyCapitalWorkflowTests(unittest.TestCase):
                 self.assertTrue(daily.verify_pipeline_outputs(self.DATE))
 
             (root / "capital" / "capital_observer_260810.json").unlink()
+            with patch.object(daily, "PROJECT_ROOT", str(root)):
+                self.assertFalse(daily.verify_pipeline_outputs(self.DATE))
+
+    def test_verify_requires_same_date_quant_in_database(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._build_complete_outputs(root)
+            self.strategy.execute("DELETE FROM current_documents WHERE module='quant'")
             with patch.object(daily, "PROJECT_ROOT", str(root)):
                 self.assertFalse(daily.verify_pipeline_outputs(self.DATE))
 

@@ -106,7 +106,7 @@ def migrate(conn: sqlite3.Connection, start: str | None = None, end: str | None 
             calendar = backtest.trading_calendar(market, last)
         finally:
             market.close()
-        events = backtest.discover_events(last.replace("-", "")[2:], calendar)
+        events = backtest.discover_events(last.replace("-", "")[2:], calendar, strategy_conn=conn)
         if start:
             events = [event for event in events if event.get("entry_date", "") >= start]
         save_buy_point_events(conn, events)

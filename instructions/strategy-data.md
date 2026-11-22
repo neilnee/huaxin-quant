@@ -32,6 +32,8 @@ python3 scripts/strategy_publish.py all --date <YYMMDD>
 
 可单独发布 `quant`、`signal-plan` 或 `bloom`。发布器不得重新运行筛选或信号规则。
 
+Quant 默认重建 JSON。只需指定日期的精选 CSV 时，使用 `python3 scripts/strategy_publish.py quant --date <YYMMDD> --csv-only`。
+
 ## 生命周期观察
 
 实际买点以兑现日收盘价为参考入场价，以 Plan 冻结的失效价定义初始风险 `1R`，从下一交易日起保存 OHLC、当前收益、MFE、MAE、1R/2R/3R 首次触达、失效触碰/确认和超时状态。该数据仅用于交易后研究，不反向改变 VCP、Plan 或买点判定。

@@ -84,6 +84,7 @@ Python 3.11+，优先显式调用 `.venv/bin/python scripts/...`，语法检查�
 | 任务 | 文档 |
 |---|---|
 | 执行每日工作流、恢复与异常处理 | [WORKFLOW.md](WORKFLOW.md) |
+| 运行产物长期归档、盘点和恢复 | [WORKFLOW.md](WORKFLOW.md#长期归档管理)，运行实例 `archive/` |
 | 查找模块指令卡与维护约定 | [docs/README.md](docs/README.md) |
 | 盘后人工机会初筛 | [opportunity-screening.md](instructions/opportunity-screening.md) |
 | 架构、目录职责与权威存储 | [DESIGN.md](DESIGN.md) |

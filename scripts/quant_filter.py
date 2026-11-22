@@ -19,6 +19,7 @@ import json
 import os
 import sys
 import time
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
@@ -47,7 +48,13 @@ import requests
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.shared import PROJECT_ROOT, VALUATION_INDEX_PATH, expected_trade_date
 from scripts.data.market_data_service import MarketDataService
-from scripts.data.strategy_data_store import connect as connect_strategy_db, load_document, save_quant
+from scripts.data.strategy_data_store import (
+    DB_PATH as STRATEGY_DB_PATH,
+    connect as connect_strategy_db,
+    load_document,
+    load_quant_names,
+    save_quant,
+)
 from scripts.strategy_config import load_strategy_config
 from scripts.impulse_evidence import analyze_impulse_evidence, empty_impulse_evidence
 from scripts.quant_scoring import (
@@ -219,12 +226,24 @@ def read_code_name_csv(path):
     return items
 
 
-def load_known_names():
-    names = {}
-    for pattern_dir, pattern in [(POOL_DIR, "pool_*.csv"), (QUANT_DIR, "quant_*.csv")]:
-        for path in sorted(Path(pattern_dir).glob(pattern)):
-            names.update(read_code_name_csv(path))
-    names.update(read_code_name_csv(VALUATION_INDEX_PATH))
+def load_known_names(codes, today_yy):
+    index_names = read_code_name_csv(VALUATION_INDEX_PATH)
+    names = {code: index_names[code] for code in codes if code in index_names}
+    remaining = set(codes) - names.keys()
+    if remaining and STRATEGY_DB_PATH.is_file():
+        trade_date = datetime.strptime(today_yy, "%y%m%d").date().isoformat()
+        with closing(connect_strategy_db(STRATEGY_DB_PATH)) as conn:
+            names.update(load_quant_names(conn, remaining, trade_date))
+        remaining.difference_update(names)
+    for path in sorted(Path(POOL_DIR).glob("pool_??????.csv"), reverse=True):
+        if not remaining:
+            break
+        pool_stamp = path.stem.removeprefix("pool_")
+        if not pool_stamp.isdigit() or pool_stamp > today_yy:
+            continue
+        pool_names = read_code_name_csv(path)
+        names.update({code: pool_names[code] for code in remaining if code in pool_names})
+        remaining.difference_update(names)
     return names
 
 
@@ -239,26 +258,23 @@ def load_pool_codes(pool_path):
 
 
 def resolve_input_codes(args, today_yy):
-    known_names = load_known_names()
     if args.code:
         code = normalize_code(args.code)
-        name = args.name or known_names.get(code, code)
-        return [(code, name)], "单股"
+        if args.name:
+            return [(code, args.name)], "单股"
+        codes, mode = [code], "单股"
+    elif args.codes:
+        codes, mode = [normalize_code(raw_code) for raw_code in args.codes.split(",")], "多股"
+    elif args.test:
+        codes, mode = TEST_CODES, "测试"
+    else:
+        pool_path = args.pool or f"{POOL_DIR}/pool_{today_yy}.csv"
+        if not os.path.exists(pool_path):
+            raise FileNotFoundError(f"池文件不存在: {pool_path}")
+        return load_pool_codes(pool_path), "全量"
 
-    if args.codes:
-        codes = []
-        for raw_code in args.codes.split(","):
-            code = normalize_code(raw_code)
-            codes.append((code, known_names.get(code, code)))
-        return codes, "多股"
-
-    if args.test:
-        return [(c, known_names.get(c, c)) for c in TEST_CODES], "测试"
-
-    pool_path = args.pool or f"{POOL_DIR}/pool_{today_yy}.csv"
-    if not os.path.exists(pool_path):
-        raise FileNotFoundError(f"池文件不存在: {pool_path}")
-    return load_pool_codes(pool_path), "全量"
+    known_names = load_known_names(codes, today_yy)
+    return [(code, known_names.get(code, code)) for code in codes], mode
 
 
 # ===================== 指标计算 =====================
@@ -3715,7 +3731,7 @@ def should_write_to_quant(result, include_reject=False):
 
 
 def write_csv(results, quant_path):
-    os.makedirs(os.path.dirname(quant_path), exist_ok=True)
+    Path(quant_path).parent.mkdir(parents=True, exist_ok=True)
     with open(quant_path, "w", encoding="utf-8-sig", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(CSV_COLUMNS)
@@ -3966,6 +3982,8 @@ def maybe_call_llm(results, top_n):
 def build_output_paths(args, today_yy, mode, codes):
     if args.quant:
         quant_path = args.quant
+    elif not args.include_reject:
+        quant_path = None
     elif mode == "单股":
         quant_path = f"{QUANT_DIR}/single_{codes[0][0]}_{today_yy}.csv"
     elif mode == "多股":
@@ -4103,10 +4121,10 @@ def main():
     parser.add_argument("--codes", help="多只股票代码，逗号分隔")
     parser.add_argument("--name", help="单股模式下手工指定股票名称")
     parser.add_argument("--test", action="store_true", help="测试模式，使用内建标的")
-    parser.add_argument("--quant", help="CSV 输出路径")
+    parser.add_argument("--quant", help="显式导出 CSV 到指定路径")
     parser.add_argument("--output-json", help="JSON 输出路径")
     parser.add_argument("--json", action="store_true", help="同时将结构化结果打印到 stdout")
-    parser.add_argument("--include-reject", action="store_true", help="CSV 中包含未纳入 model2_include 的标的")
+    parser.add_argument("--include-reject", action="store_true", help="导出 CSV，包含未纳入 model2_include 的标的")
     parser.add_argument("--no-cache", action="store_true", help="跳过缓存，重新拉取行情")
     parser.add_argument("--refresh", action="store_true", help="强制刷新候选标的近期日线后重新计算")
     parser.add_argument("--with-llm", action="store_true", help="兼容参数：LLM 文字解读已暂停，传入也跳过")
@@ -4134,7 +4152,9 @@ def main():
 
     print("=" * 70)
     print("模型二：VCP 结构与触发信号精筛")
-    print(f"模式: {mode} | 标的: {len(codes)} 只 | CSV: {quant_path}")
+    print(f"模式: {mode} | 标的: {len(codes)} 只 | JSON: {json_path}")
+    if quant_path:
+        print(f"CSV 导出: {quant_path}")
     print("日线: 统一 SQLite 数据库（缺口自动主备源补数）")
     print("=" * 70)
 
@@ -4172,16 +4192,19 @@ def main():
         with connect_strategy_db() as strategy_conn:
             save_quant(strategy_conn, payload, os.path.relpath(json_path, PROJECT_ROOT))
             payload = load_document(strategy_conn, "quant", run_date)
-    csv_results = [r for r in payload["results"] if should_write_to_quant(r, include_reject=args.include_reject)]
-    csv_results.sort(key=lambda x: x["structure_score"], reverse=True)
-
     print_summary(len(codes), stats["pull_ok"], stats["pull_fail"], stats["data_insufficient"],
                   results, stats["cache_hits"], stats["api_calls"], stats["tdx_calls"])
 
-    if csv_results:
-        write_csv(csv_results, quant_path)
-    else:
-        print("\n无 model2_include 标的，CSV 未写入。可用 --include-reject 输出完整结果。")
+    if quant_path:
+        csv_results = [
+            row for row in payload["results"]
+            if should_write_to_quant(row, include_reject=args.include_reject)
+        ]
+        csv_results.sort(key=lambda row: row["structure_score"], reverse=True)
+        if csv_results:
+            write_csv(csv_results, quant_path)
+        else:
+            print("\n无 model2_include 标的，CSV 未写入。可用 --include-reject 输出完整结果。")
     write_json(payload, json_path)
 
     for warning in stats.get("adjustment_warnings", []):

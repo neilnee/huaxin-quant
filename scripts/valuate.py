@@ -26,17 +26,18 @@ import csv
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import argparse
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from collections import defaultdict
 from scripts.shared import VALUATION_INDEX_PATH
+from scripts.data.strategy_data_store import DB_PATH as STRATEGY_DB_PATH, connect, document_dates, load_document
 
 # ── 项目根目录（脚本在 scripts/ 下） ─────────────────────────
 PROJECT_ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CACHE_FINANCIAL = PROJECT_ROOT / "cache" / "financial"
 CACHE_BRIEFING = PROJECT_ROOT / "cache" / "briefing"
 CACHE_RESEARCH = PROJECT_ROOT / "cache" / "research"
-QUANT_DIR = PROJECT_ROOT / "quant"
 
 # ── 字段中文名 → 候选关键词（用于 nameMap 模糊匹配） ──────────
 FIELD_KEYWORDS = {
@@ -568,26 +569,25 @@ def read_index():
 
 
 def read_quant_pool(date_str=None):
-    """读取 quant 精选池"""
-    if date_str is None:
-        date_str = datetime.now().strftime("%y%m%d")
-    quant_path = QUANT_DIR / f"quant_{date_str}.csv"
-    if not quant_path.exists():
-        # 尝试最近的
-        quants = sorted(QUANT_DIR.glob("quant_*.csv"))
-        if quants:
-            quant_path = quants[-1]
-        else:
-            return []
+    """从策略库读取最近一次可用的 Quant 精选名单。"""
+    if not STRATEGY_DB_PATH.is_file():
+        return []
 
-    stocks = []
-    with open(quant_path, "r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            code = row.get("股票代码", "").replace('="', "").replace('"', "")
-            name = row.get("股票名称", "")
-            stocks.append({"code": code, "name": name})
-    return stocks
+    from scripts.quant_filter import should_write_to_quant
+
+    through_date = (
+        datetime.strptime(date_str, "%y%m%d").date() if date_str else datetime.now().date()
+    ).isoformat()
+    with closing(connect(STRATEGY_DB_PATH)) as conn:
+        for trade_date in reversed(document_dates(conn, "quant")):
+            if trade_date > through_date:
+                continue
+            payload = load_document(conn, "quant", trade_date) or {}
+            rows = [row for row in payload.get("results", []) if should_write_to_quant(row)]
+            if rows:
+                rows.sort(key=lambda row: row.get("structure_score") or 0, reverse=True)
+                return [{"code": str(row["code"]).zfill(6), "name": row["name"]} for row in rows]
+    return []
 
 
 def get_stock_name_from_index(code):

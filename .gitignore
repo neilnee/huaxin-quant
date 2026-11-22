@@ -24,6 +24,7 @@ pool/
 quant/
 bloom/
 reports/
+/archive/
 signal_plan/
 tracker/
 market/

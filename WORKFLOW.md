@@ -245,7 +245,7 @@ python3 scripts/run_valuation.py --code 300442 --no-publish
 |------|------|------|
 | 策略库 | `cache/strategy/strategy_data.sqlite` | Pool 候选跟踪、Quant、Plan、Bloom、兑现事件与生命周期的权威存储 |
 | 模型一 | `pool/pool_<YYMMDD>.csv` | 核心质量与 RS 扩展合并候选池 |
-| 模型二 | `quant/quant_<YYMMDD>.csv` | 默认仅含纳入展示的标的，不是全量研究输入 |
+| 模型二 | `quant/quant_<YYMMDD>.csv` | 按需导出的精选标的表，使用 `strategy_publish.py quant --date <YYMMDD> --csv-only` |
 | 模型二 | `cache/quant_runs/quant_<YYMMDD>.json` | 策略库的兼容全量结果及统计；Bloom / Plan 优先读数据库，文件作回退 |
 | Bloom | `bloom/bloom_<YYMMDD>.md` | Bloom 日报 |
 | Bloom | `bloom/state/bloom_state.csv` | 跨日状态表 |
@@ -278,10 +278,18 @@ python3 scripts/init_runtime.py
 - 浏览器无法自动启动 → 不影响已生成的页面数据，可手动打开 `dashboard/index.html`
 - 数据异常 → Bloom 标记 `DATA_ISSUE`，不删除候选
 
+## 长期归档管理
+
+月末人工盘点已结束的实验、超出回滚用途的旧备份和可重建的大型产物。归档统一存放在运行实例根目录的 `archive/`，执行说明见 `archive/归档说明.md`，逐包状态见 `archive/catalog.json`。压缩包按 `huaxin_quant_YYYYMMDD_<主题>.tar.gz` 命名，使用相对运行实例的原路径打包，生成同名 SHA-256 校验文件。
+
+先做本地内容校验并登记，再上传夸克并记录实际云端位置和日期。云端下载副本通过 SHA-256 校验并在隔离目录试解包后，确认原目录已无运行或回滚依赖，再按确认的范围清理本地大文件。原位置保留必要的说明、清单和验收摘要及归档索引；清理完成后更新台账。
+
+活跃的行情库、策略库与真实交易账本沿用各自备份流程。归档盘点独立于每日总控。
+
 ## 维护原则
 
 - 改模型规则：先改 `instructions/*.md`，再改 `scripts/*.py`。
-- 本地数据产物不提交 Git：`cache/`、`pool/`、`quant/`、`bloom/`、`signal_plan/`、`tracker/`、`reports/`、`.tmp/`。
+- 本地数据产物不提交 Git：`cache/`、`pool/`、`quant/`、`bloom/`、`signal_plan/`、`tracker/`、`reports/`、`archive/`、`.tmp/`。
 - 提交只包含源文件、指令卡和文档。
 
 ## 验证与运行健康

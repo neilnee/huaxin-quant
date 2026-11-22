@@ -63,7 +63,7 @@ Huaxin Quant 是面向 A 股的候选发现、信号跟踪和研究复盘系统�
 | 数据 | 权威来源 | 兼容/展示产物 |
 |---|---|---|
 | 原始日线与公司行为 | cache/market_data/market_data.sqlite | 按需行情窗口及审计字段 |
-| Pool 候选跟踪、Quant、Plan、Bloom、兑现与生命周期 | cache/strategy/strategy_data.sqlite | Pool CSV、quant CSV、quant_runs JSON、Bloom 状态文件、Plan JSON/Markdown |
+| Pool 候选跟踪、Quant、Plan、Bloom、兑现与生命周期 | cache/strategy/strategy_data.sqlite | Pool CSV、按需导出的 Quant CSV、quant_runs JSON、Bloom 状态文件、Plan JSON/Markdown |
 | 市场派生状态 | cache/market_regime/market_regime.sqlite 及模块发布产物 | market/、Dashboard 市场包 |
 | 资金 | cache/capital_flow/capital_data.sqlite | capital/、Dashboard 资金包 |
 | 宏观 | cache/global_macro/global_macro.sqlite | macro/ 健康与采集摘要 |
@@ -72,7 +72,7 @@ Huaxin Quant 是面向 A 股的候选发现、信号跟踪和研究复盘系统�
 
 每日主链路中的核心策略模块先提交数据库，再发布兼容文件；同日内容变化保留修订，current_documents 指向当前版本。旧文件只作兼容或迁移回退；Tracker 的旧文件写入路径不具备同等提交保证。历史修订存在，不等于已冻结回测使用的全部代码、配置和输入版本。
 
-Quant 全量运行落库的是成功处理标的的完整结果，CSV 默认仅发布纳入展示的标的。单股/多股运行写专用文件，不覆盖全量策略文档。总控的产物核验通过不代表每只 Pool 股票均成功，也不代表复权核验全部通过；个股缺口仍以 Quant stats 和数据状态为依据。
+Quant 全量运行将成功处理标的的完整结果落库并发布 JSON。CSV 仅按需导出，通常只包含纳入展示的标的。单股/多股运行写专用文件，不覆盖全量策略文档。总控的产物核验通过不代表每只 Pool 股票均成功，也不代表复权核验全部通过；个股缺口仍以 Quant stats 和数据状态为依据。
 
 ## 6. 日期与价格口径
 

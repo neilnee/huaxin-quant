@@ -47,20 +47,25 @@ def ordered_bloom_state(state: dict[str, dict]) -> list[dict]:
     return rows
 
 
-def publish_quant(conn, date_iso: str, date_yy: str) -> list[Path]:
-    from scripts.quant_filter import should_write_to_quant, write_csv
-
+def publish_quant(conn, date_iso: str, date_yy: str, *, csv_only: bool = False) -> list[Path]:
     payload = load_document(conn, "quant", date_iso)
     if payload is None:
         raise FileNotFoundError(f"quant document missing: {date_iso}")
-    json_path = ROOT / "cache" / "quant_runs" / f"quant_{date_yy}.json"
+    if not csv_only:
+        json_path = ROOT / "cache" / "quant_runs" / f"quant_{date_yy}.json"
+        atomic_write_text(json_path, json.dumps(payload, ensure_ascii=False, indent=2))
+        return [json_path]
+
+    from scripts.quant_filter import should_write_to_quant, write_csv
+
     csv_path = ROOT / "quant" / f"quant_{date_yy}.csv"
-    atomic_write_text(json_path, json.dumps(payload, ensure_ascii=False, indent=2))
     rows = [row for row in payload.get("results", []) if should_write_to_quant(row)]
     rows.sort(key=lambda row: row.get("structure_score") or 0, reverse=True)
-    if rows:
-        write_csv(rows, str(csv_path))
-    return [json_path, csv_path]
+    if not rows:
+        print(f"{date_iso} 无 model2_include 标的，CSV 未写入。")
+        return []
+    write_csv(rows, str(csv_path))
+    return [csv_path]
 
 
 def publish_signal_plan(conn, date_iso: str, date_yy: str) -> list[Path]:
@@ -102,12 +107,15 @@ def main() -> int:
     parser.add_argument("module", choices=("quant", "signal-plan", "bloom", "all"))
     parser.add_argument("--date", required=True)
     parser.add_argument("--database", default=str(DB_PATH))
+    parser.add_argument("--csv-only", action="store_true", help="仅导出指定日期的 Quant 精选 CSV")
     args = parser.parse_args()
+    if args.csv_only and args.module != "quant":
+        parser.error("--csv-only requires the quant module")
     date_iso, date_yy = normalize_date(args.date)
     with connect(args.database) as conn:
         outputs = []
         if args.module in ("quant", "all"):
-            outputs.extend(publish_quant(conn, date_iso, date_yy))
+            outputs.extend(publish_quant(conn, date_iso, date_yy, csv_only=args.csv_only))
         if args.module in ("signal-plan", "all"):
             outputs.extend(publish_signal_plan(conn, date_iso, date_yy))
         if args.module in ("bloom", "all"):

@@ -142,6 +142,8 @@ python3 scripts/run_valuation.py --code 688285 --dry-run
 
 mx-data 通过 `.env` 的 `HUAXIN_MX_DATA_SCRIPT` 定位，默认回退到 `~/.claude/skills/mx-data/mx_data.py`，凭据只读取 `MX_APIKEY`。新运行执行阶段零时，财务缓存缺失或超过默认 90 天会自动查询：最新年报核心财务与资产负债字段、近三年利润/利润率历史、总股本及估值基础字段。每个查询失败可重试，只有新生成的 `*_raw.json` 能被 `valuate.py` 解析时才算完成。
 
+单独运行阶段零且未指定 `--code` 时，优先使用估值索引。索引为空时，从策略库取最近一份有默认精选标的的 Quant 快照，沿用 Quant CSV 的默认入选条件与结构分降序。库中没有可用名单时，运行模型二或通过 `--code` 指定单只股票。
+
 `--refresh` 同时强制刷新财务、briefing 和模型三检索证据；`--refresh-financial` 只强制刷新财务后继续完整流程；`--skip-financial-fetch` 禁止调用 mx-data，仅允许使用满足时效门禁的本地缓存，与 `--allow-stale-financial` 联用时可显式放行已确认仍有效的旧财报。续跑和 `--skip-stage0` 只使用已归档/当日 briefing，不因工作区财务缓存后来过期而阻断，也不重新调用 mx-data。
 
 `valuation_pipeline.py` 仍保留为内部入口，供定位、修复和开发验证使用：

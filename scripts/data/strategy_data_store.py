@@ -258,6 +258,23 @@ def document_dates(conn: sqlite3.Connection, module: str) -> list[str]:
     )]
 
 
+def load_quant_names(conn: sqlite3.Connection, codes, through_date: str) -> dict[str, str]:
+    names = {}
+    for code in codes:
+        row = conn.execute(
+            """SELECT trim(q.name)
+               FROM vcp_structure_snapshots q
+               JOIN current_documents c ON c.module='quant' AND c.trade_date=q.trade_date
+                   AND c.document_id=q.document_id
+               WHERE q.code=? AND q.trade_date<=? AND trim(q.name) NOT IN ('', q.code)
+               ORDER BY q.trade_date DESC LIMIT 1""",
+            (code, through_date),
+        ).fetchone()
+        if row is not None:
+            names[code] = row[0]
+    return names
+
+
 def structure_anchor(row: dict) -> str:
     value = row.get("setup_structure_anchor_date")
     if value:

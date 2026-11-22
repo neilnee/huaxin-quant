@@ -1,7 +1,11 @@
+import json
 import tempfile
 import unittest
+from argparse import Namespace
 from pathlib import Path
+from unittest.mock import patch
 
+from scripts import quant_filter, strategy_publish, valuate
 from scripts.data.strategy_data_store import (
     connect,
     lifecycle_latest,
@@ -40,6 +44,110 @@ class StrategyDataStoreTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(load_document(self.conn, "quant", "2026-08-12"), payload)
         self.assertEqual(self.conn.execute("SELECT count(*) FROM vcp_structure_snapshots").fetchone()[0], 1)
+
+    def test_quant_manual_names_do_not_need_exports(self):
+        directory = Path(self.temp.name)
+        index = directory / "valuation_index.csv"
+        index.write_text("code,name\n5,索引名称\n", encoding="utf-8")
+        (directory / "pool_260812.csv").write_text(
+            "股票代码,股票名称\n2,股票池名称\n4,股票池旧名称\n", encoding="utf-8"
+        )
+        (directory / "pool_260814.csv").write_text("code,name\n4,未来名称\n", encoding="utf-8")
+        save_quant(self.conn, {"meta": {"run_date": "2026-08-11"}, "results": [
+            {"code": "1", "name": "前日名称"},
+        ]})
+        for name in ("旧修订", "当前修订"):
+            save_quant(self.conn, {"meta": {"run_date": "2026-08-12"}, "results": [
+                {"code": "1", "name": name}, {"code": "5", "name": "量价名称"},
+            ]})
+        save_quant(self.conn, {"meta": {"run_date": "2026-08-14"}, "results": [
+            {"code": "1", "name": "未来名称"},
+        ]})
+
+        args = Namespace(code=None, name=None, codes="1,2,3,4,5", test=False)
+        with patch.multiple(
+            quant_filter, STRATEGY_DB_PATH=directory / "strategy.sqlite",
+            VALUATION_INDEX_PATH=index, POOL_DIR=directory,
+        ):
+            self.assertEqual(quant_filter.resolve_input_codes(args, "260812"), ([
+                ("000001", "当前修订"), ("000002", "股票池名称"), ("000003", "000003"),
+                ("000004", "股票池旧名称"), ("000005", "索引名称"),
+            ], "多股"))
+            args.code, args.name = "1", "手工输入"
+            self.assertEqual(quant_filter.resolve_input_codes(args, "260812"), (
+                [("000001", "手工输入")], "单股"
+            ))
+
+    def test_valuation_pool_uses_sorted_selected_quant_rows_without_csv(self):
+        save_quant(self.conn, {"meta": {"run_date": "2026-08-12"}, "results": [
+            {"code": "1", "name": "低分", "model2_include": True, "structure_score": 50},
+            {"code": "2", "name": "未入选", "model2_include": False, "structure_score": 90},
+            {"code": "3", "name": "高分", "model2_include": True, "structure_score": 70},
+        ]})
+        save_quant(self.conn, {"meta": {"run_date": "2026-08-13"}, "results": []})
+        save_quant(self.conn, {"meta": {"run_date": "2026-08-14"}, "results": [
+            {"code": "4", "name": "未来名单", "model2_include": True, "structure_score": 80},
+        ]})
+        with patch.object(valuate, "STRATEGY_DB_PATH", Path(self.temp.name) / "strategy.sqlite"):
+            self.assertEqual(valuate.read_quant_pool("260813"), [
+                {"code": "000003", "name": "高分"}, {"code": "000001", "name": "低分"},
+            ])
+            self.assertEqual(valuate.read_quant_pool("260811"), [])
+
+    def test_quant_run_writes_csv_only_when_requested(self):
+        directory = Path(self.temp.name)
+        (directory / "pool_260812.csv").write_text("股票代码,股票名称\n1,测试\n", encoding="utf-8")
+        rows = [
+            {"code": "000001", "name": "测试", "model2_include": True, "structure_score": 50},
+            {"code": "000002", "name": "排除", "model2_include": False, "structure_score": 60},
+        ]
+        stats = dict(pull_ok=2, pull_fail=0, data_insufficient=0, cache_hits=2, api_calls=0, tdx_calls=0)
+        json_path = directory / "runs" / "quant_260812.json"
+        argv = ["quant_filter.py", "--date", "260812"]
+        with (
+            patch.multiple(quant_filter, POOL_DIR=directory, QUANT_DIR=directory, QUANT_RUNS_DIR=json_path.parent),
+            patch.object(quant_filter, "load_local_env"),
+            patch.object(quant_filter, "connect_strategy_db", return_value=self.conn),
+            patch.object(quant_filter, "process_codes", return_value=(rows, stats)),
+            patch.object(quant_filter, "print_summary"),
+            patch.object(quant_filter, "write_csv") as write_csv,
+            patch("builtins.print"),
+        ):
+            with patch("sys.argv", argv):
+                quant_filter.main()
+            write_csv.assert_not_called()
+            saved_payload = json.loads(json_path.read_text(encoding="utf-8"))
+            self.assertIsNone(saved_payload["meta"]["csv_path"])
+            self.assertEqual(saved_payload["results"], rows)
+            self.assertEqual(load_document(self.conn, "quant", "2026-08-12"), saved_payload)
+
+            with patch("sys.argv", [*argv, "--quant", "selected.csv"]):
+                quant_filter.main()
+            write_csv.assert_called_once_with([rows[0]], "selected.csv")
+            write_csv.reset_mock()
+
+            with patch("sys.argv", [*argv, "--include-reject"]):
+                quant_filter.main()
+            write_csv.assert_called_once_with(list(reversed(rows)), str(directory / "quant_260812.csv"))
+
+    def test_strategy_quant_publisher_separates_json_rebuild_and_csv_export(self):
+        directory = Path(self.temp.name)
+        trade_date = "2026-08-12"
+        row = {"code": "000001", "name": "测试", "model2_include": True, "structure_score": 50}
+        payload = {"meta": {"run_date": trade_date}, "results": [row]}
+        save_quant(self.conn, payload)
+        with patch.object(strategy_publish, "ROOT", directory), patch.object(quant_filter, "write_csv") as write_csv:
+            json_path = directory / "cache" / "quant_runs" / "quant_260812.json"
+            self.assertEqual(strategy_publish.publish_quant(self.conn, trade_date, "260812"), [json_path])
+            self.assertEqual(json.loads(json_path.read_text(encoding="utf-8")), payload)
+            write_csv.assert_not_called()
+            json_path.unlink()
+            expected_csv = directory / "quant" / "quant_260812.csv"
+            self.assertEqual(
+                strategy_publish.publish_quant(self.conn, trade_date, "260812", csv_only=True), [expected_csv]
+            )
+            write_csv.assert_called_once_with([row], str(expected_csv))
+            self.assertFalse(json_path.exists())
 
     def test_pool_tracking_replace_and_strict_prior_load(self):
         def row(date, status):

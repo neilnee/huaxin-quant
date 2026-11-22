@@ -125,9 +125,11 @@ python3 scripts/rebuild_market_history.py --publish
 
 ## 盘后人工研究
 
-系统执行与人工研究是两条流程。研究先回顾最近的 `daily_research/` 笔记和 `position/current_holdings_discussion.csv`，核对原计划；随后检查目标日行情与系统产物覆盖，复用本地共享行情库和策略库。数据完整且无具体疑点时，直接研究，不因新一轮讨论重跑总控或重复调用外部行情。
+系统执行与人工研究是两条流程。每日人工研究先读运行实例长期指引 `position/manual_stage_participation_framework.md` 和 `position/management_rules.md`，再回顾最近的 `daily_research/` 笔记、滚动跟踪表及 `position/current_holdings_discussion.csv`，核对原计划；随后检查目标日行情与系统产物覆盖，复用本地共享行情库和策略库。数据完整且无具体疑点时，直接研究，不因新一轮讨论重跑总控或重复调用外部行情。
 
 候选初筛按 [opportunity-screening.md](instructions/opportunity-screening.md)，讨论后合并到当日研究笔记。补查条件、数据口径、分时证据边界和持仓事实优先级统一按 [AGENTS](AGENTS.md) 第7—9节；人工研究不自动写成交、改策略或触发自选同步。
+
+结构研究通过后按长期指引维护阶段参与计划，框架正文和迭代保存在稳定入口及其历史版本目录，日记只留当日验证、操作和修订经过，不另维护一份现行规则。该流程不改自动Signal Plan或其他系统模块。
 
 ## 独立执行模型三估值分析
 

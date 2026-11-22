@@ -53,7 +53,8 @@ Python 3.11+，优先显式调用 `.venv/bin/python scripts/...`，语法检查�
 
 ### 8. 研究笔记与持仓连续维护
 
-- 每日研究前读取最近的 `daily_research/` 笔记及 `position/current_holdings_discussion.csv`，核对持仓、原计划、风险锚点和待验证问题，只围绕新增证据更新判断。
+- 每日人工研究（初筛、个股跟踪、参与计划及持仓讨论）前，先读取运行实例的长期指引 `position/manual_stage_participation_framework.md` 及 `position/management_rules.md`；再结合最近的 `daily_research/` 笔记、`daily_research/current_research_followups.json` 和 `position/current_holdings_discussion.csv`，核对持仓、原计划、风险锚点和待验证问题，只围绕新增证据更新判断。
+- 人工阶段参与框架以 `position/manual_stage_participation_framework.md` 为长期权威入口，保持文件名稳定；共同确认的修订直接更新版本、日期和原因，旧版保存到 `position/manual_stage_participation_history/`。每日笔记只留当日证据、执行验证及修订经过，不重复维护框架正文，不依赖每日笔记恢复现行规则。候选参数和待定项不得当作已确认门槛，既有个股专项不因框架迭代静默改写。
 - 盘后从系统候选筛出逐只研究顺序时，按 `instructions/opportunity-screening.md` 执行；该人工流程不属于系统执行链。
 - 先分析讨论，再合并到 `daily_research/YYYY-MM-DD.md`，每日一份。提炼背景、关键证据、分歧与修正、交易及计划验证、触发/失效条件和下一交易日检查项；区分事实、用户观点、Codex判断与共同结论，不逐字转录或重复系统日报。
 - 数据与判断对应研究日期，后续验证追加记录，不覆盖当时推理。人工笔记默认不入Git；`reports/daily/`用于系统日报，`dev_logs/`用于工程复盘。
@@ -87,6 +88,7 @@ Python 3.11+，优先显式调用 `.venv/bin/python scripts/...`，语法检查�
 | 运行产物长期归档、盘点和恢复 | [WORKFLOW.md](WORKFLOW.md#长期归档管理)，运行实例 `archive/` |
 | 查找模块指令卡与维护约定 | [docs/README.md](docs/README.md) |
 | 盘后人工机会初筛 | [opportunity-screening.md](instructions/opportunity-screening.md) |
+| 人工阶段参与计划与长期交易指引 | 运行实例 `position/manual_stage_participation_framework.md`、`position/management_rules.md` |
 | 架构、目录职责与权威存储 | [DESIGN.md](DESIGN.md) |
 | 开发任务与待实现方案 | [TODO.md](TODO.md)、[改进路线图](docs/IMPROVEMENT_ROADMAP.md) |
 

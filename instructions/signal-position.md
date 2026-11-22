@@ -34,8 +34,8 @@
 
 ### 人工持仓管理查阅入口
 
-- 人工配置与持仓讨论前，读取运行实例的 `position/management_rules.md`，查阅用户已确认的配置原则；结合 `position/current_holdings_discussion.csv` 和最近 `daily_research/` 核对当前数量、专项计划及验证记录。
-- 共同确认的人工规范集中维护在 `position/management_rules.md`，推理和修订过程按日期保留在研究笔记；个人额度及原始讨论默认不纳入 Git。
+- 每日人工研究、配置与持仓讨论前，读取运行实例的 `position/manual_stage_participation_framework.md` 和 `position/management_rules.md`，查阅长期阶段参与框架及用户已确认的配置原则；结合 `position/current_holdings_discussion.csv`、滚动跟踪表和最近 `daily_research/` 核对当前数量、专项计划及验证记录。
+- 共同确认的配置规范集中维护在 `position/management_rules.md`，阶段参与框架集中维护在 `position/manual_stage_participation_framework.md`，后者修订前保留历史版本。研究笔记只保存当日验证、推理和修订过程，不复制维护现行框架；个人额度及原始讨论默认不纳入 Git。
 - 人工规范与现行自动策略分别维护。记录或更新人工规范不自动改写 Dashboard 仓位公式、真实交易流水或个股退出条件。
 
 ---

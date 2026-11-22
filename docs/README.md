@@ -11,6 +11,7 @@
 | 每日执行、估值恢复、异常处理 | [WORKFLOW](../WORKFLOW.md) |
 | Agent 工程、投研与数据使用规范 | [共用规范 AGENTS](../AGENTS.md)、[Claude 入口](../CLAUDE.md) |
 | 盘后人工机会初筛 | [机会初筛指令](../instructions/opportunity-screening.md)、[字段与比较参考](../instructions/opportunity-screening-ref.md) |
+| 每日人工研究必读与阶段参与计划 | 运行实例 `position/manual_stage_participation_framework.md`、`position/management_rules.md`；先读长期指引，再接续近期笔记、跟踪表与持仓 |
 | 策略理解 | [策略阅读指南](../instructions/trading-strategy.md) |
 | 开发任务与验收方案 | [TODO](../TODO.md)、[改进路线图](IMPROVEMENT_ROADMAP.md) |
 | 公开截图与脱敏 | [截图说明](SCREENSHOT_PLAN.md) |

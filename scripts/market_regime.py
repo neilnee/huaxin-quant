@@ -400,6 +400,40 @@ def sector_rows_for_date(universe: pd.DataFrame, blocks: pd.DataFrame, trade_dat
     return rows
 
 
+def load_universe_indicator_bars(conn: sqlite3.Connection, snapshot_date: str, as_of: str, first_target: str | None = None) -> pd.DataFrame:
+    columns = ("code", "trade_date", "high", "low", "close", "volume", "amount")
+    projection = ", ".join(columns)
+    codes = [row[0] for row in conn.execute(
+        "SELECT code FROM universe_members WHERE trade_date=? AND eligible=1 ORDER BY code",
+        (snapshot_date,),
+    )]
+    start = first_target or as_of
+    rows = []
+    for code in codes:
+        rows.extend(conn.execute(
+            f"SELECT {projection} FROM daily_bars WHERE code=? AND trade_date<=? ORDER BY trade_date DESC LIMIT 61",
+            (code, start),
+        ))
+        if start < as_of:
+            rows.extend(conn.execute(
+                f"SELECT {projection} FROM daily_bars WHERE code=? AND trade_date>? AND trade_date<=?",
+                (code, start, as_of),
+            ))
+    return pd.DataFrame.from_records(rows, columns=columns)
+
+
+def load_daily_universe_turnover(conn: sqlite3.Connection, snapshot_date: str, as_of: str) -> pd.Series:
+    rows = conn.execute(
+        """SELECT SUM(b.amount) FROM daily_bars b INDEXED BY idx_daily_bars_date
+           WHERE b.trade_date<=? AND b.amount>0 AND EXISTS (
+               SELECT 1 FROM universe_members u WHERE u.trade_date=? AND u.code=b.code AND u.eligible=1
+           )
+           GROUP BY b.trade_date ORDER BY b.trade_date DESC LIMIT 20""",
+        (as_of, snapshot_date),
+    ).fetchall()
+    return pd.Series([row[0] for row in reversed(rows)], dtype=float)
+
+
 def ensure_sector_baseline(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as_of: str) -> int:
     dates = [row[0] for row in conn.execute("""SELECT trade_date FROM daily_bars
         WHERE code='IDX:000001' AND trade_date<=? ORDER BY trade_date DESC LIMIT 20""", (as_of,))][::-1]
@@ -407,9 +441,7 @@ def ensure_sector_baseline(conn: sqlite3.Connection, state_conn: sqlite3.Connect
     missing = [date for date in dates if date not in existing and date != as_of]
     if not missing:
         return 0
-    universe = pd.read_sql_query("""SELECT b.* FROM daily_bars b JOIN universe_members u ON b.code=u.code
-        WHERE u.trade_date=? AND u.eligible=1 AND b.trade_date<=?""", conn, params=(as_of, as_of))
-    universe = indicators(universe)
+    universe = indicators(load_universe_indicator_bars(conn, as_of, as_of, min(missing)))
     blocks = pd.read_sql_query("""SELECT m.block_kind,m.block_name,m.code FROM block_members m
         JOIN universe_members u ON m.code=u.code WHERE m.snapshot_date=? AND u.trade_date=? AND u.eligible=1""", conn, params=(as_of, as_of))
     for date in missing:
@@ -527,7 +559,7 @@ def classify_market_liquidity(turnover_ratio_5_20: float, breadth_score: float, 
     }
 
 
-def compute_market_liquidity(universe: pd.DataFrame, current: pd.DataFrame, breadth_score: float) -> dict:
+def compute_market_liquidity(daily_amount: pd.Series, current: pd.DataFrame, breadth_score: float) -> dict:
     """Compute auditable all-A turnover facts as an observation-only sidecar."""
     def unavailable(reason: str) -> dict:
         return {
@@ -549,8 +581,6 @@ def compute_market_liquidity(universe: pd.DataFrame, current: pd.DataFrame, brea
             "affects_market_state": False,
         }
 
-    amount_history = universe[pd.to_numeric(universe["amount"], errors="coerce").fillna(0) > 0].copy()
-    daily_amount = amount_history.groupby("trade_date")["amount"].sum().sort_index().tail(20)
     if len(daily_amount) < 20 or float(daily_amount.mean()) <= 0:
         return unavailable("全 A 成交额历史不足 20 个交易日")
     turnover_ratio = float(daily_amount.tail(5).mean() / daily_amount.mean())
@@ -675,10 +705,9 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
     ratio = valid / total if total else 0.0
     if ratio < CONFIG["data"]["minimum_coverage_ratio"]:
         raise RuntimeError(f"全 A 覆盖率不足: {ratio:.2%} ({valid}/{total})")
-    universe = pd.read_sql_query("""SELECT b.* FROM daily_bars b JOIN universe_members u ON b.code=u.code
-        WHERE u.trade_date=? AND u.eligible=1 AND b.trade_date<=?""", conn, params=(snapshot_date, as_of))
-    universe = indicators(universe)
+    universe = indicators(load_universe_indicator_bars(conn, snapshot_date, as_of))
     current = universe[universe.trade_date == as_of].copy()
+    del universe
     current = current[current.ma60.notna()].copy()
     for window in (1, 5, 20, 60):
         current[f"rps{window}_market"] = current[f"ret{window}"].rank(pct=True, method="average") * 100
@@ -696,7 +725,7 @@ def compute_metrics(conn: sqlite3.Connection, state_conn: sqlite3.Connection, as
         "new_high_minus_low_ratio": round(float((current.new_high60.mean() - current.new_low60.mean()) * 100), 2),
     }
     breadth_score = np.mean([breadth["advance_ratio"], breadth["above_ma20_ratio"], breadth["above_ma60_ratio"], max(0, min(100, 50 + breadth["new_high_minus_low_ratio"]))])
-    market_liquidity = compute_market_liquidity(universe, current, float(breadth_score))
+    market_liquidity = compute_market_liquidity(load_daily_universe_turnover(conn, snapshot_date, as_of), current, float(breadth_score))
 
     bench = pd.read_sql_query("SELECT * FROM daily_bars WHERE code LIKE 'IDX:%' AND trade_date<=?", conn, params=(as_of,))
     bench = indicators(bench)

@@ -24,8 +24,10 @@ import atexit
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -87,14 +89,54 @@ def _stage_timeout_seconds() -> float:
     return float(os.environ.get("HUAXIN_STAGE_TIMEOUT_SECONDS", "21600"))
 
 
+def run_stage_process(command, *, cwd, timeout):
+    if not hasattr(os, "wait4"):
+        return subprocess.run(command, cwd=cwd, timeout=timeout)
+    process = subprocess.Popen(command, cwd=cwd)
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            pid, status, usage = os.wait4(process.pid, os.WNOHANG)
+            if pid:
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, timeout)
+            time.sleep(min(remaining, 0.05))
+    except BaseException as exc:
+        try:
+            os.kill(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        _, status, usage = os.wait4(process.pid, 0)
+        process.returncode = os.waitstatus_to_exitcode(status)
+        if isinstance(exc, subprocess.TimeoutExpired):
+            exc.resource_usage = usage
+        raise
+    process.returncode = os.waitstatus_to_exitcode(status)
+    result = subprocess.CompletedProcess(command, process.returncode)
+    result.resource_usage = usage
+    return result
+
+
 def run_stage(command, *, timeout=None):
     """Run one stage with a finite lifetime and a stable timeout exit code."""
     effective_timeout = _stage_timeout_seconds() if timeout is None else timeout
+    started = time.monotonic()
     try:
-        return subprocess.run(command, cwd=PROJECT_ROOT, timeout=effective_timeout)
-    except subprocess.TimeoutExpired:
+        result = run_stage_process(command, cwd=PROJECT_ROOT, timeout=effective_timeout)
+    except subprocess.TimeoutExpired as exc:
         print(f"[daily] ✗ 阶段超时（{effective_timeout:g}s）: {' '.join(map(str, command))}")
-        return subprocess.CompletedProcess(command, 124)
+        result = subprocess.CompletedProcess(command, 124)
+        result.resource_usage = getattr(exc, "resource_usage", None)
+    elapsed = time.monotonic() - started
+    usage = getattr(result, "resource_usage", None)
+    resources = ""
+    if usage is not None:
+        rss_mib = usage.ru_maxrss / (1024 ** 2 if sys.platform == "darwin" else 1024)
+        resources = f"，峰值 RSS {rss_mib:.1f} MiB，块读 {usage.ru_inblock}，块写 {usage.ru_oublock}"
+    print(f"[daily] 子命令耗时 {elapsed:.2f}s，退出码 {result.returncode}{resources}: {' '.join(map(str, command))}", flush=True)
+    return result
 
 
 def run_command_with_retries(command, *, attempts=2, label="步骤"):

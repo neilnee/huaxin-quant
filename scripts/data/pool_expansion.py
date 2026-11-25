@@ -71,11 +71,21 @@ def build_expansion_pool(
         if membership.empty:
             raise RuntimeError(f"扩展池缺少 {as_of} 的 universe_members 快照")
 
-        bars = pd.read_sql_query(
-            "SELECT code,trade_date,close,amount FROM daily_bars "
-            "WHERE trade_date<=? ORDER BY code,trade_date",
-            conn,
-            params=(as_of,),
+        history_counts = dict(conn.execute(
+            "SELECT code, COUNT(*) FROM daily_bars WHERE trade_date<=? GROUP BY code HAVING COUNT(*)>? ORDER BY code",
+            (as_of, max(short_window, long_window)),
+        ))
+        bars = pd.DataFrame.from_records(
+            (
+                row
+                for code in history_counts
+                for row in conn.execute(
+                    "SELECT code,trade_date,close,amount FROM daily_bars "
+                    "WHERE code=? AND trade_date<=? ORDER BY trade_date DESC LIMIT ?",
+                    (code, as_of, max(short_window, long_window) + 1),
+                )
+            ),
+            columns=("code", "trade_date", "close", "amount"),
         )
         securities = pd.read_sql_query(
             "SELECT code,name,is_st FROM securities",
@@ -115,7 +125,7 @@ def build_expansion_pool(
             "exclusion_reason": str(member.get("exclusion_reason", "")),
             "is_st": bool(security["is_st"]) if security is not None else False,
             "last_trade_date": str(latest["trade_date"]),
-            "history_sessions": int(len(frame)),
+            "history_sessions": history_counts[code],
             "active_sessions_20": int(len(recent)),
             "average_amount_20": float(recent_amount.mean()) if len(recent) else 0.0,
             "return_short_pct": (close / short_base - 1.0) * 100.0,

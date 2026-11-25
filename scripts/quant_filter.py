@@ -4024,12 +4024,8 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True, p
         "adjustment_warnings": [],
     }
     service = MarketDataService(MARKET_DATA_CONFIG)
-    frames, data_status = service.get_daily_bars(
-        codes, run_date, max(200, BASE_CFG["min_runtime_data_days"]),
-        force_refresh=not use_cache,
-        price_mode=PRICE_ADJUSTMENT_CFG["mode"],
-        adjustment_config=PRICE_ADJUSTMENT_CFG,
-    )
+    batch_size = 128
+    frames, data_status = {}, {}
     fatal_stop = False
     retry_queue = []
 
@@ -4040,6 +4036,15 @@ def process_codes(codes, today_yy, run_date, use_cache=True, allow_retry=True, p
             _write_quant_progress(progress_file, i + 1, len(codes), len(results),
                                   current_code=code, current_name=name, current_stage="FATAL")
             continue
+
+        if i % batch_size == 0:
+            frames.clear()
+            frames, data_status = service.get_daily_bars(
+                codes[i:i + batch_size], run_date, max(200, BASE_CFG["min_runtime_data_days"]),
+                force_refresh=not use_cache,
+                price_mode=PRICE_ADJUSTMENT_CFG["mode"],
+                adjustment_config=PRICE_ADJUSTMENT_CFG,
+            )
 
         print(f"[{i+1}/{len(codes)}] {code} {name} ...", end=" ", flush=True)
         df, source = frames.get(code), data_status.get(code, {"source": "missing", "error": "数据库未返回数据", "retryable": False})

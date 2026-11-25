@@ -93,7 +93,8 @@ class DailyCapitalWorkflowTests(unittest.TestCase):
         )
 
     def test_capital_observer_command_fetches_the_requested_date(self):
-        with patch.object(daily.subprocess, "run") as run:
+        with patch.object(daily, "run_stage_process") as run:
+            run.return_value = daily.subprocess.CompletedProcess([], 0)
             run.return_value.returncode = 0
             daily.run_capital_observer(self.DATE)
         command = run.call_args.args[0]
@@ -110,7 +111,8 @@ class DailyCapitalWorkflowTests(unittest.TestCase):
         )
 
     def test_ai_daily_report_runs_as_date_scoped_deterministic_step(self):
-        with patch.object(daily.subprocess, "run") as run:
+        with patch.object(daily, "run_stage_process") as run:
+            run.return_value = daily.subprocess.CompletedProcess([], 0)
             run.return_value.returncode = 0
             daily.run_ai_daily_report(self.DATE)
         self.assertEqual(
@@ -196,7 +198,7 @@ class DailyCapitalWorkflowTests(unittest.TestCase):
         first = type("Result", (), {"returncode": 0})()
         second = type("Result", (), {"returncode": 0})()
         with (
-            patch.object(daily.subprocess, "run", side_effect=[first, second]) as run,
+            patch.object(daily, "run_stage_process", side_effect=[first, second]) as run,
             patch.object(
                 daily,
                 "load_market_llm_meta",
@@ -213,14 +215,14 @@ class DailyCapitalWorkflowTests(unittest.TestCase):
         failed = type("Result", (), {"returncode": 1})()
         success = type("Result", (), {"returncode": 0})()
         command = ["python3", "scripts/example.py"]
-        with patch.object(daily.subprocess, "run", side_effect=[failed, success]) as run:
+        with patch.object(daily, "run_stage_process", side_effect=[failed, success]) as run:
             result = daily.run_command_with_retries(command, label="test")
         self.assertEqual(result.returncode, 0)
         self.assertEqual(run.call_count, 2)
 
     def test_stage_timeout_has_stable_exit_code(self):
         command = [sys.executable, "scripts/example.py"]
-        with patch.object(daily.subprocess, "run", side_effect=daily.subprocess.TimeoutExpired(command, 1)):
+        with patch.object(daily, "run_stage_process", side_effect=daily.subprocess.TimeoutExpired(command, 1)):
             result = daily.run_stage(command, timeout=1)
         self.assertEqual(result.returncode, 124)
 

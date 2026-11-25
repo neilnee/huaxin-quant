@@ -207,6 +207,25 @@ class ExternalFactorConsensusTests(unittest.TestCase):
             with patch.object(daily, "connect_strategy_db", return_value=conn), self.assertRaisesRegex(ValueError, "日期不一致"):
                 daily.load_quant_adjustment_warnings("261030")
 
+    def test_quant_reads_candidate_history_in_ordered_batches(self):
+        codes = [(f"{i:06d}", f"stock {i}") for i in range(130)]
+        frame = pd.DataFrame({"close": [10.0] * 200})
+        with patch.object(quant_filter, "MarketDataService") as service, \
+             patch.object(quant_filter, "calc_indicators", side_effect=lambda bars: bars), \
+             patch.object(quant_filter, "result_from_df", side_effect=lambda code, *_: {
+                 "code": code, "structure_stage": "NONE", "setup_signal": "NONE", "structure_score": 0, "reason": "",
+             }), \
+             patch("builtins.print"):
+            read = service.return_value.get_daily_bars
+            read.side_effect = lambda batch, *_args, **_kwargs: (
+                {code: frame for code, _ in batch},
+                {code: {"source": "database", "adjustment_status": "VERIFIED"} for code, _ in batch},
+            )
+            results, stats = quant_filter.process_codes(codes, "261030", "2026-10-30")
+        self.assertEqual([call.args[0] for call in read.call_args_list], [codes[:128], codes[128:]])
+        self.assertEqual([result["code"] for result in results], [code for code, _ in codes])
+        self.assertEqual(stats["adjustment_verified"], 130)
+
     def test_ai_packet_preserves_resolved_adjustment_notice(self):
         warning = {"code": "300501", "kind": "external_consensus", "reason": "采用外部因子"}
         contexts = {"market": {"meta": {"data_status": "VALID"}}, "capital": {}, "signals": {},

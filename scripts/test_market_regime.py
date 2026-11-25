@@ -12,6 +12,7 @@ import pandas as pd
 
 from scripts import market_regime
 from scripts.data.tdx_block_data import TDXBlockSource
+from scripts.data.market_data_store import create_schema
 
 from scripts.market_regime import (
     classify_news_phase,
@@ -56,6 +57,26 @@ def sector(name, rel1, rel5, rel20, breadth, volume, density, kind="gn"):
 
 
 class DailyMainlineTests(unittest.TestCase):
+    def test_universe_window_counts_valid_bars_and_keeps_backfill_warmup(self):
+        sessions = pd.date_range("2026-01-01", periods=130).strftime("%Y-%m-%d").tolist()
+        cutoff, target = sessions[120], sessions[-1]
+        with sqlite3.connect(":memory:") as conn:
+            create_schema(conn)
+            conn.executemany("INSERT INTO universe_members VALUES (?,?,?,NULL)", [
+                (target, "A", 1), (target, "B", 0),
+            ])
+            bars = [(code, day, 10, 10, 10, 10, 10, amount, "test", day)
+                    for code, amount in (("A", 100), ("B", 999))
+                    for day in sessions[::2]]
+            conn.executemany("INSERT INTO daily_bars VALUES (?,?,?,?,?,?,?,?,?,?)", bars)
+            data = market_regime.load_universe_indicator_bars(conn, target, target)
+            backfill = market_regime.load_universe_indicator_bars(conn, target, target, cutoff)
+            turnover = market_regime.load_daily_universe_turnover(conn, target, target)
+        self.assertEqual(set(data.code), {"A"})
+        self.assertEqual(sorted(data.trade_date), sessions[::2][-61:])
+        self.assertEqual(sorted(backfill.trade_date), sessions[::2])
+        self.assertEqual(turnover.tolist(), [100.0] * 20)
+
     def test_tdx_uses_separate_xdxr_probe_for_corporate_actions(self):
         class FakeQuotes:
             def index(self, **_kwargs):

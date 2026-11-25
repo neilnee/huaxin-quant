@@ -1270,7 +1270,7 @@ setup_plan_inputs.retest:
 
 这些字段只是把模型二现有买点逻辑的中间事实暴露给模型四；新增或修改这些字段不得改变模型二的 `structure_stage`、`setup_signal`、`setup_score`、`action_hint`。
 
-全量模式使用 `--output-json <路径>` 显式导出 JSON。执行计算时，用 `--quant <路径>` 显式导出 CSV，或用 `--include-reject` 将全部已处理标的导出到相应模式的默认 CSV 路径。默认精选 CSV 只包含 `model2_include` 为真的标的。按日期从策略库导出使用 `scripts/strategy_publish.py quant --date <YYMMDD>`，追加 `--csv-only` 可导出精选 CSV。
+全量模式使用 `--output-json <路径>` 显式导出 JSON。执行计算时，用 `--csv` 导出到相应模式的默认 CSV 路径，或用 `--quant <路径>` 指定路径。精选 CSV 只包含 `model2_include` 为真的标的；追加 `--include-reject` 导出全部已处理标的。单独使用 `--include-reject` 仍按历史行为导出到默认路径。按日期从策略库导出使用 `scripts/strategy_publish.py quant --date <YYMMDD>`，追加 `--csv-only` 可导出精选 CSV。
 
 输出文件命名规则：
 

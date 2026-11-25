@@ -1,5 +1,6 @@
 import json
 import inspect
+import os
 import sys
 import tempfile
 import unittest
@@ -225,6 +226,34 @@ class DailyCapitalWorkflowTests(unittest.TestCase):
         with patch.object(daily, "run_stage_process", side_effect=daily.subprocess.TimeoutExpired(command, 1)):
             result = daily.run_stage(command, timeout=1)
         self.assertEqual(result.returncode, 124)
+
+    @unittest.skipUnless(hasattr(os, "wait4"), "requires wait4")
+    def test_stage_process_reports_resources_on_real_exit(self):
+        for code in (0, 7):
+            with self.subTest(code=code):
+                result = daily.run_stage_process(
+                    [sys.executable, "-c", f"raise SystemExit({code})"], cwd=daily.PROJECT_ROOT, timeout=5,
+                )
+                self.assertEqual(result.returncode, code)
+                self.assertGreater(result.resource_usage.ru_maxrss, 0)
+
+    @unittest.skipUnless(hasattr(os, "wait4"), "requires wait4")
+    def test_stage_timeout_kills_and_reaps_real_child(self):
+        processes = []
+        real_popen = daily.subprocess.Popen
+
+        def capture(*args, **kwargs):
+            child = real_popen(*args, **kwargs)
+            processes.append(child)
+            return child
+
+        with patch.object(daily.subprocess, "Popen", side_effect=capture):
+            result = daily.run_stage([sys.executable, "-c", "import time; time.sleep(10)"], timeout=0.2)
+        self.assertEqual(result.returncode, 124)
+        self.assertGreater(result.resource_usage.ru_maxrss, 0)
+        child, = processes
+        with self.assertRaises(ChildProcessError):
+            os.waitpid(child.pid, os.WNOHANG)
 
     def test_progress_tracker_records_failed_root_status(self):
         with tempfile.TemporaryDirectory() as tmp:

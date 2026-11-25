@@ -693,8 +693,6 @@ def main():
     parser.add_argument("--test", action="store_true", help="只处理前2只")
     parser.add_argument("--phase", type=str, default="0", help="阶段号（目前仅支持0）")
     parser.add_argument("--no-cache", action="store_true", help="清除旧简报缓存后重新生成（财务缓存不受影响）")
-    parser.add_argument("--pool", type=str, help="pool CSV 路径")
-    parser.add_argument("--quant", type=str, help="quant CSV 路径")
     args = parser.parse_args()
 
     # 确定要处理的标的列表

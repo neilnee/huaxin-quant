@@ -1221,7 +1221,18 @@ def call_llm_insights(watching_rows, quant_results=None, progress_file=None):
     return insights, status
 
 
-def build_bloom(payload, previous_payload, date_yy, allow_partial=False, progress_file=None):
+def load_previous_quant_for_recovery(previous_date):
+    if previous_date is None:
+        return None
+    try:
+        with connect_strategy_db() as conn:
+            return require_quant_document(conn, previous_date)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"警告: Bloom 历史 Quant 前态不可用，按无前态计算: {exc}")
+        return None
+
+
+def build_bloom(payload, previous_payload, date_yy, allow_partial=False, progress_file=None, *, previous_date=None):
     meta = payload.get("meta", {})
     run_date = meta.get("run_date") or date_yy_to_iso(date_yy)
     mode = meta.get("mode", "")
@@ -1230,6 +1241,8 @@ def build_bloom(payload, previous_payload, date_yy, allow_partial=False, progres
 
     results = payload.get("results", [])
     prev_state = read_state_snapshot_before(run_date) or read_state_before(run_date)
+    if not prev_state and previous_payload is None:
+        previous_payload = load_previous_quant_for_recovery(previous_date)
     if not prev_state and previous_payload:
         prev_date = previous_payload.get("meta", {}).get("run_date") or ""
         prev_state = state_from_quant_results(previous_payload.get("results", []), prev_date)
@@ -1678,16 +1691,16 @@ def main():
             trade_date = date_yy_to_iso(date_yy) if date_yy else dates[-1]
             payload = require_quant_document(strategy_conn, trade_date)
             previous_date = next((value for value in reversed(dates) if value < trade_date), None)
-            previous_payload = require_quant_document(strategy_conn, previous_date) if previous_date else None
         date_yy = trade_date.replace("-", "")[2:]
     except (FileNotFoundError, ValueError) as exc:
         print(f"错误: {exc}")
         sys.exit(1)
 
     try:
-        bloom, new_state, events = build_bloom(payload, previous_payload, date_yy,
+        bloom, new_state, events = build_bloom(payload, None, date_yy,
                                                       allow_partial=args.allow_partial,
-                                                      progress_file=args.progress_file)
+                                                      progress_file=args.progress_file,
+                                                      previous_date=previous_date)
     except Exception as exc:
         print(f"错误: {exc}")
         sys.exit(1)

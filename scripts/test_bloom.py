@@ -2,7 +2,9 @@
 """Regression tests for Bloom status mapping."""
 
 import unittest
+from unittest.mock import patch
 
+from scripts import bloom
 from scripts.bloom import (
     apply_exit_rules, base_status, is_post_breakout_focus_row,
     is_watching_row, should_call_llm_insight, state_row,
@@ -26,6 +28,43 @@ def sample_row(**overrides):
 
 
 class BloomStatusMappingTests(unittest.TestCase):
+    def test_existing_state_skips_previous_quant_recovery(self):
+        payload = {"meta": {"run_date": "2026-11-25", "mode": "全量"}, "results": []}
+        with (
+            patch.object(bloom, "read_state_snapshot_before", return_value={"000001": sample_row()}),
+            patch.object(bloom, "load_previous_quant_for_recovery") as recover,
+        ):
+            bloom.build_bloom(payload, None, "261125", previous_date="2026-11-24")
+        recover.assert_not_called()
+
+    def test_unavailable_previous_quant_starts_without_state(self):
+        payload = {"meta": {"run_date": "2026-11-25", "mode": "全量"}, "results": []}
+        for error in (FileNotFoundError("missing"), ValueError("wrong date")):
+            with (
+                self.subTest(error=error),
+                patch.object(bloom, "read_state_snapshot_before", return_value={}),
+                patch.object(bloom, "read_state_before", return_value={}),
+                patch.object(bloom, "connect_strategy_db"),
+                patch.object(bloom, "require_quant_document", side_effect=error),
+                patch("builtins.print") as log,
+            ):
+                _, state, events = bloom.build_bloom(payload, None, "261125", previous_date="2026-11-24")
+                self.assertEqual((state, events), ({}, []))
+                self.assertIn("按无前态计算", log.call_args.args[0])
+
+    def test_previous_quant_seeds_state_only_when_history_is_empty(self):
+        payload = {"meta": {"run_date": "2026-11-25", "mode": "全量"}, "results": []}
+        previous = {"meta": {"run_date": "2026-11-24"}, "results": [sample_row()]}
+        with (
+            patch.object(bloom, "read_state_snapshot_before", return_value={}),
+            patch.object(bloom, "read_state_before", return_value={}),
+            patch.object(bloom, "load_previous_quant_for_recovery", return_value=previous) as recover,
+            patch.object(bloom, "state_from_quant_results", return_value={}) as seed,
+        ):
+            bloom.build_bloom(payload, None, "261125", previous_date="2026-11-24")
+        recover.assert_called_once_with("2026-11-24")
+        seed.assert_called_once_with(previous["results"], "2026-11-24")
+
     def test_post_breakout_lifecycle_does_not_fall_back_to_forming(self):
         for state in (
             "POST_BREAKOUT_RETEST",

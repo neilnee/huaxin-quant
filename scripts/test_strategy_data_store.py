@@ -127,6 +127,11 @@ class StrategyDataStoreTests(unittest.TestCase):
             self.assertEqual(json.loads(json_path.read_text(encoding="utf-8")), load_document(self.conn, "quant", "2026-08-12"))
             write_csv.reset_mock()
 
+            with patch("sys.argv", [*argv, "--csv"]):
+                quant_filter.main()
+            write_csv.assert_called_once_with([rows[0]], str(directory / "quant_260812.csv"))
+            write_csv.reset_mock()
+
             with patch("sys.argv", [*argv, "--include-reject"]):
                 quant_filter.main()
             write_csv.assert_called_once_with(list(reversed(rows)), str(directory / "quant_260812.csv"))

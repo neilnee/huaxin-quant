@@ -3982,7 +3982,7 @@ def maybe_call_llm(results, top_n):
 def build_output_paths(args, today_yy, mode, codes):
     if args.quant:
         quant_path = args.quant
-    elif not args.include_reject:
+    elif not (args.csv or args.include_reject):
         quant_path = None
     elif mode == "单股":
         quant_path = f"{QUANT_DIR}/single_{codes[0][0]}_{today_yy}.csv"
@@ -4127,6 +4127,7 @@ def main():
     parser.add_argument("--name", help="单股模式下手工指定股票名称")
     parser.add_argument("--test", action="store_true", help="测试模式，使用内建标的")
     parser.add_argument("--quant", help="显式导出 CSV 到指定路径")
+    parser.add_argument("--csv", action="store_true", help="导出精选 CSV 到默认路径")
     parser.add_argument("--output-json", help="JSON 输出路径")
     parser.add_argument("--json", action="store_true", help="同时将结构化结果打印到 stdout")
     parser.add_argument("--include-reject", action="store_true", help="导出 CSV，包含未纳入 model2_include 的标的")

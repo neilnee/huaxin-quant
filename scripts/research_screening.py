@@ -164,12 +164,12 @@ def select_sector_supplement(sector_history, pool, strengths, quant, existing, e
     for row in sector_history['rows']:
         by_industry[row['block_name']].append(row)
     qualifying = []
+    numeric_fields = ('rank_pct_5', 'above_ma20_ratio', 'relative_strength_1', 'median_return_1')
     for name, history in sorted(by_industry.items()):
-        days = {row['trade_date']: row for row in history}
+        days = {row['trade_date']: row | {key: number(row[key]) for key in numeric_fields} for row in history}
         gaps = [day for day in dates if day not in days or days[day]['data_status'] != 'READY'
                 or days[day]['history_basis'] != 'point_in_time'
-                or any(number(days[day][key]) is None for key in (
-                    'rank_pct_5', 'above_ma20_ratio', 'relative_strength_1', 'median_return_1'))]
+                or any(days[day][key] is None for key in numeric_fields)]
         if gaps:
             audit['industry_data_gaps'][name] = gaps
             continue
@@ -205,7 +205,8 @@ def select_sector_supplement(sector_history, pool, strengths, quant, existing, e
                 eligible.append(code)
         eligible.sort(key=order)
         unmatched = [code for code in eligible if code not in existing]
-        added = unmatched[:min(SECTOR_MAX_PER_INDUSTRY, SECTOR_MAX_TOTAL - len(selected))]
+        available_slots = max(0, SECTOR_MAX_TOTAL - len(selected))
+        added = unmatched[:min(SECTOR_MAX_PER_INDUSTRY, available_slots)]
         selected.update(added)
         audit['industries'].append({
             'name': name, 'history': history, 'three_session_return': compounded,

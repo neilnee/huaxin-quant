@@ -144,6 +144,9 @@ class ResearchScreeningTests(unittest.TestCase):
         history = sector_window()
         add_sector(history, '白色家电')
         add_sector(history, '云服务', ranks=(0.8, 0.9, 0.08), breadth=(40, 30, 70))
+        for row in history['rows']:
+            for field in ('rank_pct_5', 'above_ma20_ratio', 'relative_strength_1', 'median_return_1'):
+                row[field] = str(row[field])
         records = {f'{i:06d}': quant(f'{i:06d}', score)
                    for i, score in enumerate((70, 64, 63, 62, 61, 60, 59, 58, 57, 65), 1)}
         records['000002']['structure_score_details']['impulse']['contribution'] = 0
